@@ -72,9 +72,8 @@ sub MATTER_Undef {
 }
 
 sub MATTER_Get {
-    my ($hash, @param) = @_;
-    my $opt = shift @param;
-    return "Unknown argument $opt, choose one of update";
+    my ($hash, $name, $cmd, @args) = @_;
+    return "Unknown argument $cmd, choose one of";
 }
 
 sub MATTER_Set {
