@@ -81,6 +81,7 @@ sub MATTER_Set {
     my ($hash, @param) = @_;
     my $name = shift @param;
     my $opt  = shift @param;
+    my $args = shift @param;
 
     if ($opt eq "connect") {
         MATTER_Open($hash);
