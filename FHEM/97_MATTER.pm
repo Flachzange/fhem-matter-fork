@@ -1,0 +1,437 @@
+# $Id$
+package main;
+use strict;
+use warnings;
+
+use HttpUtils;
+use Time::Piece;
+use JSON;
+use IO::Socket::INET;
+use MIME::Base64;
+use Data::Dumper;
+
+our $readingFnAttributes;
+
+my $MATTER_version = "V0.2 22.08.2026";
+
+my %MATTER_sets = (
+    "connect"  => "noArg",
+    "discover" => "noArg",
+);
+
+sub MATTER_Initialize {
+    my ($hash) = @_;
+
+    $hash->{DefFn}      = \&MATTER_Define;
+    $hash->{UndefFn}    = \&MATTER_Undef;
+    $hash->{SetFn}      = \&MATTER_Set;
+    $hash->{GetFn}      = \&MATTER_Get;
+    $hash->{AttrFn}     = \&MATTER_Attr;
+    $hash->{ReadFn}     = \&MATTER_Read;
+    $hash->{Clients}    = ":MATTERDevice:";
+    $hash->{MatchList}  = { "1" => ".*" };
+
+    $hash->{AttrList} = "disable:0,1 " . $readingFnAttributes;
+}
+
+sub MATTER_Define {
+    my ($hash, $def) = @_;
+    my @param = split('[ \t]+', $def);
+    
+    if (int(@param) < 4) {
+        return "too few parameters: define <name> MATTER <IP> <PORT>";    
+    }
+    
+    my $name = $param[0];
+    $hash->{ip}   = $param[2];
+    $hash->{port} = $param[3] // 5580;
+
+    $hash->{STATE}    = "defined";
+    $hash->{VERSION}  = $MATTER_version;
+    
+    # Sendefunktion für WebSocket hinterlegen
+    $hash->{fhem}{helper}{sendWS} = sub {
+        my ($msg) = @_;
+        my $socket = $hash->{CD};
+        if ($socket) {
+            MATTER_SendWebSocketText($socket, $msg);
+        } else {
+            Log3 $hash->{NAME}, 2, "MATTER: No active WebSocket socket for sending!";
+        }
+    };
+
+    MATTER_Open($hash);
+    return undef;
+}
+
+sub MATTER_Undef {
+    my ($hash, $arg) = @_; 
+    MATTER_Close($hash);
+    return undef;
+}
+
+sub MATTER_Get {
+    my ($hash, @param) = @_;
+    my $opt = shift @param;
+    return "Unknown argument $opt, choose one of update";
+}
+
+sub MATTER_Set {
+    my ($hash, @param) = @_;
+    my $name = shift @param;
+    my $opt  = shift @param;
+
+    if ($opt eq "connect") {
+        MATTER_Open($hash);
+        return undef;
+    } 
+    elsif ($opt eq "discover") {
+        my $msg_id = int(rand(100000) + 1);
+        $hash->{helper}{pending_command}{$msg_id} = "get_nodes";
+
+        my $payload = {
+            message_id => $msg_id,
+            command    => "get_nodes"
+        };
+        
+        Log3 $name, 3, "MATTER: Requesting node list from server...";
+        MATTER_SendJsonCommand($hash, $payload);
+        return undef;
+    } 
+    else {
+        my @cList = keys %MATTER_sets;
+        return "Unknown argument $opt, choose one of " . join(" ", @cList);
+    }
+}
+
+sub MATTER_Attr {
+    my ($cmd, $name, $attr_name, $attr_value) = @_;
+    return undef;
+}
+
+sub MATTER_Open($) {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+    my $host = $hash->{ip};
+    my $port = $hash->{port};
+
+    RemoveInternalTimer($hash);
+    MATTER_Close($hash);
+    return if (AttrVal($hash->{NAME}, "disable", 0));
+
+    Log3 $name, 3, "[$name] Connecting to $host:$port via raw socket...";
+
+    my $socket = IO::Socket::INET->new(
+        PeerAddr => $host,
+        PeerPort => $port,
+        Proto    => 'tcp',
+        Timeout  => 5,
+    );
+
+    unless ($socket) {
+        Log3 $name, 1, "[$name] Connection failed: $@";
+        InternalTimer(gettimeofday() + 30, "MATTER_Open", $hash, 0);
+        return;
+    }
+
+    $socket->blocking(0);
+    $hash->{CD} = $socket;
+    $hash->{FD} = $socket->fileno();
+    $hash->{BUF} = "";
+    $hash->{websocket} = 0;
+
+    $selectlist{$name} = $hash;
+
+    # WebSocket Handshake vorbereiten
+    my $rand_bytes = pack("C*", map { int(rand(256)) } 1 .. 16);
+    my $key = encode_base64($rand_bytes, "");
+    
+    my $handshake = "GET /ws HTTP/1.1\r\n" .
+                    "Host: $host:$port\r\n" .
+                    "Upgrade: websocket\r\n" .
+                    "Connection: Upgrade\r\n" .
+                    "Sec-WebSocket-Key: $key\r\n" .
+                    "Sec-WebSocket-Version: 13\r\n" .
+                    "Origin: http://$host:$port\r\n\r\n";
+
+    syswrite($socket, $handshake);
+    $hash->{ws_status} = "handshake";
+    Log3 $name, 3, "[$name] WebSocket handshake sent.";
+    readingsSingleUpdate($hash, "state", "connecting", 1);
+}
+
+sub MATTER_Close($) {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+
+    delete $selectlist{$name};
+
+    if ($hash->{CD}) {
+        close($hash->{CD});
+        delete $hash->{CD};
+    }
+    
+    $hash->{websocket} = 0;
+    $hash->{ws_status} = "disconnected";
+    $hash->{BUF} = "";
+    
+    Log3 $name, 3, "[$name] Connection closed.";
+    readingsSingleUpdate($hash, "state", "disconnected", 1);
+}
+
+sub MATTER_Read {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+    my $socket = $hash->{CD};
+
+    my $buf = "";
+    my $n = sysread($socket, $buf, 65536);
+
+    if (!defined($n) || $n == 0) {
+        Log3 $name, 2, "[$name] Connection lost, retrying in 30s";
+        MATTER_Close($hash);
+        InternalTimer(gettimeofday() + 30, "MATTER_Open", $hash, 0); # Automatischer Reconnect
+        return;
+    }
+    $hash->{BUF} .= $buf;
+
+    # 1. Handshake verarbeiten
+    if ($hash->{ws_status} eq "handshake") {
+        if ($hash->{BUF} =~ m/\x0d\x0a\x0d\x0a/) {
+            $hash->{ws_status} = "connected";
+            $hash->{websocket} = 1;
+            $hash->{BUF} =~ s/(.*?)\x0d\x0a\x0d\x0a//s;
+            readingsSingleUpdate($hash, "state", "connected", 1);
+            
+            # Start listening beim Server anfordern
+            MATTER_SendJsonCommand($hash, { message_id => "fhem_init_1", command => "start_listening" });
+        }
+        return;
+    }
+
+    # 2. WebSocket Frames auslesen
+    while (length($hash->{BUF}) >= 2) {
+        my ($b1, $b2) = unpack("CC", substr($hash->{BUF}, 0, 2));
+        my $opcode = $b1 & 0x0f;
+        my $payload_len = $b2 & 0x7f;
+        my $header_len = 2;
+
+        if ($payload_len == 126) {
+            return if length($hash->{BUF}) < 4;
+            $payload_len = unpack("n", substr($hash->{BUF}, 2, 2));
+            $header_len = 4;
+        } elsif ($payload_len == 127) {
+            return if length($hash->{BUF}) < 10;
+            my @l_bytes = unpack("x2 N N", substr($hash->{BUF}, 2, 8));
+            $payload_len = ($l_bytes[0] * 4294967296) + $l_bytes[1];
+            $header_len = 10;
+        }
+
+        my $total_len = $header_len + $payload_len;
+        return if length($hash->{BUF}) < $total_len;
+
+        my $payload = substr($hash->{BUF}, $header_len, $payload_len);
+        substr($hash->{BUF}, 0, $total_len) = "";
+
+        if ($opcode == 0x1) { # Text Frame (JSON)
+            MATTER_ParseMessage($hash, $payload);
+        } elsif ($opcode == 0x9) { # Ping -> Pong antworten
+            my $pong = chr(0x8A) . chr(0x00);
+            syswrite($socket, $pong);
+        } elsif ($opcode == 0x8) { # Close Frame
+            MATTER_Close($hash);
+            return;
+        }
+    }
+}
+
+sub MATTER_SendJsonCommand($$) {
+    my ($hash, $cmd_hash) = @_;
+    MATTER_SendWebSocketText($hash->{CD}, encode_json($cmd_hash)) if $hash->{CD};
+}
+
+sub MATTER_SendWebSocketText($$) {
+    my ($socket, $msg) = @_;
+    return unless $socket;
+    
+    my $length = length($msg);
+    my $frame = chr(0x81); # Text Frame + FIN
+
+    if ($length <= 125) {
+        $frame .= chr(0x80 | $length);
+    } elsif ($length <= 65535) {
+        $frame .= chr(0x80 | 126) . pack("n", $length);
+    } else {
+        $frame .= chr(0x80 | 127) . pack("Q>", $length);
+    }
+
+    my $mask = pack("N", int(rand(2**32)));
+    $frame .= $mask;
+
+    my $masked_payload = "";
+    for (my $i = 0; $i < $length; $i++) {
+        my $m_byte = ord(substr($mask, $i % 4, 1));
+        my $p_byte = ord(substr($msg, $i, 1));
+        $masked_payload .= chr($p_byte ^ $m_byte);
+    }
+
+    $frame .= $masked_payload;
+    syswrite($socket, $frame);
+}
+
+sub MATTER_ParseMessage($$) {
+    my ($hash, $payload) = @_;
+    my $name = $hash->{NAME};
+    
+    my $decoded = eval { decode_json($payload) };
+    if ($@) {
+        Log3 $name, 3, "MATTER: JSON parse error: $@";
+        return;
+    }
+    
+    # A) Server-Informationen beim Connect
+    if (exists $decoded->{schema_version} && exists $decoded->{sdk_version}) {
+        Log3 $name, 3, "MATTER: Received server_info from Matter server.";
+        readingsBeginUpdate($hash);
+        readingsBulkUpdate($hash, "state", "connected");
+        readingsBulkUpdate($hash, "schema_version", $decoded->{schema_version});
+        readingsBulkUpdate($hash, "sdk_version", $decoded->{sdk_version});
+        readingsBulkUpdate($hash, "fabric_id", $decoded->{fabric_id});
+        readingsBulkUpdate($hash, "bluetooth_enabled", $decoded->{bluetooth_enabled} ? "true" : "false");
+        readingsEndUpdate($hash, 1);
+        return;
+    }
+
+    # B) Live-Events (z.B. attribute_updated) direkt ans Child weiterleiten
+    if (exists $decoded->{event} && $decoded->{event} eq "attribute_updated" && ref($decoded->{data}) eq 'ARRAY') {
+        my ($node_id, undef, undef) = @{$decoded->{data}};
+        if (defined $node_id) {
+            foreach my $d (keys %{$modules{MATTERDevice}{defptr}}) {
+                my $childHash = $modules{MATTERDevice}{defptr}{$d};
+                if ($childHash && defined($childHash->{node_id}) && $childHash->{node_id} == $node_id) {
+                    MATTERDevice_Parse($childHash, $payload);
+                    last;
+                }
+            }
+        }
+        return;
+    }
+
+    # C) Antworten auf spezifische Befehle (getConfig / get_nodes)
+    if (my $msg_id = $decoded->{message_id}) {
+        # Antwort auf read_attribute (getConfig)
+        if (my $node_id = delete $hash->{helper}{pending_config}{$msg_id}) {
+            if ($decoded->{result}) {
+                foreach my $d (keys %{$modules{MATTERDevice}{defptr}}) {
+                    my $childHash = $modules{MATTERDevice}{defptr}{$d};
+                    if ($childHash && defined($childHash->{node_id}) && $childHash->{node_id} == $node_id) {
+                        MATTERDevice_Parse($childHash, $payload);
+                        last;
+                    }
+                }
+            }
+            return;
+        }
+        
+        # Antwort auf get_nodes (Discover)
+        my $cmd_type = delete $hash->{helper}{pending_command}{$msg_id};
+        if ($cmd_type && $cmd_type eq "get_nodes") {
+            if ($decoded->{result} && ref($decoded->{result}) eq 'ARRAY') {
+                Log3 $name, 3, "MATTER: Processing node list from get_nodes response...";
+
+                foreach my $node (@{$decoded->{result}}) {
+                    my $node_id   = $node->{node_id};
+                    my $node_name = $node->{name} // "MatterDevice_$node_id";
+                    
+                    $node_name =~ s/[^a-zA-Z0-9_\.-]/_/g;
+                    $node_name = "MATTER_" . $node_name;
+
+                    my $childHash = undef;
+                    foreach my $d (keys %{$modules{MATTERDevice}{defptr}}) {
+                        if ($modules{MATTERDevice}{defptr}{$d}->{node_id} eq $node_id) {
+                            $childHash = $modules{MATTERDevice}{defptr}{$d};
+                            last;
+                        }
+                    }
+                    
+                    unless ($childHash) {
+                        Log3 $name, 3, "MATTER: Auto-creating device $node_name for Node ID $node_id";
+                        CommandDefine(undef, "$node_name MATTERDevice $node_id");
+                        
+                        foreach my $d (keys %{$modules{MATTERDevice}{defptr}}) {
+                            if ($modules{MATTERDevice}{defptr}{$d}->{node_id} eq $node_id) {
+                                $childHash = $modules{MATTERDevice}{defptr}{$d};
+                                last;
+                            }
+                        }
+                        $childHash = $defs{$node_name} if (!$childHash);
+
+                        if ($childHash) {
+                            $childHash->{IODev} = $hash;
+                            Log3 $name, 3, "MATTER: Assigned IODev $name to $node_name";
+                        }
+                    }
+
+                    # Initiale Attribute direkt übergeben, falls vorhanden
+                    if ($childHash && $node->{attributes}) {
+                        MATTERDevice_Parse($childHash, encode_json({ node_id => $node_id, attributes => $node->{attributes} }));
+                    }
+                }
+            }
+            return;
+        }
+    }
+}
+
+1;
+
+=pod
+=item device
+=item summary    Interface module for Matter protocol via WebSocket/JSON
+=item summary_DE Schnittstellenmodul für das Matter-Protokoll via WebSocket/JSON
+=begin html
+
+<a name="MATTER"></a>
+<h3>MATTER</h3>
+<ul>
+  The MATTER module serves as the central IO-Device for communicating with a 
+  Matter-Server via WebSockets. It handles the raw connection, the WebSocket 
+  handshake, and the routing of JSON-based messages to individual MatterDevice 
+  instances.<br><br>
+
+  <a name="MATTER-define"></a>
+  <b>Define</b>
+  <ul>
+    <code>define &lt;name&gt; MATTER &lt;IP&gt; &lt;PORT&gt;</code><br><br>
+    The IP and PORT point to your Matter-Bridge or server implementation (default port: 5580).
+  </ul>
+  <br>
+
+  <a name="MATTER-set"></a>
+  <b>Set</b>
+  <ul>
+    <li><code>connect</code><br>
+        Manually opens/re-establishes the connection to the Matter server.</li>
+    <li><code>discover</code><br>
+        Queries the server for available nodes and automatically creates corresponding 
+        MATTERDevice instances if they do not exist yet.</li>
+  </ul>
+  <br>
+
+  <a name="MATTER-get"></a>
+  <b>Get</b>
+  <ul>
+    <li><code>update</code><br>
+        Placeholder for future functionality.</li>
+  </ul>
+  <br>
+
+  <a name="MATTER-attr"></a>
+  <b>Attributes</b>
+  <ul>
+    <li>Standard FHEM attributes are supported (e.g., <code>IODev</code>, <code>room</code>).</li>
+  </ul>
+</ul>
+
+=end html
+=cut
