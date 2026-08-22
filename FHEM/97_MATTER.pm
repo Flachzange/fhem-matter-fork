@@ -17,6 +17,7 @@ my $MATTER_version = "V0.2 22.08.2026";
 my %MATTER_sets = (
     "connect"  => "noArg",
     "discover" => "noArg",
+    "commissionCode"   => "textField",
 );
 
 sub MATTER_Initialize {
@@ -97,7 +98,28 @@ sub MATTER_Set {
         Log3 $name, 3, "MATTER: Requesting node list from server...";
         MATTER_SendJsonCommand($hash, $payload);
         return undef;
-    } 
+    }
+    elsif ($opt eq "commissionCode") {
+        my $setup_code = $args[0];
+        return "Please provide a Matter manual pairing code (e.g. 35325335079)" if (!$setup_code);
+
+        my $msg_id = int(rand(100000) + 1);
+        $hash->{helper}{pending_command}{$msg_id} = "commission";
+
+        # Payload für den python-matter-server aufbauen
+        my $payload = {
+            message_id => $msg_id,
+            command    => "commission_with_code",
+            args       => {
+                code         => $setup_code,
+                network_only => JSON::true # Erzwingt den reinen Netzwerk-Modus ohne BLE-Voraussetzung
+            }
+        };
+
+        Log3 $name, 3, "MATTER: Commissioning device with manual code (network_only)...";
+        MATTER_SendJsonCommand($hash, $payload);
+        return undef;
+    }
     else {
         my @cList = keys %MATTER_sets;
         return "Unknown argument $opt, choose one of " . join(" ", @cList);
@@ -377,6 +399,17 @@ sub MATTER_ParseMessage($$) {
                         MATTERDevice_Parse($childHash, encode_json({ node_id => $node_id, attributes => $node->{attributes} }));
                     }
                 }
+            }
+            return;
+        }
+        # Antwort auf commission (Paired ein neues Gerät)
+        if ($cmd_type && $cmd_type eq "commission") {
+            if ($decoded->{result}) {
+                Log3 $name, 3, "MATTER: Device successfully commissioned! Triggering discover...";
+                # Optional: Automatisch discover aufrufen, damit das neue Device sofort angelegt wird
+                CommandSet(undef, "$name discover");
+            } else {
+                Log3 $name, 2, "MATTER: Commissioning failed: " . ($decoded->{error}{message} // "Unknown error");
             }
             return;
         }
