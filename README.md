@@ -25,4 +25,58 @@ The architecture consists of two modules:
 Open your FHEM command line and add this repository to your update sources:
 
 ```text
-update add [https://gitlab.com/zeppelin1979/fhem-matter/-/raw/main/controls_matter.txt](https://gitlab.com/zeppelin1979/fhem-matter/-/raw/main/controls_matter.txt)
+update add https://gitlab.com/zeppelin1979/fhem-matter/-/raw/main/controls_matter.txt
+```
+
+### 2. Install the Modules
+
+Run the FHEM update command to download the files:
+
+```text
+update
+```
+
+(Restart FHEM afterward if required).
+
+## Usage
+
+### 1. Define the IO-Device
+
+Connect to your local Matter server (default port is usually 5580):
+
+```text
+define matterServer MATTER <IP_ADDRESS> 5580
+```
+
+### 2. Discover Nodes
+
+Trigger the discovery to automatically fetch and create all paired Matter devices from your server:
+
+```text
+set matterServer discover
+```
+
+### 3. Control Devices
+
+Once created, individual `MATTERDevice` instances will appear. You can control them using standard FHEM commands depending on their capabilities:
+
+* `set <device> on / off`
+* `set <device> brightness <value>`
+* `set <device> ct <mireds>`
+* `set <device> rgb <hex>`
+* `set <device> getConfig` (Forces synchronization of all attributes)
+
+## Attributes
+
+### MATTER IO-Device
+
+* disable: Temporarily disable the connection (0/1).
+
+### MATTERDevice (Child)
+
+* `has_onoff`, `has_level`, `has_ct`, `has_hue`, `has_saturation`, `has_xy`: Feature flags (automatically managed during discovery/getConfig).
+* `max_level`, `color_temp_min`, `color_temp_max`: Limits for sliders and color pickers.
+
+## License
+
+This project is open-source and provided under the MIT License.
