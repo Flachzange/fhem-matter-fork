@@ -17,7 +17,7 @@ my %MATTER_CLUSTERS = (
         name       => "LevelControl",
         attributes => {
             0     => { name => "brightness", feature => "has_level", is_reading => 1, is_attribute => 0 },
-            16384 => { name => "max_level",  feature => "has_level", is_reading => 0, is_attribute => 1 },
+            16384 => { name => "max_level",  feature => "has_level", is_reading => 1, is_attribute => 0 },
         },
     },
     40 => {
@@ -61,7 +61,6 @@ sub MATTERDevice_Initialize($) {
                         "has_xy:0,1 " .
                         "color_temp_min " .
                         "color_temp_max " .
-                        "max_level " .
                         $readingFnAttributes;
     $hash->{MatchList} = { "1" => ".*" };
 }
@@ -147,6 +146,19 @@ sub MATTERDevice_Set($$@) {
                 cluster_id   => 8,
                 command_name => "MoveToLevelWithOnOff",
                 payload      => { level => int($args[0]), transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
+            }
+        };
+    }
+    elsif ($cmd eq "pct") {
+        $payload = {
+            message_id => int(rand(100000) + 1),
+            command    => "device_command",
+            args       => {
+                node_id      => $hash->{node_id},
+                endpoint_id  => 1,
+                cluster_id   => 8,
+                command_name => "MoveToLevelWithOnOff",
+                payload      => { level => int($args[0]) * 254 / 100, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
             }
         };
     }
@@ -354,8 +366,8 @@ sub MATTERDevice_GetSetList($) {
     push(@list, "on:noArg", "off:noArg") if (AttrVal($name, "has_onoff", 0));
     
     if (AttrVal($name, "has_level", 0)) {
-        my $max_level = AttrVal($name, "max_level", 254);
-        push(@list, "brightness:slider,0,1,$max_level");
+        push(@list, "brightness:slider,0,1,254");
+        push(@list, "pct:slider,0,1,100");
     }
     
     if (AttrVal($name, "has_ct", 0)) {
