@@ -4,6 +4,7 @@ package main;
 use strict;
 use warnings;
 use JSON;
+use Scalar::Util qw(blessed);
 
 # Zentrale Definition: Ein Cluster enthält Name, Attribute (mit ID & Feature-Zuordnung)
 my %MATTER_CLUSTERS = (
@@ -66,14 +67,14 @@ my %MATTER_CLUSTERS = (
     0x0102 => {
         name       => "WindowCovering",
         attributes => {
-            0x0000 => { name => "wc_type", feature => "has_wc", is_reading => 1, is_attrinute => 0 },
-            0x0001 => { name => "physical_closed_limit_lift", feature => undef. is_reading => 0, is_attribute => 1 },
+            0x0000 => { name => "wc_type", feature => "has_wc", is_reading => 1, is_attribute => 0 },
+            0x0001 => { name => "physical_closed_limit_lift", feature => undef, is_reading => 0, is_attribute => 1 },
             0x0002 => { name => "pysical_closed_limit_tilt", feature => undef, is_reading => 0, is_attribute => 1 },
             0x0003 => { name => "current_position_lift", feature => "has_position_lift", is_reading => 1, is_attribute => 0},
             0x0004 => { name => "current_position_tilt", feature => "has_position_tilt", is_reading => 1, is_attribute => 0},
             0x0005 => { name => "number_of_actuations_lift", feature => undef, is_reading => 1, is_attribute => 0 },
-            0x0006 => { name => "number_of_actuations_tilt", features => undef, is_reading => 1, is_attribute => 0},
-            0x0007 => { name => "ws_config_status", features => undef, is_reading => 1, is_attribute => 0},
+            0x0006 => { name => "number_of_actuations_tilt", feature => undef, is_reading => 1, is_attribute => 0},
+            0x0007 => { name => "ws_config_status", feature => undef, is_reading => 1, is_attribute => 0},
             0x0008 => { name => "current_position_lift_percentage", feature => "has_position_lift", is_reading => 1, is_attribute => 0 },
             0x0009 => { name => "current_position_tilt_percentage", feature => "has_position_tilt", is_reading => 1, is_attribute => 0 },
             0x000A => { name => "wc_operational_status", feature => undef, is_reading => 1, is_attribute => 0 },
@@ -469,8 +470,8 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         my $state_val = $value ? "on" : "off";
         readingsBulkUpdate($hash, "state", $state_val);
     }
-    # Spezieller Fall: Commands Accepted
-    elsif ($cluster_id == 6 && $attr_id == 0xFFF9) {
+    # Spezieller Fall: Commands Accepted (global für alle Cluster mit 0xFFF9)
+    elsif ($attr_id == 0xFFF9 && ref($value) eq 'ARRAY') {
         for my $cmd_id (@{$value}) {
             my $cmd_info = $cluster->{commands}{$cmd_id};
             if ($cmd_info) {
@@ -480,7 +481,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
                 }
             }
         }
-    } 
+    }
     # Alle anderen Werte direkt als Reading speichern
     elsif (defined($attr_name)) {
         if ($is_reading) {
