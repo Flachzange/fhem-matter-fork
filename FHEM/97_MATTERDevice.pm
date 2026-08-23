@@ -16,31 +16,31 @@ my %MATTER_CLUSTERS = (
     8 => {
         name       => "LevelControl",
         attributes => {
-            0     => { name => "brightness", feature => "has_level" },
-            16384 => { name => "max_level",  feature => "has_level" },
+            0     => { name => "brightness", feature => "has_level", is_reading => 1, is_attribute => 0 },
+            16384 => { name => "max_level",  feature => "has_level", is_reading => 0, is_attribute => 1 },
         },
     },
     40 => {
         name       => "BasicInformation",
         attributes => {
-            1  => { name => "producer",         feature => undef },
-            3  => { name => "model",            feature => undef },
-            4  => { name => "vendor_id",        feature => undef },
-            8  => { name => "firmware_version", feature => undef },
-            18 => { name => "serial_number",    feature => undef },
+            1  => { name => "producer",         feature => undef, is_reading => 1, is_attribute => 0 },
+            3  => { name => "model",            feature => undef, is_reading => 1, is_attribute => 0 },
+            4  => { name => "vendor_id",        feature => undef, is_reading => 1, is_attribute => 0 },
+            8  => { name => "firmware_version", feature => undef, is_reading => 1, is_attribute => 0 },
+            18 => { name => "serial_number",    feature => undef, is_reading => 1, is_attribute => 0 },
         },
     },
     768 => {
         name       => "ColorControl",
         attributes => {
-            0     => { name => "current_hue",        feature => "has_hue" },
-            1     => { name => "current_saturation", feature => "has_saturation" },
-            3     => { name => "current_x",          feature => "has_xy" },
-            4     => { name => "current_y",          feature => "has_xy" },
-            7     => { name => "color_temperature_mireds", feature => "has_ct" },
-            16    => { name => "color_modes",        feature => undef },
-            16395 => { name => "color_temp_min",     feature => "has_ct" },
-            16396 => { name => "color_temp_max",     feature => "has_ct" },
+            0     => { name => "current_hue",        feature => "has_hue", is_reading => 1, is_attribute => 0 },
+            1     => { name => "current_saturation", feature => "has_saturation", is_reading => 1, is_attribute => 0 },
+            3     => { name => "current_x",          feature => "has_xy", is_reading => 1, is_attribute => 0 },
+            4     => { name => "current_y",          feature => "has_xy", is_reading => 1, is_attribute => 0 },
+            7     => { name => "color_temperature_mireds", feature => "has_ct", is_reading => 1, is_attribute => 0 },
+            16    => { name => "color_modes",        feature => undef, is_reading => 1, is_attribute => 0 },
+            16395 => { name => "color_temp_min",     feature => "has_ct", is_reading => 0, is_attribute => 1 },
+            16396 => { name => "color_temp_max",     feature => "has_ct", is_reading => 0, is_attribute => 1 },
         },
     },
 );
@@ -53,8 +53,7 @@ sub MATTERDevice_Initialize($) {
     $hash->{SetFn}    = "MATTERDevice_Set";
     $hash->{GetFn}    = "MATTERDevice_Get";
     $hash->{ParseFn}  = "MATTERDevice_Parse";
-    $hash->{AttrList} = "locallog " .
-                        "has_onoff:0,1 " .
+    $hash->{AttrList} = "has_onoff:0,1 " .
                         "has_level:0,1 " .
                         "has_ct:0,1 " .
                         "has_hue:0,1 " .
@@ -271,6 +270,8 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
     my $attr_name = $attr_info->{name};
     my $feature   = $attr_info->{feature};
+    my $is_reading = $attr_info->{is_reading} // 0;
+    my $is_attribute = $attr_info->{is_attribute} // 0;
 
     # Bool-Handling für JSON
     if (ref($value) && $value->isa('JSON::PP::Boolean')) {
@@ -286,7 +287,12 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     } 
     # Alle anderen Werte direkt als Reading speichern
     elsif (defined($attr_name)) {
-        readingsBulkUpdate($hash, $attr_name, $value);
+        if ($is_reading) {
+            readingsBulkUpdate($hash, $attr_name, $value);
+        }
+        if ($is_attribute) {
+            MATTERDevice_SetAttributeIfNotExists($name, $attr_name, $value);
+        }
     }
 
     # Wenn ein Feature mit diesem Attribut verknüpft ist -> Attribut setzen
