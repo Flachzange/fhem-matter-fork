@@ -305,6 +305,10 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         if ($is_attribute) {
             MATTERDevice_SetAttributeIfNotExists($name, $attr_name, $value);
         }
+        if ($attr_name eq "brightness") {
+            my $pct_value = int($value) * 100 / 254;
+            readingsBulkUpdate($hash, "pct", $pct_value);
+        }
     }
 
     # Wenn ein Feature mit diesem Attribut verknüpft ist -> Attribut setzen
