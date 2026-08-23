@@ -32,6 +32,7 @@ my %MATTER_CLUSTERS = (
             0x0005 => { name => "min_frequency", feature => "has_frequency", is_reading => 0, is_attribute => 1 },
             0x0006 => { name => "max_frequency", feature => "has_frequency", is_reading => 0, is_attribute => 1 },
             0x4000 => { name => "max_level",  feature => "has_level", is_reading => 1, is_attribute => 0 },
+            0xFFF9 => { name => "level_control_cmds_accepted", feature => undef, is_reading => 0, is_attribute => 0 }
         },
         commands   => {
             0x00   => { name => "MoveToLevel", set_list => "move_to_level:slider,0,1,254 textField", feature => "has_level" },
@@ -87,6 +88,8 @@ my %MATTER_CLUSTERS = (
             0x0013 => { name => "installed_closed_limit_tilt", feature => undef, is_reading => 1, is_attribute => 0 },
             0x0017 => { name => "wc_mode", feature => undef, is_reading => 1, is_attribute => 0 },
             0x001A => { name => "wc_safety_status", feature => undef, is_reading => 1, is_attribute => 0 },
+            0xFFF9 => { name => "wc_cmds_accepted", feature => undef, is_reading => 0, is_attribute => 0 }
+
         },
         commands => {
             0x00   => { name => "UpOrOpen", set_list => "on:noargs", feature => "has_wc" },
@@ -96,8 +99,8 @@ my %MATTER_CLUSTERS = (
             0x05   => { name => "GoToLiftPercentage", set_list => "prc:slieder,0,1,100", feature => "has_position_lift" },
             0x07   => { name => "TiltValue", set_list => "tilt:textField", feature => "has_position_tilt" },
             0x08   => { name => "GoToTiltPercentage", set_list => "prc:slieder,0,1,100", feature => "has_position_tilt" },
-        }
-    }
+        },
+    },
     0x0300 => {
         name       => "ColorControl",
         attributes => {
