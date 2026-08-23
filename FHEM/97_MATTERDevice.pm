@@ -479,6 +479,10 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     my ($hash, $cluster_id, $attr_id, $value) = @_; # quick unpack
     my $name = $hash->{NAME};
 
+    # Cluster-ID und Attribut-ID sicher als numerischen/hexadezimalen Wert behandeln
+    $cluster_id = hex($cluster_id) if $cluster_id =~ /^0x/i;
+    $attr_id    = hex($attr_id)    if $attr_id =~ /^0x/i;
+
     my $cluster = $MATTER_CLUSTERS{$cluster_id};
     return if !$cluster;
 
