@@ -17,6 +17,11 @@ my %MATTER_CLUSTERS = (
         name       => "LevelControl",
         attributes => {
             0     => { name => "brightness", feature => "has_level", is_reading => 1, is_attribute => 0 },
+            2     => { name => "min_brightness", feature => "has_level", is_reading => 0, is_attribute => 1 },
+            3     => { name => "max_brightness", feature => "has_level", is_reading => 0, is_attribute => 1 },
+            4     => { name => "frequency", feature => "has_frequency", is_reading => 1, is_attribute => 0 },
+            5     => { name => "min_frequency", feature => "has_frequency", is_reading => 0, is_attribute => 1 },
+            6     => { name => "max_frequency", feature => "has_frequency", is_reading => 0, is_attribute => 1 },
             16384 => { name => "max_level",  feature => "has_level", is_reading => 1, is_attribute => 0 },
         },
     },
@@ -26,8 +31,15 @@ my %MATTER_CLUSTERS = (
             1  => { name => "producer",         feature => undef, is_reading => 1, is_attribute => 0 },
             3  => { name => "model",            feature => undef, is_reading => 1, is_attribute => 0 },
             4  => { name => "vendor_id",        feature => undef, is_reading => 1, is_attribute => 0 },
-            8  => { name => "firmware_version", feature => undef, is_reading => 1, is_attribute => 0 },
+            8  => { name => "hardware_version", feature => undef, is_reading => 1, is_attribute => 0 },
+            10 => { name => "firmware_version", feature => undef, is_reading => 1, is_attribute => 0 },
             18 => { name => "serial_number",    feature => undef, is_reading => 1, is_attribute => 0 },
+        },
+    },
+    0x005B => {
+        name       => "Air Quality",
+        attributes => {
+            0     => { name => "air_quality",   feature => undef, is_reading => 1, is_attribute => 0 },
         },
     },
     768 => {
@@ -59,8 +71,13 @@ sub MATTERDevice_Initialize($) {
                         "has_hue:0,1 " .
                         "has_saturation:0,1 " .
                         "has_xy:0,1 " .
+                        "has_frequency:0,1 " .
                         "color_temp_min " .
                         "color_temp_max " .
+                        "min_brightness " .
+                        "max_brightness " .
+                        "min_frequency " .
+                        "max_frequency " .
                         $readingFnAttributes;
     $hash->{MatchList} = { "1" => ".*" };
 }
@@ -136,6 +153,18 @@ sub MATTERDevice_Set($$@) {
             }
         };
     }
+    elsif ($cmd eq "toggle") {
+        $payload = {
+            message_id => int(rand(100000) + 1),
+            command    => "device_command",
+            args       => {
+                node_id => $hash->{node_id},
+                endpoint_id => 1,
+                cluster_id => 6,
+                command_name => "toggle"
+            }
+        };
+    }
     elsif ($cmd eq "brightness") {
         $payload = {
             message_id => int(rand(100000) + 1),
@@ -150,6 +179,7 @@ sub MATTERDevice_Set($$@) {
         };
     }
     elsif ($cmd eq "pct") {
+        my $max_level = AttrVal($name, "max_brightness", 254);
         $payload = {
             message_id => int(rand(100000) + 1),
             command    => "device_command",
@@ -158,7 +188,7 @@ sub MATTERDevice_Set($$@) {
                 endpoint_id  => 1,
                 cluster_id   => 8,
                 command_name => "MoveToLevelWithOnOff",
-                payload      => { level => int($args[0]) * 254 / 100, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
+                payload      => { level => int($args[0]) * $max_level / 100, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
             }
         };
     }
@@ -255,6 +285,19 @@ sub MATTERDevice_Set($$@) {
         Log3 $name, 3, "MATTERDevice: Generic getConfig triggered for node $hash->{node_id}";
         return undef;
     }
+    elsif ($cmd eq "frequency") {
+        $payload = {
+            message_id => int(rand(100000) + 1),
+            command    => "device_command",
+            args       => {
+                node_id      => $hash->{node_id},
+                endpoint_id  => 1,
+                cluster_id   => 768,
+                command_name => "MoveToClosestFrequency",
+                payload      => { frequency => int($args[0]) }
+            }
+        };
+    }
 
     return "No payload generated" if (!$payload);
 
@@ -306,7 +349,8 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
             MATTERDevice_SetAttributeIfNotExists($name, $attr_name, $value);
         }
         if ($attr_name eq "brightness") {
-            my $pct_value = int(int($value) * 100 / 254);
+            my $max_level = AttrVal($name, "max_brightness", 254);
+            my $pct_value = int(int($value) * 100 / $max_level);
             readingsBulkUpdate($hash, "pct", $pct_value);
         }
     }
@@ -367,10 +411,11 @@ sub MATTERDevice_GetSetList($) {
     my $name = $hash->{NAME};
     my @list;
     
-    push(@list, "on:noArg", "off:noArg") if (AttrVal($name, "has_onoff", 0));
+    push(@list, "on:noArg", "off:noArg", "toggle:noArg") if (AttrVal($name, "has_onoff", 0));
     
     if (AttrVal($name, "has_level", 0)) {
-        push(@list, "brightness:slider,0,1,254");
+        my $max_level = AttrVal($name, "max_brightness", 254);
+        push(@list, "brightness:slider,0,1,$max_level");
         push(@list, "pct:slider,0,1,100");
     }
     
@@ -378,6 +423,12 @@ sub MATTERDevice_GetSetList($) {
         my $min_mired = AttrVal($name, "color_temp_min", 153);
         my $max_mired = AttrVal($name, "color_temp_max", 500);
         push(@list, "ct:colorpicker,CT,$min_mired,1,$max_mired");
+    }
+
+    if (AttrVal($name, "has_frequency", 0)) {
+        my $min_freq = AttrVal($name, "min_frequency", 50);
+        my $max_freq = AttrVal($name, "max_frequency", 60);
+        push(@list, "frequency:slider,$min_freq,$min_freq,$max_freq");
     }
     
     push(@list, "rgb:colorpicker,RGB") if (AttrVal($name, "has_color", 0) || AttrVal($name, "has_xy", 0) || AttrVal($name, "has_hue", 0));
