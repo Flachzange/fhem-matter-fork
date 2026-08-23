@@ -306,7 +306,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
             MATTERDevice_SetAttributeIfNotExists($name, $attr_name, $value);
         }
         if ($attr_name eq "brightness") {
-            my $pct_value = int($value) * 100 / 254;
+            my $pct_value = int(int($value) * 100 / 254);
             readingsBulkUpdate($hash, "pct", $pct_value);
         }
     }
