@@ -174,7 +174,7 @@ sub MATTERDevice_Define($$) {
 
 sub MATTERDevice_Undef($$) {
 my ($hash, $arg) = @_;
-    if ($hash->{node_id}) && ($hash->{endpoint_id} == 0) {
+    if (($hash->{node_id}) && ($hash->{endpoint_id} == 0)) {
         my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
         delete $modules{MATTERDevice}{defptr}{"$io_name:$hash->{node_id}"};
     }
