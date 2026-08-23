@@ -119,6 +119,16 @@ Once created, individual `MATTERDevice` instances will appear. You can control t
 
 ---
 
+## Open Issues:
+
+* Only one endpoint is supported, devices witrh multiple endpoints won't work so far
+* Commissioning via Bluetooth not realiezed so far
+* Window Covering (Shutters) are included but not tested
+* Door locks are not supported
+* Thermostats are not supported
+
+---
+
 ## License
 
 This project is open-source and provided under the MIT License.
