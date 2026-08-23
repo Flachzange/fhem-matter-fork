@@ -38,7 +38,7 @@ my %MATTER_CLUSTERS = (
             0x01   => { name => "Move", set_list => "move:up,down slider,0,1,254 textField", feature => undef },
             0x02   => { name => "Step", set_list => "step:up, down slider,0,1,254 textField", feature => undef },
             0x03   => { name => "Stop", set_list => "stop:textField", feature => undef },
-            0x04   => { name => "MoveToLevelWithOnOff", set_list => "move_to_level:slider,0,1,254 textField", feature => "has_level" }
+            0x04   => { name => "MoveToLevelWithOnOff", set_list => "move_to_level:slider,0,1,254 textField", feature => "has_level" },
             0x05   => { name => "MoveWithOnOff", set_list => "move:up,down slider,0,1,254 textField", feature => undef },
             0x06   => { name => "StepWithOnOff", set_list => "step:up, down slider,0,1,254 textField", feature => undef },
             0x07   => { name => "StopWithOnOff", set_list => "stop:textField", feature => undef },
