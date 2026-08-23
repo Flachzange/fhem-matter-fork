@@ -149,23 +149,35 @@ sub MATTERDevice_Define($$) {
     my ($hash, $def) = @_;
     my @a = split("[ \t]+", $def);
 
-    return "wrong syntax: define <name> MATTERDevice <node_id>" if (@a < 3);
+    return "wrong syntax: define <name> MATTERDevice <node_id> [<endpoint_id>, <root_device_name>]" if (@a < 3);
 
     my $name    = $a[0];
     my $node_id = $a[2];
+    my $endpoint_id = $a[3] // 0;
+    my $root_device_name = $a[4] // undef;
 
     $hash->{node_id} = $node_id;
+    $hash->{endpoint_id} = $endpoint_id;
     $hash->{STATE}   = "Initialized";
-    $modules{MATTERDevice}{defptr}{$node_id} = $hash;
+    if ($root_device_name) {
+        $hash->{device} = $root_device_name;
+    }
     
-    AssignIoPort($hash);
+    if ($endpoint_id == 0) {
+        AssignIoPort($hash);
+        my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
+        $modules{MATTERDevice}{defptr}{"$io_name:$node_id"} = $hash;
+    }
     Log3 $name, 3, "MATTERDevice: Defined node_id $node_id for $name";
     return undef;
 }
 
 sub MATTERDevice_Undef($$) {
-    my ($hash, $arg) = @_;
-    delete $modules{MATTERDevice}{defptr}{$hash->{node_id}} if $hash->{node_id};
+my ($hash, $arg) = @_;
+    if ($hash->{node_id}) && ($hash->{endpoint_id} == 0) {
+        my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
+        delete $modules{MATTERDevice}{defptr}{"$io_name:$hash->{node_id}"};
+    }
     return undef;
 }
 
@@ -202,7 +214,10 @@ sub MATTERDevice_Set($$@) {
         my $list_str = join(" ", @setList);
         return "Unknown argument $cmd, choose one of $list_str";
     }
-    my $payload = undef;
+    
+    my $payload     = undef;
+    my $node_id     = $hash->{node_id};
+    my $endpoint_id = $hash->{endpoint_id} // 1;
 
     if ($cmd eq "on" || $cmd eq "off") {
         if (AttrVal($name, "has_wt", 0)) {
@@ -211,8 +226,8 @@ sub MATTERDevice_Set($$@) {
                     message_id => int(rand(100000) + 1),
                     command    => "device_command",
                     args       => {
-                        node_id      => $hash->{node_id},
-                        endpoint_id  => 1,
+                        node_id      => $node_id,
+                        endpoint_id  => int($endpoint_id),
                         cluster_id   => 0x0102,
                         command_name => "UpOrOpen"
                     }
@@ -222,8 +237,8 @@ sub MATTERDevice_Set($$@) {
                     message_id => int(rand(100000) + 1),
                     command    => "device_command",
                     args       => {
-                        node_id      => $hash->{node_id},
-                        endpoint_id  => 1,
+                        node_id      => $node_id,
+                        endpoint_id  => int($endpoint_id),
                         cluster_id   => 0x0102,
                         command_name => "DownOrClose"
                     }
@@ -234,8 +249,8 @@ sub MATTERDevice_Set($$@) {
                 message_id => int(rand(100000) + 1),
                 command    => "device_command",
                 args       => {
-                    node_id      => $hash->{node_id},
-                    endpoint_id  => 1,
+                    node_id      => $node_id,
+                    endpoint_id  => int($endpoint_id),
                     cluster_id   => 6,
                     command_name => $cmd
                 }
@@ -247,9 +262,9 @@ sub MATTERDevice_Set($$@) {
             message_id => int(rand(100000) + 1),
             command    => "device_command",
             args       => {
-                node_id => $hash->{node_id},
-                endpoint_id => 1,
-                cluster_id => 6,
+                node_id     => $node_id,
+                endpoint_id => int($endpoint_id),
+                cluster_id  => 6,
                 command_name => "Toggle"
             }
         };
@@ -259,8 +274,8 @@ sub MATTERDevice_Set($$@) {
             message_id => int(rand(100000) + 1),
             command    => "device_command",
             args       => {
-                node_id      => $hash->{node_id},
-                endpoint_id  => 1,
+                node_id      => $node_id,
+                endpoint_id  => int($endpoint_id),
                 cluster_id   => 0x0102,
                 command_name => "StopMotion"
             }
@@ -271,8 +286,8 @@ sub MATTERDevice_Set($$@) {
             message_id => int(rand(100000) + 1),
             command    => "device_command",
             args       => {
-                node_id      => $hash->{node_id},
-                endpoint_id  => 1,
+                node_id      => $node_id,
+                endpoint_id  => int($endpoint_id),
                 cluster_id   => 8,
                 command_name => "MoveToLevelWithOnOff",
                 payload      => { level => int($args[0]), transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
@@ -286,8 +301,8 @@ sub MATTERDevice_Set($$@) {
                 message_id => int(rand(100000) + 1),
                 command    => "device_command",
                 args       => {
-                    node_id      => $hash->{node_id},
-                    endpoint_id  => 1,
+                    node_id      => $node_id,
+                    endpoint_id  => int($endpoint_id),
                     cluster_id   => 0x0102,
                     command_name => "GoToLiftPercentage",
                     payload      => { liftPercent100thsValue => $position }
@@ -299,8 +314,8 @@ sub MATTERDevice_Set($$@) {
                 message_id => int(rand(100000) + 1),
                 command    => "device_command",
                 args       => {
-                    node_id      => $hash->{node_id},
-                    endpoint_id  => 1,
+                    node_id      => $node_id,
+                    endpoint_id  => int($endpoint_id),
                     cluster_id   => 8,
                     command_name => "MoveToLevelWithOnOff",
                     payload      => { level => int($args[0]) * $max_level / 100, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
@@ -314,8 +329,8 @@ sub MATTERDevice_Set($$@) {
             message_id => int(rand(100000) + 1),
             command    => "device_command",
             args       => {
-                node_id      => $hash->{node_id},
-                endpoint_id  => 1,
+                node_id      => $node_id,
+                endpoint_id  => int($endpoint_id),
                 cluster_id   => 0x0102,
                 command_name => "GoToTiltPercentage",
                 payload      => { tiltPercent100thsValue => $tilt }
@@ -343,8 +358,8 @@ sub MATTERDevice_Set($$@) {
                 message_id => int(rand(100000) + 1),
                 command    => "device_command",
                 args       => {
-                    node_id      => $hash->{node_id},
-                    endpoint_id  => 1,
+                    node_id      => $node_id,
+                    endpoint_id  => int($endpoint_id),
                     cluster_id   => 768,
                     command_name => "MoveToColor",
                     payload      => { colorX => int($x), colorY => int($y), transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
@@ -369,8 +384,8 @@ sub MATTERDevice_Set($$@) {
                 message_id => int(rand(100000) + 1),
                 command    => "device_command",
                 args       => {
-                    node_id      => $hash->{node_id},
-                    endpoint_id  => 1,
+                    node_id      => $node_id,
+                    endpoint_id  => int($endpoint_id),
                     cluster_id   => 768,
                     command_name => "MoveToHueAndSaturation",
                     payload      => { hue => int(($h / 360) * 254), saturation => int($s * 254), transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
@@ -383,8 +398,8 @@ sub MATTERDevice_Set($$@) {
             message_id => int(rand(100000) + 1),
             command    => "device_command",
             args       => {
-                node_id      => $hash->{node_id},
-                endpoint_id  => 1,
+                node_id      => $node_id,
+                endpoint_id  => int($endpoint_id),
                 cluster_id   => 768,
                 command_name => "MoveToColorTemperature",
                 payload      => { colorTemperatureMireds => int($args[0]), transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
@@ -399,20 +414,37 @@ sub MATTERDevice_Set($$@) {
             my $cluster = $MATTER_CLUSTERS{$cluster_id};
             foreach my $attr_id (keys %{$cluster->{attributes}}) {
                 my $msg_id = int(rand(100000) + 1);
-                $ioHash->{fhem}{helper}{pending_config}{$msg_id} = $hash->{node_id};
+                $ioHash->{fhem}{helper}{pending_config}{$msg_id} = $node_id;
 
                 my $config_payload = {
                     message_id   => $msg_id,
                     command      => "read_attribute",
                     args         => {
-                        node_id        => int($hash->{node_id}),
-                        attribute_path => "1/$cluster_id/$attr_id"
+                        node_id        => int($node_id),
+                        attribute_path => "$endpoint_id/$cluster_id/$attr_id"
                     }
                 };
                 $ioHash->{fhem}{helper}{sendWS}->(encode_json($config_payload));
             }
         }
-        Log3 $name, 3, "MATTERDevice: Generic getConfig triggered for node $hash->{node_id}";
+        # 2. Speziell fürs Root-Device: Zusätzlich die PartsList (Cluster 0x001D, Attribut 0x0003) abfragen,
+        # um alle untergelagerten Endpoints sauber zu ermitteln.
+        if ($endpoint_id == 0) {
+            my $msg_id = int(rand(100000) + 1);
+            $ioHash->{fhem}{helper}{pending_config}{$msg_id} = $node_id;
+
+            my $parts_payload = {
+                message_id   => $msg_id,
+                command      => "read_attribute",
+                args         => {
+                    node_id        => int($node_id),
+                    attribute_path => "0/29/3"
+                }
+            };
+            $ioHash->{fhem}{helper}{sendWS}->(encode_json($parts_payload));
+            Log3 $name, 3, "MATTERDevice: Root-device requested PartsList (0/0x001D/0x0003) for node $node_id";
+        }
+        Log3 $name, 3, "MATTERDevice: Generic getConfig triggered for node $node_id, endpoint $endpoint_id";
         return undef;
     }
     elsif ($cmd eq "frequency") {
@@ -420,8 +452,8 @@ sub MATTERDevice_Set($$@) {
             message_id => int(rand(100000) + 1),
             command    => "device_command",
             args       => {
-                node_id      => $hash->{node_id},
-                endpoint_id  => 1,
+                node_id      => $node_id,
+                endpoint_id  => int($endpoint_id),
                 cluster_id   => 768,
                 command_name => "MoveToClosestFrequency",
                 payload      => { frequency => int($args[0]) }
@@ -515,11 +547,37 @@ sub MATTERDevice_Parse($$) {
         return;
     }
 
+    my $my_endpoint = $hash->{endpoint_id} // 0;
+    
+    # Hilfs-Subroutine zur internen Weiterleitung an Root oder Child
+    my $route_attribute = sub {
+        my ($ep, $cluster, $attr, $val) = @_;
+        if ($ep == $my_endpoint) {
+            # Spezialbehandlung für PartsList (Cluster 0x001D / 29, Attribut 0x0003 / 3)
+            if ($cluster == 0x001D && $attr == 0x0003 && ref($val) eq 'ARRAY') {
+                Log3 $name, 3, "MATTERDevice: Found PartsList on node $hash->{node_id}, endpoints: " . join(", ", @{$val});
+                foreach my $child_ep (@{$val}) {
+                    # Nur Child anlegen, wenn es nicht der Root-Endpoint selbst ist
+                    if ($child_ep != $my_endpoint) {
+                        MATTERDevice_GetOrCreateChild($hash, $child_ep);
+                    }
+                }
+            }
+            MATTERDevice_ProcessAttributeValue($hash, $cluster, $attr, $val);
+        } else {
+            # Nur das Root-Device (oder valide Nodes) verteilen an Children weiter
+            my $childHash = MATTERDevice_GetOrCreateChild($hash, $ep);
+            if ($childHash) {
+                MATTERDevice_ProcessAttributeValue($childHash, $cluster, $attr, $val);
+            }
+        }
+    };
+
     # 1. ANTWORT AUF GETCONFIG (enthält "result")
     if (exists $decoded->{result} && ref($decoded->{result}) eq 'HASH') {
         while (my ($path, $value) = each %{$decoded->{result}}) {
-            if ($path =~ m{^\d+/(\d+)/(\d+)$}) {
-                MATTERDevice_ProcessAttributeValue($hash, $1, $2, $value);
+            if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
+                $route_attribute->($1, $2, $3, $value);
             }
         }
         return;
@@ -529,20 +587,20 @@ sub MATTERDevice_Parse($$) {
     if (exists $decoded->{event} && $decoded->{event} eq 'attribute_updated' && ref($decoded->{data}) eq 'ARRAY') {
         my ($node_id, $attribute_path, $value) = @{$decoded->{data}};
         if ($attribute_path =~ m{^(\d+)/(\d+)/(\d+)$}) {
-            MATTERDevice_ProcessAttributeValue($hash, $2, $3, $value);
+            $route_attribute->($1, $2, $3, $value);
             Log3 $name, 4, "MATTERDevice: Live update ($attribute_path) = $value";
         }
         return;
     }
 
     # 3. INITIAL DISCOVER (node_id + attributes map)
-    my $node_id = $decoded->{node_id};
+    my $node_id    = $decoded->{node_id};
     my $attributes = $decoded->{attributes};
     
     if ($node_id && $attributes && $hash->{node_id} eq $node_id) {
         while (my ($path, $value) = each %{$attributes}) {
-            if ($path =~ m{^\d+/(\d+)/(\d+)$}) {
-                MATTERDevice_ProcessAttributeValue($hash, $1, $2, $value);
+            if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
+                $route_attribute->($1, $2, $3, $value);
             }
         }
     }
@@ -594,6 +652,71 @@ sub MATTERDevice_GetSetList($) {
     push(@list, "getConfig:noArg");
     
     return @list;
+}
+
+sub MATTERDevice_GetOrCreateChild($$) {
+    my ($root_hash, $ep_id) = @_;
+    
+    # 1. SCHNELLTEST: Ist das Child bereits im Root-Hash gecached?
+    return $root_hash->{"endpoint_$ep_id"} if $root_hash->{"endpoint_$ep_id"};
+
+    my $node_id   = $root_hash->{node_id};
+    my $root_name = $root_hash->{NAME};
+    my $target_io = $root_hash->{IODev} ? $root_hash->{IODev}{NAME} : undef;
+    my $child_hash = undef;
+
+    # 2. FALLBACK / START: Global in %defs suchen
+    foreach my $d (keys %defs) {
+        my $d_hash = $defs{$d};
+        if ($d_hash && $d_hash->{TYPE} eq 'MATTERDevice' && 
+            defined($d_hash->{node_id}) && $d_hash->{node_id} eq $node_id &&
+            defined($d_hash->{endpoint_id}) && $d_hash->{endpoint_id} == $ep_id) {
+            
+            # Prüfen, ob das Child auch zu diesem Root-Device gehört (über den Namen im Hash)
+            if ($d_hash->{device} && $d_hash->{device} eq $root_name) {
+                $child_hash = $d_hash;
+                last;
+            }
+            
+            # Fallback, falls {device} noch leer ist, aber das IODev übereinstimmt
+            my $d_io = $d_hash->{IODev} ? $d_hash->{IODev}{NAME} : undef;
+            if ((!$d_hash->{device}) && (!$target_io || !$d_io || $target_io eq $d_io)) {
+                $child_hash = $d_hash;
+                last;
+            }
+        }
+    }
+
+    # 3. NEU ANLEGEN: Wenn es wirklich gar nicht existiert
+    unless ($child_hash) {
+        my $child_name = "${root_name}_EP${ep_id}";
+        
+        Log3 $root_hash, 3, "MATTERDevice: Auto-creating sub-device $child_name for Node ID $node_id, Endpoint $ep_id";
+        
+        # WICHTIG: Hier übergeben wir jetzt exakt die Parameter, die deine neue Define-Funktion erwartet!
+        # Syntax: define <name> MATTERDevice <node_id> <endpoint_id> <root_device_name>
+        CommandDefine(undef, "$child_name MATTERDevice $node_id $ep_id $root_name");
+        
+        $child_hash = $defs{$child_name};
+    }
+
+    # 4. INITIALISIEREN & IM ROOT-HASH CACHEN
+    if ($child_hash) {
+        $child_hash->{node_id}     = $node_id;
+        $child_hash->{endpoint_id} = $ep_id;
+        $child_hash->{device}      = $root_name;
+        
+        if ($root_hash->{IODev} && !$child_hash->{IODev}) {
+            $child_hash->{IODev} = $root_hash->{IODev};
+        }
+        
+        # Ab in den Cache damit für die Zukunft!
+        $root_hash->{"endpoint_$ep_id"} = $child_hash;
+    } else {
+        Log3 $root_hash, 1, "MATTERDevice: ERROR - Could not get or create child device for Endpoint $ep_id!";
+    }
+
+    return $child_hash;
 }
 
 1;

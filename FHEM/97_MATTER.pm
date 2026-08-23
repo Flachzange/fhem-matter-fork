@@ -300,7 +300,7 @@ sub MATTER_SendWebSocketText($$) {
 
 sub MATTER_ParseMessage($$) {
     my ($hash, $payload) = @_;
-    my $name = $hash->{NAME};
+    my $name    = $hash->{NAME}; # Name des IO-Moduls (z.B. MATTER_Server1)
     
     my $decoded = eval { decode_json($payload) };
     if ($@) {
@@ -321,16 +321,19 @@ sub MATTER_ParseMessage($$) {
         return;
     }
 
-    # B) Live-Events (z.B. attribute_updated) direkt ans Child weiterleiten
+    # B) Live-Events (z.B. attribute_updated) an das Root-Device der Node weiterleiten
     if (exists $decoded->{event} && $decoded->{event} eq "attribute_updated" && ref($decoded->{data}) eq 'ARRAY') {
         my ($node_id, undef, undef) = @{$decoded->{data}};
         if (defined $node_id) {
-            foreach my $d (keys %{$modules{MATTERDevice}{defptr}}) {
-                my $childHash = $modules{MATTERDevice}{defptr}{$d};
-                if ($childHash && defined($childHash->{node_id}) && $childHash->{node_id} == $node_id) {
-                    MATTERDevice_Parse($childHash, $payload);
-                    last;
-                }
+            # Wir suchen das Root-Device (Endpoint 0) exakt passend zu DIESEM IO und DIESER Node!
+            my $root_key  = "$name:$node_id";
+            my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
+            
+            if ($root_hash) {
+                # Das Root-Device verarbeitet das Event (und reicht es an den Endpoint weiter)
+                MATTERDevice_Parse($root_hash, $payload);
+            } else {
+                Log3 $name, 3, "MATTER: Received event for unknown root node $node_id on IO $name";
             }
         }
         return;
@@ -341,12 +344,10 @@ sub MATTER_ParseMessage($$) {
         # Antwort auf read_attribute (getConfig)
         if (my $node_id = delete $hash->{helper}{pending_config}{$msg_id}) {
             if ($decoded->{result}) {
-                foreach my $d (keys %{$modules{MATTERDevice}{defptr}}) {
-                    my $childHash = $modules{MATTERDevice}{defptr}{$d};
-                    if ($childHash && defined($childHash->{node_id}) && $childHash->{node_id} == $node_id) {
-                        MATTERDevice_Parse($childHash, $payload);
-                        last;
-                    }
+                my $root_key  = "$name:$node_id";
+                my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
+                if ($root_hash) {
+                    MATTERDevice_Parse($root_hash, $payload);
                 }
             }
             return;
@@ -356,7 +357,7 @@ sub MATTER_ParseMessage($$) {
         my $cmd_type = delete $hash->{helper}{pending_command}{$msg_id};
         if ($cmd_type && $cmd_type eq "get_nodes") {
             if ($decoded->{result} && ref($decoded->{result}) eq 'ARRAY') {
-                Log3 $name, 3, "MATTER: Processing node list from get_nodes response...";
+                Log3 $name, 3, "MATTER: Processing node list from get_nodes response on IO $name...";
 
                 foreach my $node (@{$decoded->{result}}) {
                     my $node_id   = $node->{node_id};
@@ -365,48 +366,42 @@ sub MATTER_ParseMessage($$) {
                     $node_name =~ s/[^a-zA-Z0-9_\.-]/_/g;
                     $node_name = "MATTER_" . $node_name;
 
-                    my $childHash = undef;
-                    foreach my $d (keys %{$modules{MATTERDevice}{defptr}}) {
-                        if ($modules{MATTERDevice}{defptr}{$d}->{node_id} eq $node_id) {
-                            $childHash = $modules{MATTERDevice}{defptr}{$d};
-                            last;
-                        }
-                    }
+                    # Prüfen, ob das Root-Device (Endpoint 0) für DIESES IO schon existiert
+                    my $root_key  = "$name:$node_id";
+                    my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
                     
-                    unless ($childHash) {
-                        Log3 $name, 3, "MATTER: Auto-creating device $node_name for Node ID $node_id";
+                    unless ($root_hash) {
+                        Log3 $name, 3, "MATTER: Auto-creating root device $node_name for Node ID $node_id on IO $name";
+                        
+                        # Syntax für Root-Device: define <name> MATTERDevice <node_id>
                         CommandDefine(undef, "$node_name MATTERDevice $node_id");
                         
-                        foreach my $d (keys %{$modules{MATTERDevice}{defptr}}) {
-                            if ($modules{MATTERDevice}{defptr}{$d}->{node_id} eq $node_id) {
-                                $childHash = $modules{MATTERDevice}{defptr}{$d};
-                                last;
-                            }
-                        }
-                        $childHash = $defs{$node_name} if (!$childHash);
-
-                        if ($childHash) {
-                            $childHash->{IODev} = $hash;
-                            Log3 $name, 3, "MATTER: Assigned IODev $name to $node_name";
+                        $root_hash = $defs{$node_name};
+                        if ($root_hash) {
+                            # IODev explizit zuweisen, falls AssignIoPort beim Define nicht reichte
+                            $root_hash->{IODev} = $hash;
+                            # Im defptr für dieses IO registrieren
+                            $modules{MATTERDevice}{defptr}{$root_key} = $root_hash;
+                            Log3 $name, 3, "MATTER: Assigned IODev $name to Root-Device $node_name";
                         }
                     }
 
-                    # Initiale Attribute direkt übergeben, falls vorhanden
-                    if ($childHash && $node->{attributes}) {
-                        MATTERDevice_Parse($childHash, encode_json({ node_id => $node_id, attributes => $node->{attributes} }));
+                    # Initiale Attribute ans Root-Device übergeben (das verteilt es an die Endpoints)
+                    if ($root_hash && $node->{attributes}) {
+                        MATTERDevice_Parse($root_hash, encode_json({ node_id => $node_id, attributes => $node->{attributes} }));
                     }
                 }
             }
             return;
         }
+        
         # Antwort auf commission (Paired ein neues Gerät)
         if ($cmd_type && $cmd_type eq "commission") {
             if ($decoded->{result}) {
-                Log3 $name, 3, "MATTER: Device successfully commissioned! Triggering discover...";
-                # Optional: Automatisch discover aufrufen, damit das neue Device sofort angelegt wird
+                Log3 $name, 3, "MATTER: Device successfully commissioned on IO $name! Triggering discover...";
                 CommandSet(undef, "$name discover");
             } else {
-                Log3 $name, 2, "MATTER: Commissioning failed: " . ($decoded->{error}{message} // "Unknown error");
+                Log3 $name, 2, "MATTER: Commissioning failed on IO $name: " . ($decoded->{error}{message} // "Unknown error");
             }
             return;
         }
