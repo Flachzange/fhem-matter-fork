@@ -457,8 +457,8 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     my $is_reading = $attr_info->{is_reading} // 0;
     my $is_attribute = $attr_info->{is_attribute} // 0;
 
-    # Bool-Handling für JSON
-    if (ref($value) && $value->isa('JSON::PP::Boolean')) {
+    # Bool-Handling für JSON (nur prüfen, wenn es überhaupt ein Objekt/Blessing ist)
+    if (ref($value) && blessed($value) && $value->isa('JSON::PP::Boolean')) {
         $value = $value ? 1 : 0;
     }
 
