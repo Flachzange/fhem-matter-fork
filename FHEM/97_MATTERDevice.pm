@@ -111,8 +111,8 @@ my %MATTER_CLUSTERS = (
             0x0004 => { name => "current_y",          feature => "has_xy", is_reading => 1, is_attribute => 0 },
             0x0007 => { name => "color_temperature_mireds", feature => "has_ct", is_reading => 1, is_attribute => 0 },
             0x0010 => { name => "color_modes",        feature => undef, is_reading => 1, is_attribute => 0 },
-            0x4003 => { name => "color_temp_min",     feature => "has_ct", is_reading => 0, is_attribute => 1 },
-            0x4004 => { name => "color_temp_max",     feature => "has_ct", is_reading => 0, is_attribute => 1 },
+            0x400B => { name => "color_temp_min",     feature => "has_ct", is_reading => 0, is_attribute => 1 },
+            0x400C => { name => "color_temp_max",     feature => "has_ct", is_reading => 0, is_attribute => 1 },
         },
     },
 );
