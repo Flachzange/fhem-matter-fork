@@ -410,9 +410,11 @@ sub MATTERDevice_Set($$@) {
         my $ioHash = $hash->{IODev};
         return "No IODev assigned to $name" if (!$ioHash || !$ioHash->{fhem}{helper}{sendWS});
 
-        foreach my $cluster_id (keys %MATTER_CLUSTERS) {
-            my $cluster = $MATTER_CLUSTERS{$cluster_id};
-            foreach my $attr_id (keys %{$cluster->{attributes}}) {
+        foreach my $c_id (keys %MATTER_CLUSTERS) {
+            my $cluster = $MATTER_CLUSTERS{$c_id};
+            my $cluster_id = $c_id + 0;
+            foreach my $a_id (keys %{$cluster->{attributes}}) {
+                my $attr_id = $a_id + 0;
                 my $msg_id = int(rand(100000) + 1);
                 $ioHash->{fhem}{helper}{pending_config}{$msg_id} = $node_id;
 
