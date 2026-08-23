@@ -7,52 +7,108 @@ use JSON;
 
 # Zentrale Definition: Ein Cluster enthält Name, Attribute (mit ID & Feature-Zuordnung)
 my %MATTER_CLUSTERS = (
-    6 => {
+    0x0006 => {
         name       => "OnOff",
         attributes => {
-            0 => { name => "state", feature => "has_onoff" },
+            0x0000 => { name => "state", feature => "has_onoff", is_reading => 0, is_attribute => 0},
+            0xFFF9 => { name => "onoff_cmds_accepted", feature => undef, is_reading => 0, is_attribute => 0 }
+        },
+        commands   => {
+            0x00   => { name => "Off",    set_list => "off:noArg", feature => "has_onoff" },
+            0x01   => { name => "On",     set_list => "on:noArg", feature => "has_onoff" },
+            0x02   => { name => "Toggle", set_list => "toggle:noArg", feature => "has_onoff" },
+            0x40   => { name => "OffWithEffect", set_list => "off_with_effect:DelayedAllOff,DyingLight slider,0,1,8", feature => "has_lighting" },
+            0x41   => { name => "OnWithRecallGlobalScene", set_list => "on_with_recall_global_scene:noArg", feature => "has_lighting" },
+            0x42   => { name => "OnWithTimedOff", set_list => "on_with_timed_off:onOffControlBitmap textField textField", feature => "has_lighting" },
         },
     },
-    8 => {
+    0x0008 => {
         name       => "LevelControl",
         attributes => {
-            0     => { name => "brightness", feature => "has_level", is_reading => 1, is_attribute => 0 },
-            2     => { name => "min_brightness", feature => "has_level", is_reading => 0, is_attribute => 1 },
-            3     => { name => "max_brightness", feature => "has_level", is_reading => 0, is_attribute => 1 },
-            4     => { name => "frequency", feature => "has_frequency", is_reading => 1, is_attribute => 0 },
-            5     => { name => "min_frequency", feature => "has_frequency", is_reading => 0, is_attribute => 1 },
-            6     => { name => "max_frequency", feature => "has_frequency", is_reading => 0, is_attribute => 1 },
-            16384 => { name => "max_level",  feature => "has_level", is_reading => 1, is_attribute => 0 },
+            0x0000 => { name => "brightness", feature => "has_level", is_reading => 1, is_attribute => 0 },
+            0x0002 => { name => "min_brightness", feature => "has_level", is_reading => 0, is_attribute => 1 },
+            0x0003 => { name => "max_brightness", feature => "has_level", is_reading => 0, is_attribute => 1 },
+            0x0004 => { name => "frequency", feature => "has_frequency", is_reading => 1, is_attribute => 0 },
+            0x0005 => { name => "min_frequency", feature => "has_frequency", is_reading => 0, is_attribute => 1 },
+            0x0006 => { name => "max_frequency", feature => "has_frequency", is_reading => 0, is_attribute => 1 },
+            0x4000 => { name => "max_level",  feature => "has_level", is_reading => 1, is_attribute => 0 },
         },
+        commands   => {
+            0x00   => { name => "MoveToLevel", set_list => "move_to_level:slider,0,1,254 textField", feature => "has_level" },
+            0x01   => { name => "Move", set_list => "move:up,down slider,0,1,254 textField", feature => undef },
+            0x02   => { name => "Step", set_list => "step:up, down slider,0,1,254 textField", feature => undef },
+            0x03   => { name => "Stop", set_list => "stop:textField", feature => undef },
+            0x04   => { name => "MoveToLevelWithOnOff", set_list => "move_to_level:slider,0,1,254 textField", feature => "has_level" }
+            0x05   => { name => "MoveWithOnOff", set_list => "move:up,down slider,0,1,254 textField", feature => undef },
+            0x06   => { name => "StepWithOnOff", set_list => "step:up, down slider,0,1,254 textField", feature => undef },
+            0x07   => { name => "StopWithOnOff", set_list => "stop:textField", feature => undef },
+            0x08   => { name => "MoveToClosestFrequency", set_list => "move_to_frequency:textField", feature => "has_frequency" },
+        }
     },
-    40 => {
+    0x0028 => {
         name       => "BasicInformation",
         attributes => {
-            1  => { name => "producer",         feature => undef, is_reading => 1, is_attribute => 0 },
-            3  => { name => "model",            feature => undef, is_reading => 1, is_attribute => 0 },
-            4  => { name => "vendor_id",        feature => undef, is_reading => 1, is_attribute => 0 },
-            8  => { name => "hardware_version", feature => undef, is_reading => 1, is_attribute => 0 },
-            10 => { name => "firmware_version", feature => undef, is_reading => 1, is_attribute => 0 },
-            18 => { name => "serial_number",    feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0001 => { name => "producer",         feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0003 => { name => "model",            feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0004 => { name => "vendor_id",        feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0008 => { name => "hardware_version", feature => undef, is_reading => 1, is_attribute => 0 },
+            0x000A => { name => "firmware_version", feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0012 => { name => "serial_number",    feature => undef, is_reading => 1, is_attribute => 0 },
         },
     },
     0x005B => {
         name       => "Air Quality",
         attributes => {
-            0     => { name => "air_quality",   feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0000 => { name => "air_quality",   feature => undef, is_reading => 1, is_attribute => 0 },
         },
     },
-    768 => {
+    0x0102 => {
+        name       => "WindowCovering",
+        attributes => {
+            0x0000 => { name => "wc_type", feature => "has_wc", is_reading => 1, is_attrinute => 0 },
+            0x0001 => { name => "physical_closed_limit_lift", feature => undef. is_reading => 0, is_attribute => 1 },
+            0x0002 => { name => "pysical_closed_limit_tilt", feature => undef, is_reading => 0, is_attribute => 1 },
+            0x0003 => { name => "current_position_lift", feature => "has_position_lift", is_reading => 1, is_attribute => 0},
+            0x0004 => { name => "current_position_tilt", feature => "has_position_tilt", is_reading => 1, is_attribute => 0},
+            0x0005 => { name => "number_of_actuations_lift", feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0006 => { name => "number_of_actuations_tilt", features => undef, is_reading => 1, is_attribute => 0},
+            0x0007 => { name => "ws_config_status", features => undef, is_reading => 1, is_attribute => 0},
+            0x0008 => { name => "current_position_lift_percentage", feature => "has_position_lift", is_reading => 1, is_attribute => 0 },
+            0x0009 => { name => "current_position_tilt_percentage", feature => "has_position_tilt", is_reading => 1, is_attribute => 0 },
+            0x000A => { name => "wc_operational_status", feature => undef, is_reading => 1, is_attribute => 0 },
+            0x000B => { name => "target_position_lift_percent_100_ths", feature => undef, is_reading => 1, is_attribute => 0 },
+            0x000C => { name => "target_position_tilt_percent_100_ths", feature => undef, is_reading => 1, is_attribute => 0 },
+            0x000D => { name => "wc_end_product_type", feature => undef, is_reading => 1, is_attribute => 0},
+            0x000E => { name => "current_position_lift_percent_100_ths", feature => "has_position_lift", is_reading => 1, is_attribute => 0 },
+            0x000F => { name => "current_position_tilt_percent_100_ths", feature => "has_position_tilt", is_reading => 1, is_attribute => 0 },
+            0x0010 => { name => "installed_open_limit_lift", feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0011 => { name => "installed_closed_limit_lift", feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0012 => { name => "installed_open_limit_tilt", feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0013 => { name => "installed_closed_limit_tilt", feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0017 => { name => "wc_mode", feature => undef, is_reading => 1, is_attribute => 0 },
+            0x001A => { name => "wc_safety_status", feature => undef, is_reading => 1, is_attribute => 0 },
+        },
+        commands => {
+            0x00   => { name => "UpOrOpen", set_list => "on:noargs", feature => "has_wc" },
+            0x01   => { name => "DownOrClose", set_list => "off:noargs", feature => "has_wc" },
+            0x02   => { name => "StopMotion", set_list => "stop:noargs", feature => "has_wc" },
+            0x04   => { name => "GoToLiftValue", set_list => "lift_value:textField", feature => "has_position_lift" },
+            0x05   => { name => "GoToLiftPercentage", set_list => "prc:slieder,0,1,100", feature => "has_position_lift" },
+            0x07   => { name => "TiltValue", set_list => "tilt:textField", feature => "has_position_tilt" },
+            0x08   => { name => "GoToTiltPercentage", set_list => "prc:slieder,0,1,100", feature => "has_position_tilt" },
+        }
+    }
+    0x0300 => {
         name       => "ColorControl",
         attributes => {
-            0     => { name => "current_hue",        feature => "has_hue", is_reading => 1, is_attribute => 0 },
-            1     => { name => "current_saturation", feature => "has_saturation", is_reading => 1, is_attribute => 0 },
-            3     => { name => "current_x",          feature => "has_xy", is_reading => 1, is_attribute => 0 },
-            4     => { name => "current_y",          feature => "has_xy", is_reading => 1, is_attribute => 0 },
-            7     => { name => "color_temperature_mireds", feature => "has_ct", is_reading => 1, is_attribute => 0 },
-            16    => { name => "color_modes",        feature => undef, is_reading => 1, is_attribute => 0 },
-            16395 => { name => "color_temp_min",     feature => "has_ct", is_reading => 0, is_attribute => 1 },
-            16396 => { name => "color_temp_max",     feature => "has_ct", is_reading => 0, is_attribute => 1 },
+            0x0000 => { name => "current_hue",        feature => "has_hue", is_reading => 1, is_attribute => 0 },
+            0x0001 => { name => "current_saturation", feature => "has_saturation", is_reading => 1, is_attribute => 0 },
+            0x0003 => { name => "current_x",          feature => "has_xy", is_reading => 1, is_attribute => 0 },
+            0x0004 => { name => "current_y",          feature => "has_xy", is_reading => 1, is_attribute => 0 },
+            0x0007 => { name => "color_temperature_mireds", feature => "has_ct", is_reading => 1, is_attribute => 0 },
+            0x0010 => { name => "color_modes",        feature => undef, is_reading => 1, is_attribute => 0 },
+            0x4003 => { name => "color_temp_min",     feature => "has_ct", is_reading => 0, is_attribute => 1 },
+            0x4004 => { name => "color_temp_max",     feature => "has_ct", is_reading => 0, is_attribute => 1 },
         },
     },
 );
@@ -72,6 +128,9 @@ sub MATTERDevice_Initialize($) {
                         "has_saturation:0,1 " .
                         "has_xy:0,1 " .
                         "has_frequency:0,1 " .
+                        "has_wc:0,1 " .
+                        "has_position_lift:0,1 " .
+                        "has_position_tilt:0,1 " .
                         "color_temp_min " .
                         "color_temp_max " .
                         "min_brightness " .
@@ -142,16 +201,42 @@ sub MATTERDevice_Set($$@) {
     my $payload = undef;
 
     if ($cmd eq "on" || $cmd eq "off") {
-        $payload = {
-            message_id => int(rand(100000) + 1),
-            command    => "device_command",
-            args       => {
-                node_id      => $hash->{node_id},
-                endpoint_id  => 1,
-                cluster_id   => 6,
-                command_name => $cmd
+        if (AttrVal($name, "has_wt", 0)) {
+            if ($cmd eq "on") {
+                $payload = {
+                    message_id => int(rand(100000) + 1),
+                    command    => "device_command",
+                    args       => {
+                        node_id      => $hash->{node_id},
+                        endpoint_id  => 1,
+                        cluster_id   => 0x0102,
+                        command_name => "UpOrOpen"
+                    }
+                };
+            } else {
+                $payload = {
+                    message_id => int(rand(100000) + 1),
+                    command    => "device_command",
+                    args       => {
+                        node_id      => $hash->{node_id},
+                        endpoint_id  => 1,
+                        cluster_id   => 0x0102,
+                        command_name => "DownOrClose"
+                    }
+                };
             }
-        };
+        } else {
+            $payload = {
+                message_id => int(rand(100000) + 1),
+                command    => "device_command",
+                args       => {
+                    node_id      => $hash->{node_id},
+                    endpoint_id  => 1,
+                    cluster_id   => 6,
+                    command_name => $cmd
+                }
+            };
+        }
     }
     elsif ($cmd eq "toggle") {
         $payload = {
@@ -161,7 +246,19 @@ sub MATTERDevice_Set($$@) {
                 node_id => $hash->{node_id},
                 endpoint_id => 1,
                 cluster_id => 6,
-                command_name => "toggle"
+                command_name => "Toggle"
+            }
+        };
+    }
+    elsif ($cmd eq "stop") {
+        $payload = {
+            message_id => int(rand(100000) + 1),
+            command    => "device_command",
+            args       => {
+                node_id      => $hash->{node_id},
+                endpoint_id  => 1,
+                cluster_id   => 0x0102,
+                command_name => "StopMotion"
             }
         };
     }
@@ -179,16 +276,45 @@ sub MATTERDevice_Set($$@) {
         };
     }
     elsif ($cmd eq "pct") {
-        my $max_level = AttrVal($name, "max_brightness", 254);
+        if (AttrVal($name, "has_position_lift", 0)) {
+            my $position = $args[0] * 100;
+            $payload = {
+                message_id => int(rand(100000) + 1),
+                command    => "device_command",
+                args       => {
+                    node_id      => $hash->{node_id},
+                    endpoint_id  => 1,
+                    cluster_id   => 0x0102,
+                    command_name => "GoToLiftPercentage",
+                    payload      => { liftPercent100thsValue => $position }
+                }
+            };
+        } else {
+            my $max_level = AttrVal($name, "max_brightness", 254);
+            $payload = {
+                message_id => int(rand(100000) + 1),
+                command    => "device_command",
+                args       => {
+                    node_id      => $hash->{node_id},
+                    endpoint_id  => 1,
+                    cluster_id   => 8,
+                    command_name => "MoveToLevelWithOnOff",
+                    payload      => { level => int($args[0]) * $max_level / 100, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
+                }
+            };
+        }
+    }
+    elsif ($cmd eq "tilt") {
+        my $tilt = $args[0] * 100;
         $payload = {
             message_id => int(rand(100000) + 1),
             command    => "device_command",
             args       => {
                 node_id      => $hash->{node_id},
                 endpoint_id  => 1,
-                cluster_id   => 8,
-                command_name => "MoveToLevelWithOnOff",
-                payload      => { level => int($args[0]) * $max_level / 100, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
+                cluster_id   => 0x0102,
+                command_name => "GoToTiltPercentage",
+                payload      => { tiltPercent100thsValue => $tilt }
             }
         };
     }
@@ -339,6 +465,18 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     if ($cluster_id == 6 && $attr_id == 0) {
         my $state_val = $value ? "on" : "off";
         readingsBulkUpdate($hash, "state", $state_val);
+    }
+    # Spezieller Fall: Commands Accepted
+    elsif ($cluster_id == 6 && $attr_id == 0xFFF9) {
+        for my $cmd_id (@{$value}) {
+            my $cmd_info = $cluster->{commands}{$cmd_id};
+            if ($cmd_info) {
+                my $feature = $cmd_info->{feature};
+                if (defined($feature)) {
+                    MATTERDevice_SetAttributeIfNotExists($name, $feature, 1);
+                }
+            }
+        }
     } 
     # Alle anderen Werte direkt als Reading speichern
     elsif (defined($attr_name)) {
@@ -428,9 +566,26 @@ sub MATTERDevice_GetSetList($) {
     if (AttrVal($name, "has_frequency", 0)) {
         my $min_freq = AttrVal($name, "min_frequency", 50);
         my $max_freq = AttrVal($name, "max_frequency", 60);
-        push(@list, "frequency:slider,$min_freq,$min_freq,$max_freq");
+        push(@list, "frequency:slider,$min_freq,1,$max_freq");
+    }
+
+    if (AttrVal($name, "has_lighting",0)) {
+        push(@list, $MATTER_CLUSTERS{0x0006}{commands}{0x40}{set_list});
+        push(@list, $MATTER_CLUSTERS{0x0006}{commands}{0x41}{set_list});
+        push(@list, $MATTER_CLUSTERS{0x0006}{commands}{0x42}{set_list});
     }
     
+    if (AttrVal($name, "has_wt", 0)) {
+        push(@list, "on:noArg", "off:noArg", "stop:noArg");
+    }
+
+    if (AttrVal($name, "has_position_lift", 0)) {
+        push(@list, "pct:slider,0,1,100");
+    }
+    if (AttrVal($name, "has_position_tilt", 0)) {
+        push(@list, "tilt:slider,0,1,100");
+    }
+
     push(@list, "rgb:colorpicker,RGB") if (AttrVal($name, "has_color", 0) || AttrVal($name, "has_xy", 0) || AttrVal($name, "has_hue", 0));
     push(@list, "getConfig:noArg");
     
