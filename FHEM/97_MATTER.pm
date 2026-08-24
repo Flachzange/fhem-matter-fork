@@ -18,7 +18,7 @@ my %MATTER_sets = (
     "connect"  => "noArg",
     "discover" => "noArg",
     "commissionCode"   => "textField",
-    "setWifiCredentials" => "textField textField"
+    "setWifiCredentials" => "textField textField",
     "getCredentials"  => "noArg",
 );
 
