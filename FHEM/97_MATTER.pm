@@ -18,7 +18,7 @@ my %MATTER_sets = (
     "connect"  => "noArg",
     "discover" => "noArg",
     "commissionCode"   => "textField",
-    "setWifiCredentials" => "textField textField",
+    "setWifiCredentials" => "textField",
     "getCredentials"  => "noArg",
 );
 
@@ -125,37 +125,47 @@ sub MATTER_Set {
         return undef;
     }
     elsif ($opt eq "setWifiCredentials") {
-        my $ssid = $args[0];
-        my $credentials = $args[1];
-        my $id = $args[2];
-        return "Please provide SSID, credentials and ID as arguments." if ((!$ssid) || (!$credentials));
+# Wir fügen alle Argumente wieder mit Leerzeichen zusammen, 
+        # falls FHEM sie trotz allem aufgeteilt hat:
+        my $full_arg_string = join(" ", @args);
+        
+        # Versuchen, die Werte per Regex zu extrahieren (unterstützt auch "Anführungszeichen")
+        # Beispiel: "Mein WLAN" "Geheimes Passwort" 1
+        my ($ssid, $credentials, $id);
+        
+        if ($full_arg_string =~ /^\s*"(.*?)"\s+"(.*?)"\s*(.*)$/) {
+            $ssid = $1;
+            $credentials = $2;
+            $id = $3;
+        } elsif ($full_arg_string =~ /^\s*'(.*?)'\s+'(.*?)'\s*(.*)$/) {
+            $ssid = $1;
+            $credentials = $2;
+            $id = $3;
+        } else {
+            # Fallback: Wenn keine Anführungszeichen genutzt wurden, nehmen wir das erste als SSID, den Rest als Passwort
+            my @parts = split(" ", $full_arg_string);
+            $ssid = shift @parts;
+            $id = pop @parts if (@parts > 1 && $parts[-1] =~ /^\d+$/);
+            $credentials = join(" ", @parts);
+        }
+
+        return "Please provide SSID and credentials. Usage: set <dev> setWifiCredentials \"SSID\" \"Password\" [ID]" if (!$ssid || !$credentials);
 
         my $msg_id = int(rand(100000) + 1);
         $hash->{helper}{pending_command}{$msg_id} = "set_wifi_credentials";
-        my $payload = undef;
-        # Payload für den python-matter-server aufbauen
-        if (!$id) {
-            $payload = {
-                message_id => $msg_id,
-                command    => "set_wifi_credentials",
-                args       => {
-                    ssid         => $ssid,
-                    credentials  => $credentials,
-                    id           => $id,
-                }
-            };
-        } else {
-            $payload = {
-                message_id => $msg_id,
-                command    => "set_wifi_credentials",
-                args       => {
-                    ssid         => $ssid,
-                    credentials  => $credentials,
-                }
-            };
-        }
+        
+        my $payload = {
+            message_id => $msg_id,
+            command    => "set_wifi_credentials",
+            args       => {
+                ssid        => $ssid,
+                credentials => $credentials,
+            }
+        };
+        
+        $payload->{args}{id} = int($id) if (defined($id) && $id ne '');
 
-        Log3 $name, 3, "MATTER: Set Wifi credentials for $name with SSID $ssid and credentials...";
+        Log3 $name, 3, "MATTER: Set Wifi credentials for SSID: '$ssid' (ID: " . ($id // 'none') . ")";
         MATTER_SendJsonCommand($hash, $payload);
         return undef;
     }
@@ -169,7 +179,7 @@ sub MATTER_Set {
             command    => "get_all_credentials",
         };
 
-        Log3 $name, 3, "MATTER: Commissioning device with manual code (network_only)...";
+        Log3 $name, 3, "MATTER: Get credentials...";
         MATTER_SendJsonCommand($hash, $payload);
         return undef;
     }
