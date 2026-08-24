@@ -132,7 +132,7 @@ sub MATTER_Set {
 
         my $msg_id = int(rand(100000) + 1);
         $hash->{helper}{pending_command}{$msg_id} = "set_wifi_credentials";
-        my $paylod = undef;
+        my $payload = undef;
         # Payload für den python-matter-server aufbauen
         if (!$id) {
             $payload = {
