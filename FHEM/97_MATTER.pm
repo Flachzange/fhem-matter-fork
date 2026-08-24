@@ -128,14 +128,14 @@ sub MATTER_Set {
         my $ssid = $args[0];
         my $credentials = $args[1];
         my $id = $args[2];
-        return "Please provide SSID, credentials and ID as arguments." if ((!$ssid) || (!$credendtials));
+        return "Please provide SSID, credentials and ID as arguments." if ((!$ssid) || (!$credentials));
 
         my $msg_id = int(rand(100000) + 1);
         $hash->{helper}{pending_command}{$msg_id} = "set_wifi_credentials";
-
+        my $paylod = undef
         # Payload für den python-matter-server aufbauen
         if (defined($id)) {
-            my $payload = {
+            $payload = {
                 message_id => $msg_id,
                 command    => "set_wifi_credentials",
                 args       => {
@@ -145,7 +145,7 @@ sub MATTER_Set {
                 }
             };
         } else {
-            my $payload = {
+            $payload = {
                 message_id => $msg_id,
                 command    => "set_wifi_credentials",
                 args       => {
