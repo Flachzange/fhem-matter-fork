@@ -125,31 +125,33 @@ sub MATTER_Set {
         return undef;
     }
     elsif ($opt eq "setWifiCredentials") {
-# Wir fügen alle Argumente wieder mit Leerzeichen zusammen, 
-        # falls FHEM sie trotz allem aufgeteilt hat:
+        # Wir holen den kompletten String aus @args
         my $full_arg_string = join(" ", @args);
         
-        # Versuchen, die Werte per Regex zu extrahieren (unterstützt auch "Anführungszeichen")
-        # Beispiel: "Mein WLAN" "Geheimes Passwort" 1
+        # Beispiel-Input: "FRITZ!Box 7530" geheim_passwort 1
+        # Wir trennen am ersten Leerzeichen, es sei denn es ist in Anführungszeichen
         my ($ssid, $credentials, $id);
         
-        if ($full_arg_string =~ /^\s*"(.*?)"\s+"(.*?)"\s*(.*)$/) {
+        if ($full_arg_string =~ /^"(.*?)"\s+(.*)$/ || $full_arg_string =~ /^'(.*?)'\s+(.*)$/) {
             $ssid = $1;
-            $credentials = $2;
-            $id = $3;
-        } elsif ($full_arg_string =~ /^\s*'(.*?)'\s+'(.*?)'\s*(.*)$/) {
-            $ssid = $1;
-            $credentials = $2;
-            $id = $3;
+            my $rest = $2;
+            # Rest aufteilen in Passwort und optionale ID
+            my @parts = split(" ", $rest);
+            $id = pop @parts if (@parts > 1 && $parts[-1] =~ /^\d+$/);
+            $credentials = join(" ", @parts);
         } else {
-            # Fallback: Wenn keine Anführungszeichen genutzt wurden, nehmen wir das erste als SSID, den Rest als Passwort
+            # Fallback, falls keine Anführungszeichen da waren
             my @parts = split(" ", $full_arg_string);
             $ssid = shift @parts;
             $id = pop @parts if (@parts > 1 && $parts[-1] =~ /^\d+$/);
             $credentials = join(" ", @parts);
         }
 
-        return "Please provide SSID and credentials. Usage: set <dev> setWifiCredentials \"SSID\" \"Password\" [ID]" if (!$ssid || !$credentials);
+        # Zur Sicherheit: Falls doch irgendwo Anführungszeichen hängen geblieben sind, hart entfernen
+        $ssid =~ s/^["']|["']$//g;
+        $credentials =~ s/^["']|["']$//g;
+
+        return "Please provide SSID and credentials. Usage: set <dev> setWifiCredentials \"SSID\" Password [ID]" if (!$ssid || !$credentials);
 
         my $msg_id = int(rand(100000) + 1);
         $hash->{helper}{pending_command}{$msg_id} = "set_wifi_credentials";
@@ -165,7 +167,7 @@ sub MATTER_Set {
         
         $payload->{args}{id} = int($id) if (defined($id) && $id ne '');
 
-        Log3 $name, 3, "MATTER: Set Wifi credentials for SSID: '$ssid' (ID: " . ($id // 'none') . ")";
+        Log3 $name, 3, "MATTER: Set Wifi credentials for SSID: '$ssid' / Pass: '$credentials' (ID: " . ($id // 'none') . ")";
         MATTER_SendJsonCommand($hash, $payload);
         return undef;
     }
