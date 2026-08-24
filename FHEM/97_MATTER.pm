@@ -482,6 +482,12 @@ sub MATTER_ParseMessage($$) {
             return;
         }
         elsif ($cmd_type && $cmd_type eq "get_all_credentials") {
+            # 1. Alle alten Readings mit dem entsprechenden Präfix sauber mit FHEM-Bordmitteln löschen
+            foreach my $key (keys %{$hash->{READINGS}}) {
+                if ($key =~ /^(wifi|thread)_/) {
+                    readingsDelete($hash, $key);
+                }
+            }
             if ($decoded->{result}) {
                 my $result = $decoded->{result};
                 

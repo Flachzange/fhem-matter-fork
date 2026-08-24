@@ -64,12 +64,41 @@ my %MATTER_CLUSTERS = (
             0x0000 => { name => "air_quality",   feature => undef, is_reading => 1, is_attribute => 0 },
         },
     },
+    0x0101 => {
+        name       => "Door Lock",
+        attributes => {
+            0x0000 => { name => "lock_state", feature => "has_lock", is_reading => 1, is_attribute => 0 },
+            0x0001 => { name => "lock_type", feature => "has_lock", is_reading => 1, is_attribute => 0 },
+            0x0002 => { name => "actuator_enabled", feature => "has_lock", is_reading => 1, is_attribute => 0},
+            0x0003 => { name => "door_state", feature => "has_lock", is_reading => 1, is_attribute => 0 },
+            0x0004 => { name => "door_open_events", feature => "has_lock", is_reading => 1, is_attribute => 0 },
+            0x0005 => { name => "door_close_events", feature => "has_lock", is_reading => 1, is_attribute => 0 },
+            0x0006 => { name => "open_period", feature => "has_lock", is_reading => 1, is_attribute => 0 },
+            0x0011 => { name => "num_total_users_supported", feature => "has_user", is_reading => 1, is_attribute => 0 },
+            0x0012 => { name => "num_pin_users_supported", feature => "has_pin", is_reading => 1, is_attribute => 0 },
+            0x0013 => { name => "num_rfid_users_supported", feature => "has_rfid", is_reading => 1, is_attribute => 0 },
+            0x0014 => { name => "num_week_day_schedule_per_user", feature => "has_lock", is_reading => 1, is_attribute => 0 },
+            0x0015 => { name => "num_year_day_schedule_per_user", feature => "has_lock", is_reading => 1, is_attribute => 0 },
+            0x0016 => { name => "num_holiday_schedules", feature => "has_lock", is_reading => 1, is_attribute => 0 },
+            0x0017 => { name => "max_pin_code_length", feature => "has_pin", is_reading => 0, is_attribute => 1 },
+            0x0018 => { name => "min_pin_code_length", feature => "has_pin", is_reading => 0, is_attribute => 1 },
+            0x0019 => { name => "max_rfid_code_length", feature => "has_rfid", is_reading => 0, is_attribute => 1 },
+            0x001A => { name => "min_rfid_code_length", feature => "has_rfid", is_reading => 0, is_attribute => 1 },
+            0x001B => { name => "credential_rules_support", feature => "has_lock", is_reading => 1, is_attribute => 0 },
+            0x001C => { name => "num_credentials_per_user", feature => "has_lock", is_reading => 1, is_attribute => 0 },
+            0x0021 => { name => "language", feature => "has_lock", is_reading => 1, is_attribute => 0 },
+        },
+        commands   => {
+            0x00   => { name => "LockDoor",   set_list => "lock:noArg", feature => "has_lock" },
+            0x01   => { name => "UnlockDoor", set_list => "unlock:noArg", feature => "has_lock" },
+        },
+    },
     0x0102 => {
         name       => "WindowCovering",
         attributes => {
             0x0000 => { name => "wc_type", feature => "has_wc", is_reading => 1, is_attribute => 0 },
             0x0001 => { name => "physical_closed_limit_lift", feature => undef, is_reading => 0, is_attribute => 1 },
-            0x0002 => { name => "pysical_closed_limit_tilt", feature => undef, is_reading => 0, is_attribute => 1 },
+            0x0002 => { name => "physical_closed_limit_tilt", feature => undef, is_reading => 0, is_attribute => 1 },
             0x0003 => { name => "current_position_lift", feature => "has_position_lift", is_reading => 1, is_attribute => 0},
             0x0004 => { name => "current_position_tilt", feature => "has_position_tilt", is_reading => 1, is_attribute => 0},
             0x0005 => { name => "number_of_actuations_lift", feature => undef, is_reading => 1, is_attribute => 0 },
@@ -93,9 +122,9 @@ my %MATTER_CLUSTERS = (
 
         },
         commands => {
-            0x00   => { name => "UpOrOpen", set_list => "on:noargs", feature => "has_wc" },
-            0x01   => { name => "DownOrClose", set_list => "off:noargs", feature => "has_wc" },
-            0x02   => { name => "StopMotion", set_list => "stop:noargs", feature => "has_wc" },
+            0x00   => { name => "UpOrOpen", set_list => "on:noArg", feature => "has_wc" },
+            0x01   => { name => "DownOrClose", set_list => "off:noArg", feature => "has_wc" },
+            0x02   => { name => "StopMotion", set_list => "stop:noArg", feature => "has_wc" },
             0x04   => { name => "GoToLiftValue", set_list => "lift_value:textField", feature => "has_position_lift" },
             0x05   => { name => "GoToLiftPercentage", set_list => "prc:slieder,0,1,100", feature => "has_position_lift" },
             0x07   => { name => "TiltValue", set_list => "tilt:textField", feature => "has_position_tilt" },
@@ -135,12 +164,20 @@ sub MATTERDevice_Initialize($) {
                         "has_wc:0,1 " .
                         "has_position_lift:0,1 " .
                         "has_position_tilt:0,1 " .
+                        "has_lock:0,1 " .
+                        "has_pin:0,1 " .
+                        "has_rfid:0,1 " .
+                        "has_user:0,1 " .
                         "color_temp_min " .
                         "color_temp_max " .
                         "min_brightness " .
                         "max_brightness " .
                         "min_frequency " .
                         "max_frequency " .
+                        "min_pin_code_length " .
+                        "max_pin_code_length " .
+                        "min_rfid_code_length " .
+                        "max_rfid_code_length " .
                         $readingFnAttributes;
     $hash->{MatchList} = { "1" => ".*" };
 }
@@ -410,43 +447,37 @@ sub MATTERDevice_Set($$@) {
         my $ioHash = $hash->{IODev};
         return "No IODev assigned to $name" if (!$ioHash || !$ioHash->{fhem}{helper}{sendWS});
 
-        foreach my $c_id (keys %MATTER_CLUSTERS) {
-            my $cluster = $MATTER_CLUSTERS{$c_id};
-            my $cluster_id = $c_id + 0;
-            foreach my $a_id (keys %{$cluster->{attributes}}) {
-                my $attr_id = $a_id + 0;
-                my $msg_id = int(rand(100000) + 1);
-                $ioHash->{fhem}{helper}{pending_config}{$msg_id} = $node_id;
+        my @paths;
 
-                my $config_payload = {
-                    message_id   => $msg_id,
-                    command      => "read_attribute",
-                    args         => {
-                        node_id        => int($node_id),
-                        attribute_path => "$endpoint_id/$cluster_id/$attr_id"
-                    }
-                };
-                $ioHash->{fhem}{helper}{sendWS}->(encode_json($config_payload));
-            }
+        # 1. Für jeden definierten Cluster einfach ein Wildcard (*) setzen
+        foreach my $cluster_key (keys %MATTER_CLUSTERS) {
+            my $cluster_id = 0 + $cluster_key; 
+            push @paths, "$endpoint_id/$cluster_id/*";
         }
-        # 2. Speziell fürs Root-Device: Zusätzlich die PartsList (Cluster 0x001D, Attribut 0x0003) abfragen,
-        # um alle untergelagerten Endpoints sauber zu ermitteln.
+        
+        # 2. Falls Root-Device (Endpoint 0), auch die PartsList abfragen
         if ($endpoint_id == 0) {
+            push @paths, "0/29/3";
+        }
+
+        # 3. Als Bulk-Array an den Server schicken
+        if (@paths) {
             my $msg_id = int(rand(100000) + 1);
             $ioHash->{fhem}{helper}{pending_config}{$msg_id} = $node_id;
 
-            my $parts_payload = {
+            my $config_payload = {
                 message_id   => $msg_id,
                 command      => "read_attribute",
                 args         => {
                     node_id        => int($node_id),
-                    attribute_path => "0/29/3"
+                    attribute_path => \@paths
                 }
             };
-            $ioHash->{fhem}{helper}{sendWS}->(encode_json($parts_payload));
-            Log3 $name, 3, "MATTERDevice: Root-device requested PartsList (0/0x001D/0x0003) for node $node_id";
+            
+            $ioHash->{fhem}{helper}{sendWS}->(encode_json($config_payload));
+            Log3 $name, 3, "MATTERDevice: Wildcard getConfig triggered for node $node_id, endpoint $endpoint_id (" . scalar(@paths) . " clusters queried).";
         }
-        Log3 $name, 3, "MATTERDevice: Generic getConfig triggered for node $node_id, endpoint $endpoint_id";
+
         return undef;
     }
     elsif ($cmd eq "frequency") {
@@ -459,6 +490,30 @@ sub MATTERDevice_Set($$@) {
                 cluster_id   => 768,
                 command_name => "MoveToClosestFrequency",
                 payload      => { frequency => int($args[0]) }
+            }
+        };
+    }
+    elsif ($cmd eq "lock") {
+        $payload = {
+            message_id => int(rand(100000) + 1),
+            command    => "device_command",
+            args       => {
+                node_id      => $node_id,
+                endpoint_id  => int($endpoint_id),
+                cluster_id   => 257,
+                command_name => "LockDoor",
+            }
+        };
+    }
+    elsif ($cmd eq "unlock") {
+        $payload = {
+            message_id => int(rand(100000) + 1),
+            command    => "device_command",
+            args       => {
+                node_id      => $node_id,
+                endpoint_id  => int($endpoint_id),
+                cluster_id   => 257,
+                command_name => "UnlockDoor",
             }
         };
     }
@@ -652,6 +707,10 @@ sub MATTERDevice_GetSetList($) {
     }
     if (AttrVal($name, "has_position_tilt", 0)) {
         push(@list, "tilt:slider,0,1,100");
+    }
+
+    if (AttrVal($name, "has_lock", 0)) {
+        push(@list, "lock:noArg", "unlock:noArg");
     }
 
     push(@list, "rgb:colorpicker,RGB") if (AttrVal($name, "has_color", 0) || AttrVal($name, "has_xy", 0) || AttrVal($name, "has_hue", 0));

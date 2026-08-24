@@ -121,11 +121,12 @@ Once created, individual `MATTERDevice` instances will appear. You can control t
 
 ## Open Issues:
 
-* Only one endpoint is supported, devices witrh multiple endpoints won't work so far
+* multiple endpoints are supported, but not tested so far, as I have only devices witrh one endpoint.
 * Commissioning via Bluetooth not realiezed so far
 * Window Covering (Shutters) are included but not tested
-* Door locks are not supported
+* Door locks are not supported (only some readings)
 * Thermostats are not supported
+* Thread connection not realized so far
 
 ---
 
