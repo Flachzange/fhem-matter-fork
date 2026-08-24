@@ -18,6 +18,11 @@ my %MATTER_sets = (
     "connect"  => "noArg",
     "discover" => "noArg",
     "commissionCode"   => "textField",
+    "setWifiCredentials" => "textField textField"
+    "getCredentials"  => "noArg",
+);
+
+my %MATTER_gets = (
 );
 
 sub MATTER_Initialize {
@@ -73,7 +78,9 @@ sub MATTER_Undef {
 
 sub MATTER_Get {
     my ($hash, $name, $cmd, @args) = @_;
-    return "Unknown argument $cmd, choose one of";
+    my @cList = keys %MATTER_gets;
+    return "Unknown argument $cmd, choose one of " . join(" ", @cList);
+
 }
 
 sub MATTER_Set {
@@ -111,6 +118,55 @@ sub MATTER_Set {
                 code         => $setup_code,
                 network_only => JSON::true # Erzwingt den reinen Netzwerk-Modus ohne BLE-Voraussetzung
             }
+        };
+
+        Log3 $name, 3, "MATTER: Commissioning device with manual code (network_only)...";
+        MATTER_SendJsonCommand($hash, $payload);
+        return undef;
+    }
+    elsif ($opt eq "setWifiCredentials") {
+        my $ssid = $args[0];
+        my $credentials = $args[1];
+        my $id = $args[2];
+        return "Please provide SSID, credentials and ID as arguments." if ((!$ssid) || (!$credendtials));
+
+        my $msg_id = int(rand(100000) + 1);
+        $hash->{helper}{pending_command}{$msg_id} = "set_wifi_credentials";
+
+        # Payload für den python-matter-server aufbauen
+        if (defined($id)) {
+            my $payload = {
+                message_id => $msg_id,
+                command    => "set_wifi_credentials",
+                args       => {
+                    ssid         => $ssid,
+                    credentials  => $credentials,
+                    id           => $id,
+                }
+            };
+        } else {
+            my $payload = {
+                message_id => $msg_id,
+                command    => "set_wifi_credentials",
+                args       => {
+                    ssid         => $ssid,
+                    credentials  => $credentials,
+                }
+            };
+        }
+
+        Log3 $name, 3, "MATTER: Set Wifi credentials for $name with SSID $ssid and credentials...";
+        MATTER_SendJsonCommand($hash, $payload);
+        return undef;
+    }
+    elsif ($opt eq "getCredentials") {
+        my $msg_id = int(rand(100000) + 1);
+        $hash->{helper}{pending_command}{$msg_id} = "get_all_credentials";
+
+        # Payload für den python-matter-server aufbauen
+        my $payload = {
+            message_id => $msg_id,
+            command    => "get_all_credentials",
         };
 
         Log3 $name, 3, "MATTER: Commissioning device with manual code (network_only)...";
@@ -402,6 +458,52 @@ sub MATTER_ParseMessage($$) {
                 CommandSet(undef, "$name discover");
             } else {
                 Log3 $name, 2, "MATTER: Commissioning failed on IO $name: " . ($decoded->{error}{message} // "Unknown error");
+            }
+            return;
+        }
+        elsif ($cmd_type && $cmd_type eq "set_wifi_credentials") {
+            if ($decoded->{result}) {
+                Log3 $name, 3, "MATTER: Wifi credentials set successfully on IO $name!";
+            } else {
+                Log3 $name, 2, "MATTER: Setting Wifi credentials failed on IO $name: " . ($decoded->{error}{message} // "Unknown error");
+            }
+            return;
+        }
+        elsif ($cmd_type && $cmd_type eq "get_all_credentials") {
+            if ($decoded->{result}) {
+                my $result = $decoded->{result};
+                
+                readingsBeginUpdate($hash);
+                
+                # Wi-Fi Credentials verarbeiten (falls vorhanden und ein Array)
+                if ($result->{wifi} && ref($result->{wifi}) eq 'ARRAY') {
+                    my @wifi_credentials = @{$result->{wifi}};
+                    foreach my $wifi (@wifi_credentials) {
+                        next unless ref($wifi) eq 'HASH';
+                        my $id   = $wifi->{id} // 'default';
+                        my $ssid = $wifi->{ssid} // 'unknown';
+                        readingsBulkUpdate($hash, "wifi_${id}_ssid", $ssid);
+                    }
+                }
+                
+                # Thread Credentials verarbeiten (falls vorhanden und ein Array)
+                if ($result->{thread} && ref($result->{thread}) eq 'ARRAY') {
+                    my @thread_credentials = @{$result->{thread}};
+                    foreach my $thread (@thread_credentials) {
+                        next unless ref($thread) eq 'HASH';
+                        my $id          = $thread->{id} // 'default';
+                        my $net_name    = $thread->{networkName} // 'unknown';
+                        my $ext_pan_id  = $thread->{extPanId} // '';
+                        
+                        readingsBulkUpdate($hash, "thread_${id}_name", $net_name);
+                        readingsBulkUpdate($hash, "thread_${id}_extPanId", $ext_pan_id);
+                    }
+                }
+                
+                readingsEndUpdate($hash, 1);
+                Log3 $name, 3, "MATTER: Credentials set successfully on IO $name!";
+            } else {
+                Log3 $name, 2, "MATTER: Getting credentials failed on IO $name: " . ($decoded->{error}{message} // "Unknown error");
             }
             return;
         }
