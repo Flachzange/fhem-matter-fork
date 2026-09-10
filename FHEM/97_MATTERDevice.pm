@@ -463,7 +463,7 @@ sub MATTERDevice_Set($$@) {
         # 3. Als Bulk-Array an den Server schicken
         if (@paths) {
             my $msg_id = int(rand(100000) + 1);
-            $ioHash->{fhem}{helper}{pending_config}{$msg_id} = $node_id;
+            $ioHash->{helper}{pending_config}{$msg_id} = $node_id;
 
             my $config_payload = {
                 message_id   => $msg_id,
