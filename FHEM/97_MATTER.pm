@@ -290,8 +290,10 @@ sub MATTER_Read {
             $hash->{BUF} =~ s/(.*?)\x0d\x0a\x0d\x0a//s;
             readingsSingleUpdate($hash, "state", "connected", 1);
             
-            # Start listening beim Server anfordern
-            MATTER_SendJsonCommand($hash, { message_id => "fhem_init_1", command => "start_listening" });
+            # Start listening beim Server anfordern und die Antwort wie get_nodes verarbeiten
+            my $msg_id = "fhem_init_1";
+            $hash->{helper}{pending_command}{$msg_id} = "start_listening";
+            MATTER_SendJsonCommand($hash, { message_id => $msg_id, command => "start_listening" });
         }
         return;
     }
@@ -389,22 +391,39 @@ sub MATTER_ParseMessage($$) {
         return;
     }
 
-    # B) Live-Events (z.B. attribute_updated) an das Root-Device der Node weiterleiten
-    if (exists $decoded->{event} && $decoded->{event} eq "attribute_updated" && ref($decoded->{data}) eq 'ARRAY') {
-        my ($node_id, undef, undef) = @{$decoded->{data}};
-        if (defined $node_id) {
-            # Wir suchen das Root-Device (Endpoint 0) exakt passend zu DIESEM IO und DIESER Node!
-            my $root_key  = "$name:$node_id";
-            my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
-            
-            if ($root_hash) {
-                # Das Root-Device verarbeitet das Event (und reicht es an den Endpoint weiter)
-                MATTERDevice_Parse($root_hash, $payload);
-            } else {
-                Log3 $name, 3, "MATTER: Received event for unknown root node $node_id on IO $name";
+    # B) Live-Events an das Root-Device der Node weiterleiten
+    if (exists $decoded->{event}) {
+        if ($decoded->{event} eq "attribute_updated" && ref($decoded->{data}) eq 'ARRAY') {
+            my ($node_id, undef, undef) = @{$decoded->{data}};
+            if (defined $node_id) {
+                # Wir suchen das Root-Device (Endpoint 0) exakt passend zu DIESEM IO und DIESER Node!
+                my $root_key  = "$name:$node_id";
+                my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
+
+                if ($root_hash) {
+                    # Das Root-Device verarbeitet das Event (und reicht es an den Endpoint weiter)
+                    MATTERDevice_Parse($root_hash, $payload);
+                } else {
+                    Log3 $name, 3, "MATTER: Received event for unknown root node $node_id on IO $name";
+                }
             }
+            return;
         }
-        return;
+
+        if ($decoded->{event} eq "node_updated" && ref($decoded->{data}) eq 'HASH') {
+            my $node_id = $decoded->{data}{node_id};
+            if (defined $node_id) {
+                my $root_key  = "$name:$node_id";
+                my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
+
+                if ($root_hash) {
+                    MATTERDevice_Parse($root_hash, $payload);
+                } else {
+                    Log3 $name, 3, "MATTER: Received node update for unknown root node $node_id on IO $name";
+                }
+            }
+            return;
+        }
     }
 
     # C) Antworten auf spezifische Befehle (getConfig / get_nodes)
@@ -421,11 +440,11 @@ sub MATTER_ParseMessage($$) {
             return;
         }
         
-        # Antwort auf get_nodes (Discover)
+        # Antwort auf get_nodes (Discover) oder start_listening (Initial-Synchronisierung)
         my $cmd_type = delete $hash->{helper}{pending_command}{$msg_id};
-        if ($cmd_type && $cmd_type eq "get_nodes") {
+        if ($cmd_type && ($cmd_type eq "get_nodes" || $cmd_type eq "start_listening")) {
             if ($decoded->{result} && ref($decoded->{result}) eq 'ARRAY') {
-                Log3 $name, 3, "MATTER: Processing node list from get_nodes response on IO $name...";
+                Log3 $name, 3, "MATTER: Processing node list from $cmd_type response on IO $name...";
 
                 foreach my $node (@{$decoded->{result}}) {
                     my $node_id   = $node->{node_id};
@@ -454,9 +473,12 @@ sub MATTER_ParseMessage($$) {
                         }
                     }
 
-                    # Initiale Attribute ans Root-Device übergeben (das verteilt es an die Endpoints)
-                    if ($root_hash && $node->{attributes}) {
-                        MATTERDevice_Parse($root_hash, encode_json({ node_id => $node_id, attributes => $node->{attributes} }));
+                    # Initialen Node-Status ans Root-Device übergeben; Attribute werden dort an Endpoints verteilt.
+                    if ($root_hash) {
+                        my $node_data = { node_id => $node_id };
+                        $node_data->{attributes} = $node->{attributes} if (ref($node->{attributes}) eq 'HASH');
+                        $node_data->{available}  = $node->{available}  if (exists $node->{available});
+                        MATTERDevice_Parse($root_hash, encode_json($node_data));
                     }
                 }
             }

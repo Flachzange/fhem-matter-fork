@@ -609,6 +609,14 @@ sub MATTERDevice_Parse($$) {
     }
 
     my $my_endpoint = $hash->{endpoint_id} // 0;
+
+    # Availability gehört zum Matter-Node und wird daher nur am Root-Device geführt.
+    my $update_available = sub {
+        my ($available) = @_;
+        return if $my_endpoint != 0;
+        my $available_value = $available ? "true" : "false";
+        readingsSingleUpdate($hash, "available", $available_value, 1);
+    };
     
     # Hilfs-Subroutine zur internen Weiterleitung an Root oder Child
     my $route_attribute = sub {
@@ -644,7 +652,18 @@ sub MATTERDevice_Parse($$) {
         return;
     }
 
-    # 2. LIVE UPDATES (event == 'attribute_updated')
+    # 2. NODE UPDATES (u.a. Availability)
+    if (exists $decoded->{event} && $decoded->{event} eq 'node_updated' && ref($decoded->{data}) eq 'HASH') {
+        my $node = $decoded->{data};
+        my $node_id = $node->{node_id};
+        if (defined($node_id) && $hash->{node_id} eq $node_id && exists($node->{available})) {
+            $update_available->($node->{available});
+            Log3 $name, 4, "MATTERDevice: Node $node_id availability = " . ($node->{available} ? "true" : "false");
+        }
+        return;
+    }
+
+    # 3. LIVE UPDATES (event == 'attribute_updated')
     if (exists $decoded->{event} && $decoded->{event} eq 'attribute_updated' && ref($decoded->{data}) eq 'ARRAY') {
         my ($node_id, $attribute_path, $value) = @{$decoded->{data}};
         if ($attribute_path =~ m{^(\d+)/(\d+)/(\d+)$}) {
@@ -654,14 +673,18 @@ sub MATTERDevice_Parse($$) {
         return;
     }
 
-    # 3. INITIAL DISCOVER (node_id + attributes map)
+    # 4. INITIAL DISCOVER / START_LISTENING (node_id + attributes/availability)
     my $node_id    = $decoded->{node_id};
     my $attributes = $decoded->{attributes};
     
-    if ($node_id && $attributes && $hash->{node_id} eq $node_id) {
-        while (my ($path, $value) = each %{$attributes}) {
-            if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
-                $route_attribute->($1, $2, $3, $value);
+    if (defined($node_id) && $hash->{node_id} eq $node_id) {
+        $update_available->($decoded->{available}) if exists($decoded->{available});
+
+        if ($attributes && ref($attributes) eq 'HASH') {
+            while (my ($path, $value) = each %{$attributes}) {
+                if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
+                    $route_attribute->($1, $2, $3, $value);
+                }
             }
         }
     }
