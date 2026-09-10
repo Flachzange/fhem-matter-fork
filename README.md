@@ -1,3 +1,7 @@
+# Preamble
+Fork notice: This repository is a personal development fork of the original fhem-matter project by Robert Ernst (zeppelin1979). The upstream project is hosted on GitLab at zeppelin1979/fhem-matter. Original authorship and copyright remain with the upstream author. This fork contains additional changes and experimental extensions developed and tested separately.
+
+
 # FHEM Matter Integration (`MATTER` & `MATTERDevice`)
 
 This repository provides custom FHEM modules to integrate **Matter** smart home devices via a central WebSocket-based Matter server. 
