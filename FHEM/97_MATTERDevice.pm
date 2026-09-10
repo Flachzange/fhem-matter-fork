@@ -58,10 +58,53 @@ my %MATTER_CLUSTERS = (
             0x0012 => { name => "serial_number",    feature => undef, is_reading => 1, is_attribute => 0 },
         },
     },
+    0x002F => {
+        name       => "PowerSource",
+        attributes => {
+            0x0000 => { name => "power_source_status",       feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0002 => { name => "power_source_description",  feature => undef, is_reading => 1, is_attribute => 0 },
+            0x000B => { name => "battery_voltage_mV",         feature => undef, is_reading => 1, is_attribute => 0 },
+            0x000C => { name => "battery_percent",            feature => undef, is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 2 : undef } },
+            0x000D => { name => "battery_time_remaining_s",   feature => undef, is_reading => 1, is_attribute => 0 },
+            0x000E => { name => "battery_charge_level",       feature => undef, is_reading => 1, is_attribute => 0 },
+            0x000F => { name => "battery_replacement_needed", feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0010 => { name => "battery_replaceability",     feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0013 => { name => "battery_replacement_description", feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0014 => { name => "battery_common_designation",      feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0018 => { name => "battery_capacity_mAh",       feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0019 => { name => "battery_quantity",           feature => undef, is_reading => 1, is_attribute => 0 },
+        },
+    },
     0x005B => {
         name       => "Air Quality",
         attributes => {
             0x0000 => { name => "air_quality",   feature => undef, is_reading => 1, is_attribute => 0 },
+        },
+    },
+    0x005C => {
+        name       => "SmokeCoAlarm",
+        attributes => {
+            0x0000 => { name => "alarm_expressed_state",    feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0001 => { name => "smoke_state",              feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0002 => { name => "co_state",                 feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0003 => { name => "alarm_battery",            feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0004 => { name => "device_muted",             feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0005 => { name => "test_in_progress",         feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0006 => { name => "hardware_fault",           feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0007 => { name => "end_of_service",           feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0008 => { name => "interconnect_smoke_alarm", feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0009 => { name => "interconnect_co_alarm",    feature => undef, is_reading => 1, is_attribute => 0 },
+        },
+    },
+    0x040C => {
+        name       => "CarbonMonoxideConcentrationMeasurement",
+        attributes => {
+            0x0000 => { name => "co_concentration", feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0001 => { name => "co_minimum",       feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0002 => { name => "co_maximum",       feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0008 => { name => "co_unit",          feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0009 => { name => "co_medium",        feature => undef, is_reading => 1, is_attribute => 0 },
         },
     },
     0x0101 => {
@@ -550,10 +593,15 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     my $feature   = $attr_info->{feature};
     my $is_reading = $attr_info->{is_reading} // 0;
     my $is_attribute = $attr_info->{is_attribute} // 0;
+    my $transform = $attr_info->{transform};
 
     # Bool-Handling für JSON (nur prüfen, wenn es überhaupt ein Objekt/Blessing ist)
     if (ref($value) && blessed($value) && $value->isa('JSON::PP::Boolean')) {
         $value = $value ? 1 : 0;
+    }
+
+    if ($transform && ref($transform) eq 'CODE') {
+        $value = $transform->($value);
     }
 
     readingsBeginUpdate($hash);
