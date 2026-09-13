@@ -117,6 +117,50 @@ my %MATTER_CLUSTERS = (
             0x0009 => { name => "interconnect_co_alarm", is_reading => 1, is_attribute => 0 },
         },
     },
+    0x0090 => {
+        name       => "ElectricalPowerMeasurement",
+        attributes => {
+            0x0000 => { name => "power_mode", is_reading => 1, is_attribute => 0 },
+            0x0001 => { name => "number_of_measurement_types", is_reading => 1, is_attribute => 0 },
+            0x0004 => { name => "voltage", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x0005 => { name => "current", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x0006 => { name => "reactive_current", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x0007 => { name => "apparent_current", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x0008 => { name => "power", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x0009 => { name => "reactive_power", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x000A => { name => "apparent_power", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x000B => { name => "rms_voltage", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x000C => { name => "rms_current", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x000D => { name => "rms_power", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x000E => { name => "frequency", is_reading => 1, is_attribute => 0 },
+            0x0011 => { name => "power_factor", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 10000 : undef } },
+            0x0012 => { name => "neutral_current", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+        },
+    },
+    0x0091 => {
+        name       => "ElectricalEnergyMeasurement",
+        attributes => {
+            0x0001 => { name => "energy", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my ($v) = @_;
+                            return undef if !defined($v) || ref($v) ne 'HASH';
+                            my $energy_mWh = exists($v->{"0"}) ? $v->{"0"} : $v->{energy};
+                            return defined($energy_mWh) ? $energy_mWh / 1_000_000 : undef;
+                        } },
+        },
+    },
     0x040C => {
         name       => "CarbonMonoxideConcentrationMeasurement",
         attributes => {
