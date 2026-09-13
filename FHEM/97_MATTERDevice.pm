@@ -465,7 +465,8 @@ sub MATTERDevice_Set($$@) {
         return "Unknown argument $cmd, choose one of $list_str";
     }
     
-    my $payload     = undef;
+    my $payload       = undef;
+    my $level_payload = undef;
     my $node_id     = $hash->{node_id};
     my $endpoint_id = $hash->{endpoint_id} // 1;
 
@@ -713,6 +714,29 @@ sub MATTERDevice_Set($$@) {
             }
             $h += 360 if $h < 0;
 
+            # RGB contains a value/brightness component in addition to hue and
+            # saturation. ColorControl does not carry that component, so map it
+            # to LevelControl when the endpoint supports a suitable command.
+            my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
+            my $can_level = $use_with_onoff || MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
+            if ($can_level) {
+                my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
+                    ? AttrVal($name, "max_brightness", 254)
+                    : 254;
+                my $level = int($max * $max_level + 0.5);
+                $level_payload = {
+                    message_id => int(rand(100000) + 1),
+                    command    => "device_command",
+                    args       => {
+                        node_id      => $node_id,
+                        endpoint_id  => int($endpoint_id),
+                        cluster_id   => 0x0008,
+                        command_name => ($use_with_onoff ? "MoveToLevelWithOnOff" : "MoveToLevel"),
+                        payload      => { level => $level, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
+                    }
+                };
+            }
+
             $payload = {
                 message_id => int(rand(100000) + 1),
                 command    => "device_command",
@@ -824,7 +848,9 @@ sub MATTERDevice_Set($$@) {
     return "No payload generated" if (!$payload);
 
     if ($hash->{IODev} && $hash->{IODev}{fhem}{helper}{sendWS}) {
-        $hash->{IODev}{fhem}{helper}{sendWS}->(encode_json($payload));
+        my $sendWS = $hash->{IODev}{fhem}{helper}{sendWS};
+        $sendWS->(encode_json($level_payload)) if ($level_payload);
+        $sendWS->(encode_json($payload));
     } else {
         return "No send function found in IODev for $name";
     }
