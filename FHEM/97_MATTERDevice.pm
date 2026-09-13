@@ -677,28 +677,63 @@ sub MATTERDevice_Set($$@) {
         my $can_hs = MATTERDevice_CommandSupported($hash, 0x0300, 0x06);
 
         if ($can_xy && !$can_hs) {
-            my $red   = ($r > 0.04045) ? (($r / 255 + 0.055) / 1.055) ** 2.4 : ($r / 255) / 12.92;
-            my $green = ($g > 0.04045) ? (($g / 255 + 0.055) / 1.055) ** 2.4 : ($g / 255) / 12.92;
-            my $blue  = ($b > 0.04045) ? (($b / 255 + 0.055) / 1.055) ** 2.4 : ($b / 255) / 12.92;
+            # Convert sRGB to linear RGB. The transfer-function threshold applies
+            # to normalized components in the 0..1 range.
+            my $sr = $r / 255;
+            my $sg = $g / 255;
+            my $sb = $b / 255;
+            my $red   = ($sr > 0.04045) ? (($sr + 0.055) / 1.055) ** 2.4 : $sr / 12.92;
+            my $green = ($sg > 0.04045) ? (($sg + 0.055) / 1.055) ** 2.4 : $sg / 12.92;
+            my $blue  = ($sb > 0.04045) ? (($sb + 0.055) / 1.055) ** 2.4 : $sb / 12.92;
 
-            my $X = $red * 0.664511 + $green * 0.154324 + $blue * 0.162028;
-            my $Y = $red * 0.283881 + $green * 0.668433 + $blue * 0.047685;
-            my $Z = $red * 0.000088 + $green * 0.072310 + $blue * 0.986039;
+            # Standard sRGB / BT.709 primaries with D65 white point.
+            my $X = $red * 0.4124564 + $green * 0.3575761 + $blue * 0.1804375;
+            my $Y = $red * 0.2126729 + $green * 0.7151522 + $blue * 0.0721750;
+            my $Z = $red * 0.0193339 + $green * 0.1191920 + $blue * 0.9503041;
+            my $sum = $X + $Y + $Z;
 
-            my $x = ($X + $Y + $Z) > 0 ? int(($X / ($X + $Y + $Z)) * 65535) : 0;
-            my $y = ($X + $Y + $Z) > 0 ? int(($Y / ($X + $Y + $Z)) * 65535) : 0;
+            # Chromaticity is undefined for black. RGB 000000 is represented
+            # through LevelControl only.
+            if ($sum > 0) {
+                my $x = int(($X / $sum) * 65536 + 0.5);
+                my $y = int(($Y / $sum) * 65536 + 0.5);
+                $x = 65279 if $x > 65279;
+                $y = 65279 if $y > 65279;
 
-            $payload = {
-                message_id => int(rand(100000) + 1),
-                command    => "device_command",
-                args       => {
-                    node_id      => $node_id,
-                    endpoint_id  => int($endpoint_id),
-                    cluster_id   => 768,
-                    command_name => "MoveToColor",
-                    payload      => { colorX => int($x), colorY => int($y), transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
-                }
-            };
+                $payload = {
+                    message_id => int(rand(100000) + 1),
+                    command    => "device_command",
+                    args       => {
+                        node_id      => $node_id,
+                        endpoint_id  => int($endpoint_id),
+                        cluster_id   => 768,
+                        command_name => "MoveToColor",
+                        payload      => { colorX => $x, colorY => $y, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
+                    }
+                };
+            }
+
+            # Preserve the intensity component of RGB via LevelControl.
+            my $rgb_max = ($r > $g && $r > $b) ? $r : ($g > $b ? $g : $b);
+            my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
+            my $can_level = $use_with_onoff || MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
+            if ($can_level) {
+                my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
+                    ? AttrVal($name, "max_brightness", 254)
+                    : 254;
+                my $level = int(($rgb_max / 255) * $max_level + 0.5);
+                $level_payload = {
+                    message_id => int(rand(100000) + 1),
+                    command    => "device_command",
+                    args       => {
+                        node_id      => $node_id,
+                        endpoint_id  => int($endpoint_id),
+                        cluster_id   => 0x0008,
+                        command_name => ($use_with_onoff ? "MoveToLevelWithOnOff" : "MoveToLevel"),
+                        payload      => { level => $level, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
+                    }
+                };
+            }
         } else {
             $r /= 255; $g /= 255; $b /= 255;
             my $max = ($r > $g && $r > $b) ? $r : ($g > $b ? $g : $b);
@@ -845,12 +880,12 @@ sub MATTERDevice_Set($$@) {
         };
     }
 
-    return "No payload generated" if (!$payload);
+    return "No payload generated" if (!$payload && !$level_payload);
 
     if ($hash->{IODev} && $hash->{IODev}{fhem}{helper}{sendWS}) {
         my $sendWS = $hash->{IODev}{fhem}{helper}{sendWS};
         $sendWS->(encode_json($level_payload)) if ($level_payload);
-        $sendWS->(encode_json($payload));
+        $sendWS->(encode_json($payload)) if ($payload);
     } else {
         return "No send function found in IODev for $name";
     }
