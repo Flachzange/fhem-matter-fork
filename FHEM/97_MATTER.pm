@@ -294,7 +294,18 @@ sub MATTER_Read {
 
     # 1. Handshake verarbeiten
     if ($hash->{ws_status} eq "handshake") {
-        return unless $hash->{BUF} =~ m/\x0d\x0a\x0d\x0a/;
+        unless ($hash->{BUF} =~ m/\x0d\x0a\x0d\x0a/) {
+            if (length($hash->{BUF}) > 8192) {
+                Log3 $name, 2, "[$name] WebSocket HTTP handshake exceeds 8192 bytes";
+                MATTER_Reconnect($hash);
+            }
+            return;
+        }
+        unless ($hash->{BUF} =~ m/^HTTP\/1\.[01]\s+101\b/i) {
+            Log3 $name, 2, "[$name] WebSocket upgrade was not accepted";
+            MATTER_Reconnect($hash);
+            return;
+        }
         $hash->{ws_status} = "connected";
         $hash->{websocket} = 1;
         $hash->{BUF} =~ s/(.*?)\x0d\x0a\x0d\x0a//s;
@@ -324,6 +335,12 @@ sub MATTER_Read {
             $header_len = 10;
         }
 
+        # A single server snapshot can be large; cap malformed frames to protect FHEM memory.
+        if ($payload_len > 32 * 1024 * 1024) {
+            Log3 $name, 2, "[$name] WebSocket frame exceeds 32 MiB limit";
+            MATTER_Reconnect($hash);
+            return;
+        }
         my $total_len = $header_len + $payload_len;
         return if length($hash->{BUF}) < $total_len;
 
@@ -332,9 +349,8 @@ sub MATTER_Read {
 
         if ($opcode == 0x1) { # Text Frame (JSON)
             MATTER_ParseMessage($hash, $payload);
-        } elsif ($opcode == 0x9) { # Ping -> Pong antworten
-            my $pong = chr(0x8A) . chr(0x00);
-            syswrite($socket, $pong);
+        } elsif ($opcode == 0x9) { # Pong echoes the ping body and must be masked by the client.
+            MATTER_SendWebSocketFrame($socket, 0xA, $payload);
         } elsif ($opcode == 0x8) { # Close Frame
             Log3 $name, 3, "[$name] WebSocket close received, retrying in 30s";
             MATTER_Reconnect($hash);
@@ -350,10 +366,14 @@ sub MATTER_SendJsonCommand($$) {
 
 sub MATTER_SendWebSocketText($$) {
     my ($socket, $msg) = @_;
+    MATTER_SendWebSocketFrame($socket, 0x1, $msg);
+}
+
+sub MATTER_SendWebSocketFrame($$$) {
+    my ($socket, $opcode, $msg) = @_;
     return unless $socket;
-    
     my $length = length($msg);
-    my $frame = chr(0x81); # Text Frame + FIN
+    my $frame = chr(0x80 | $opcode); # FIN and opcode
 
     if ($length <= 125) {
         $frame .= chr(0x80 | $length);
