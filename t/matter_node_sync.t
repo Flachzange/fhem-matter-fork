@@ -232,10 +232,10 @@ MATTER_ProcessNode($defs{ioA}, {
                     '2/6/0' => JSON::false },
 });
 my $multiple_html = MATTERDevice_FWDetail('WEB', 'ManuallyRenamedRoot', 'Matter');
-like($multiple_html, qr/MATTER_Hall_Light_EP1.*MATTER_Hall_Light_EP2.*MATTER_Hall_Light_EP3/s,
-    'endpoint links are ordered by numeric endpoint ID');
-is($attr{MATTER_Hall_Light_EP2}{group}, 'Node 42 (ioA)',
-    'new additional endpoint automatically joins node group');
+like($multiple_html, qr/MATTER_Hall_Light_EP1.*ManuallyRenamedRoot_EP2.*ManuallyRenamedRoot_EP3/s,
+    'endpoint links are ordered by numeric endpoint ID after root rename');
+is($attr{ManuallyRenamedRoot_EP2}{group}, 'Node 42 (ioA)',
+    'new endpoint created after root rename joins the correct node group');
 
 my $old_child_name = $child->{NAME};
 delete $defs{$old_child_name};
