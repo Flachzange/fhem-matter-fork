@@ -278,6 +278,7 @@ sub MATTERDevice_Initialize($) {
     $hash->{GetFn}    = "MATTERDevice_Get";
     $hash->{ParseFn}  = "MATTERDevice_Parse";
     $hash->{AttrList} = "has_lighting:0,1 " .
+                        "has_color:0,1 " .
                         "has_onoff:0,1 " .
                         "has_level:0,1 " .
                         "has_ct:0,1 " .
@@ -502,7 +503,14 @@ sub MATTERDevice_CommandSupported($$$) {
 
     my $accepted = $hash->{helper}{capabilities}{$cluster_id}{accepted_commands};
     if (ref($accepted) ne 'HASH') {
-        # A legacy FHEM installation may have no command metadata yet.
+        # Prior releases also allowed an explicit has_color flag for RGB.
+        # Without hue/XY metadata, that flag selected hue/saturation unless XY
+        # was explicitly enabled.
+        if ($cluster_id == 0x0300 && $command_id == 0x06 &&
+            !defined($override) && AttrVal($hash->{NAME}, 'has_color', 0) &&
+            !AttrVal($hash->{NAME}, 'has_xy', 0)) {
+            return 1;
+        }
         return defined($override) && $override ? 1 : 0;
     }
     return 0 if (!MATTERDevice_CommandAccepted($hash, $cluster_id, $command_id));
