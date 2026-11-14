@@ -78,22 +78,47 @@ Make sure your Matter server is up and running and reachable via IP and port (de
 
 ## Installation & Setup
 
-### 1. Add the Repository to FHEM
-Open your FHEM command line and add this repository to your update sources:
+### 1. Register this fork as an update source
+
+The FHEM commands below belong in the **FHEM command line**. First inspect the configured sources:
 
 ```text
-update add https://gitlab.com/zeppelin1979/fhem-matter/-/raw/main/controls_matter.txt
+update list
 ```
 
-### 2. Install the Modules
-
-Run the FHEM update command to download the files:
+If the original Zeppelin source is listed, remove it **before** adding this fork. FHEM rejects two sources with the same `controls_matter.txt` filename, and both repositories install the same module paths:
 
 ```text
-update
+update delete https://gitlab.com/zeppelin1979/fhem-matter/-/raw/main/controls_matter.txt
 ```
 
-(Restart FHEM afterward if required).
+Register the fork's `main` branch (not an unmerged feature branch):
+
+```text
+update add https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/main/controls_matter.txt
+```
+
+### 2. Check and install Matter module updates
+
+Only check the Matter fork:
+
+```text
+update check https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/main/controls_matter.txt
+```
+
+Download and install its two module files, without updating unrelated FHEM sources:
+
+```text
+update all https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/main/controls_matter.txt
+```
+
+After module updates, restart FHEM to load the new Perl code:
+
+```text
+shutdown restart
+```
+
+The updater installs files from merged commits on `main`. It does not pull changes from open PRs, and adding a source does not itself start periodic automatic updates. Once an update is invoked, no manual copying of `97_MATTER.pm` or `97_MATTERDevice.pm` is necessary.
 
 ## Connection recovery
 
@@ -189,7 +214,9 @@ Once created, individual `MATTERDevice` instances will appear. You can control t
 
 `prove -v t/matter_node_sync.t` runs regression tests using modeled FHEM callback side effects and a real socketpair for split WebSocket frames, including a payload over 64 KiB, availability propagation, getConfig correlation, measurement mappings and RGB command construction. The GitHub Actions workflow `.github/workflows/perl-tests.yml` installs the Perl JSON dependency and executes this test. These tests do **not** replace a live FHEM/Matter-server integration test.
 
-The feature branch does not automatically update an installed FHEM instance. The updater configuration shown above points to the upstream GitLab repository, not this fork's feature branch.
+To publish a module change, run `bash make_controls.sh` after editing `FHEM/*.pm` and commit the resulting `controls_matter.txt` alongside the change. `bash make_controls.sh --check` verifies the metadata without modifying it, and the `FHEM updater manifest` GitHub Actions workflow rejects stale manifests on pull requests and pushes. The generator uses **Git blob sizes** (matching GitHub's raw files even after Windows CRLF conversion) and preserves timestamps for unchanged blobs; changed blobs receive a newer timestamp so that FHEM detects same-size updates. The `# git-blob` comments are ignored by FHEM's updater and are used only to make metadata verification repeatable.
+
+Only merged changes on `main` become available from the update source above. A running FHEM installation still needs an update command or an explicitly configured update schedule; GitHub does not push updates into FHEM.
 
 ## License
 
