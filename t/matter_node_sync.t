@@ -9,6 +9,7 @@ use vars qw(%defs %attr %modules %selectlist $readingFnAttributes);
 BEGIN { $INC{'HttpUtils.pm'} = 1; } # No FHEM network stack is needed by these simulated callbacks.
 
 my @log;
+my @timers;
 my $preferred_io = 'ioA';
 my $fail_io_for = '';
 
@@ -26,7 +27,7 @@ sub readingsBeginUpdate { return; }
 sub readingsBulkUpdate { readingsSingleUpdate($_[0], $_[1], $_[2]); }
 sub readingsEndUpdate { return; }
 sub RemoveInternalTimer { return; }
-sub InternalTimer { return; }
+sub InternalTimer { push @timers, { at => $_[0], callback => $_[1], owner => $_[2] }; }
 sub gettimeofday { return 1; }
 
 # Model the relevant FHEM Define/Attr side effects, not just successful return values.
@@ -168,7 +169,8 @@ $fail_io_for = '';
 my ($client, $server);
 socketpair($client, $server, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die "socketpair: $!";
 my $ws = { NAME => 'ioWS', TYPE => 'MATTER', helper => {},
-    ws_status => 'handshake', websocket => 0, BUF => '', CD => $client, READINGS => {} };
+    ws_status => 'handshake', websocket => 0, BUF => '', CD => $client,
+    FD => fileno($client), READINGS => {} };
 $defs{ioWS} = $ws;
 my $big = { message_id => 'fhem_init_1',
     result => [{node_id => 99, name => 'LargeResponse', attributes => {},
@@ -189,7 +191,14 @@ is($ws->{BUF}, '', 'large split frame consumed without leftover bytes');
 ok($defs{MATTER_LargeResponse}, 'start_listening response is applied automatically');
 is($defs{MATTER_LargeResponse}{IODev}{NAME}, 'ioWS', 'large-frame node uses the WS IODev');
 ok(!exists($ws->{helper}{pending_command}{fhem_init_1}), 'start_listening response correlation cleared');
+
+my $close_frame = pack('CC', 0x88, 0);
+syswrite($server, $close_frame) == length($close_frame) or die 'close frame write failed';
+MATTER_Read($ws);
+is($ws->{ws_status}, 'disconnected', 'server close frame closes the WebSocket');
+ok(!exists($ws->{FD}), 'close clears stale FD');
+is(scalar(@timers), 1, 'server close schedules a single reconnect timer');
+is($timers[0]{callback}, 'MATTER_Open', 'reconnect calls MATTER_Open');
 close($server);
-close($client);
 
 done_testing();
