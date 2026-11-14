@@ -784,5 +784,18 @@ ok(!$defs{MATTER_MetadataNode_EP4},
    'mirroring node metadata cannot create an endpoint when autocreate is disabled');
 delete $attr{ioA}{autocreate};
 
+# Existing endpoints missing mirrored readings are backfilled by an attribute-free
+# snapshot. The persisted IODev also handles a transient missing runtime pointer.
+delete $metadata_ep2->{READINGS}{model};
+delete $metadata_ep2->{READINGS}{available};
+delete $metadata_ep2->{IODev};
+MATTER_ProcessNode($defs{ioA}, {node_id => 95, name => 'MetadataNode'});
+is(ReadingsVal($metadata_ep2->{NAME}, 'model', ''), 'Synthetic Model E',
+   'attribute-free discovery restores model on an existing endpoint');
+is(ReadingsVal($metadata_ep2->{NAME}, 'available', ''), 'false',
+   'attribute-free discovery restores availability on an existing endpoint');
+is(CommandAttr(undef, 'MATTER_MetadataNode_EP2 IODev ioA'), undef,
+   'test restores the endpoint runtime IODev pointer');
+
 
 done_testing();
