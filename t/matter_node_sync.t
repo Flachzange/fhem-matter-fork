@@ -972,4 +972,151 @@ is(CommandAttr(undef, 'MATTER_MetadataNode_EP2 IODev ioA'), undef,
    'test restores the endpoint runtime IODev pointer');
 
 
+# Commissioning is initiated on the MATTER IO, not on an existing endpoint.
+# Read the actual masked client WebSocket frames instead of mocking the JSON
+# sender, so assertions cover the command payload on the wire.
+socketpair(my $commission_client, my $commission_server, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+    or die "commissioning socketpair: $!";
+my $commission_io = {
+    NAME => 'commissionIO', TYPE => 'MATTER', READINGS => {}, helper => {},
+    CD => $commission_client, FD => fileno($commission_client),
+    ws_status => 'connected', websocket => 1,
+};
+$defs{commissionIO} = $commission_io;
+my $read_exact = sub {
+    my ($socket, $length) = @_;
+    my $bytes = '';
+    while (length($bytes) < $length) {
+        my $received = sysread($socket, my $chunk, $length - length($bytes));
+        die 'truncated commissioning WebSocket frame'
+            unless defined($received) && $received > 0;
+        $bytes .= $chunk;
+    }
+    return $bytes;
+};
+my $read_ws_json = sub {
+    my ($peer) = @_;
+    my ($first, $second) = unpack('CC', $read_exact->($peer, 2));
+    die 'expected text WebSocket frame' unless ($first & 0x0f) == 1;
+    die 'expected masked FHEM WebSocket frame' unless $second & 0x80;
+    my $length = $second & 0x7f;
+    $length = unpack('n', $read_exact->($peer, 2)) if $length == 126;
+    $length = unpack('Q>', $read_exact->($peer, 8)) if $length == 127;
+    my $mask = $read_exact->($peer, 4);
+    my $encoded = $read_exact->($peer, $length);
+    my $decoded = '';
+    for my $i (0 .. $length-1) {
+        $decoded .= chr(ord(substr($encoded, $i, 1)) ^
+                        ord(substr($mask, $i % 4, 1)));
+    }
+    return JSON::decode_json($decoded);
+};
+my $manual_code = '35325335079'; # Synthetic setup code, not a production secret.
+my $qr_code = 'MT:Y.ABCDEFG123456789';
+my $usage = MATTER_Set($commission_io, 'commissionIO', 'commissionCode');
+like($usage // '', qr/\[network\|auto\]/,
+     'commissionCode without a code returns usage including the modes');
+is(scalar(keys %{$commission_io->{helper}{pending_command} // {}}), 0,
+   'missing code creates no pending server request');
+
+@log = ();
+is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode', $manual_code),
+   undef, 'legacy one-argument command remains accepted');
+my $network_request = $read_ws_json->($commission_server);
+is($network_request->{command}, 'commission_with_code',
+   'commissioning keeps the existing server API command');
+is($network_request->{args}{code}, $manual_code,
+   'manual code reaches the Matter server unchanged');
+ok($network_request->{args}{network_only},
+   'omitted mode retains network_only=true');
+like(join("\n", @log), qr/Commissioning requested \(mode=network; BLE disabled\)/,
+     'network mode is included in FHEM logs');
+unlike(join("\n", @log), qr/\Q$manual_code\E/,
+       'setup code is not logged for default mode');
+
+is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode',
+              $manual_code, 'network'), undef,
+   'explicit network mode is accepted');
+my $explicit_network = $read_ws_json->($commission_server);
+ok($explicit_network->{args}{network_only},
+   'explicit network mode also sends network_only=true');
+
+@log = ();
+is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode',
+              $manual_code, 'auto'), undef,
+   'auto mode is accepted for manual setup codes');
+my $auto_request = $read_ws_json->($commission_server);
+ok(!$auto_request->{args}{network_only},
+   'auto mode sends network_only=false (BLE and IP discovery enabled)');
+like(join("\n", @log), qr/Commissioning requested \(mode=auto; BLE allowed\)/,
+     'auto mode is logged without implying that BLE was actually used');
+unlike(join("\n", @log), qr/\Q$manual_code\E/,
+       'manual setup code is not logged in auto mode');
+
+is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode',
+              $qr_code, 'auto'), undef,
+   'Matter QR payloads are also accepted in auto mode');
+my $qr_request = $read_ws_json->($commission_server);
+is($qr_request->{args}{code}, $qr_code,
+   'QR payload is delivered unchanged to the Matter server');
+ok(!$qr_request->{args}{network_only}, 'QR auto mode also permits BLE discovery');
+unlike(join("\n", @log), qr/\Q$qr_code\E/,
+       'QR setup code is absent from FHEM logs');
+
+is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode',
+              ('0' x 21), 'auto'), undef,
+   'extended 21-digit Matter manual codes remain accepted');
+my $extended_request = $read_ws_json->($commission_server);
+is($extended_request->{args}{code}, '0' x 21,
+   'extended manual setup code is transmitted without numeric conversion');
+
+my $pending_before_invalid = scalar keys %{$commission_io->{helper}{pending_command}};
+for my $invalid (
+    ['1234', 'auto'],
+    [$manual_code, 'ble'],
+    [$manual_code, 'auto', 'extra'],
+    ['MT:INVALID_QR', 'auto'],
+    ['MT:' . ('A' x 3000), 'auto'],
+) {
+    my $error = MATTER_Set($commission_io, 'commissionIO', 'commissionCode', @$invalid);
+    ok(defined($error) && length($error), 'invalid commissioning parameters are rejected');
+    unlike($error // '', qr/\Q$invalid->[0]\E/,
+           'invalid setup code is not echoed in the error');
+    is(scalar(keys %{$commission_io->{helper}{pending_command}}),
+       $pending_before_invalid, 'invalid request creates no pending command');
+}
+
+# A server-side failure may echo a code; sanitize before including its
+# diagnostic text in FHEM logs. It must also clear the pending correlation.
+my $failed_id = $auto_request->{message_id};
+@log = ();
+MATTER_ParseMessage($commission_io, encode_json({
+    message_id => $failed_id,
+    error => { message => "Could not commission code $manual_code from $qr_code" },
+}));
+ok(!exists($commission_io->{helper}{pending_command}{$failed_id}),
+   'failed commissioning response clears its pending request');
+like(join("\n", @log), qr/Commissioning failed on IO commissionIO:/,
+     'failure is reported in the module log');
+like(join("\n", @log), qr/\[code redacted\].*\[QR code redacted\]/,
+     'server error details retain context with setup codes redacted');
+unlike(join("\n", @log), qr/\Q$manual_code\E|\Q$qr_code\E/,
+       'server-side commissioning errors do not leak setup codes');
+
+my $succeeded_id = $qr_request->{message_id};
+@log = ();
+MATTER_ParseMessage($commission_io, encode_json({
+    message_id => $succeeded_id, result => { node_id => 123 },
+}));
+ok(!exists($commission_io->{helper}{pending_command}{$succeeded_id}),
+   'successful commissioning response clears its pending request');
+like(join("\n", @log), qr/Device successfully commissioned on IO commissionIO/,
+     'success is logged only after the correlated server response');
+unlike(join("\n", @log), qr/\Q$manual_code\E|\Q$qr_code\E/,
+       'successful commissioning logs contain no setup codes');
+close($commission_client);
+close($commission_server);
+
+
+
 done_testing();
