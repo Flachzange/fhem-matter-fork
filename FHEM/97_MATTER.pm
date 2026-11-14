@@ -677,51 +677,59 @@ sub MATTER_ParseMessage($$) {
 
 =pod
 =item device
-=item summary    Interface module for Matter protocol via WebSocket/JSON
-=item summary_DE Schnittstellenmodul für das Matter-Protokoll via WebSocket/JSON
+=item summary    IO module for the Matter-server WebSocket/JSON API
+=item summary_DE IO-Modul für die WebSocket/JSON-API des Matter-Servers
+
 =begin html
 
 <a name="MATTER"></a>
 <h3>MATTER</h3>
+<p>The MATTER IO device communicates with an external Matter server over WebSocket.
+After connecting, <code>start_listening</code> supplies the complete node list.
+Subsequent <code>node_added</code>, <code>node_updated</code> and <code>node_removed</code>
+events synchronize logical MATTERDevice nodes and their endpoints automatically.</p>
 <ul>
-  The MATTER module serves as the central IO-Device for communicating with a 
-  Matter-Server via WebSockets. It handles the raw connection, the WebSocket 
-  handshake, and the routing of JSON-based messages to individual MatterDevice 
-  instances.<br><br>
-
-  <a name="MATTER-define"></a>
-  <b>Define</b>
-  <ul>
-    <code>define &lt;name&gt; MATTER &lt;IP&gt; &lt;PORT&gt;</code><br><br>
-    The IP and PORT point to your Matter-Bridge or server implementation (default port: 5580).
-  </ul>
-  <br>
-
-  <a name="MATTER-set"></a>
-  <b>Set</b>
-  <ul>
-    <li><code>connect</code><br>
-        Manually opens/re-establishes the connection to the Matter server.</li>
-    <li><code>discover</code><br>
-        Queries the server for available nodes and automatically creates corresponding 
-        MATTERDevice instances if they do not exist yet.</li>
-  </ul>
-  <br>
-
-  <a name="MATTER-get"></a>
-  <b>Get</b>
-  <ul>
-    <li><code>update</code><br>
-        Placeholder for future functionality.</li>
-  </ul>
-  <br>
-
-  <a name="MATTER-attr"></a>
-  <b>Attributes</b>
-  <ul>
-    <li>Standard FHEM attributes are supported (e.g., <code>IODev</code>, <code>room</code>).</li>
-  </ul>
+  <li><b>Define:</b> <code>define &lt;name&gt; MATTER &lt;IP&gt; &lt;PORT&gt;</code>
+      (default server port: 5580)</li>
+  <li><b>Set connect:</b> Reconnect the WebSocket to the server.</li>
+  <li><b>Set discover:</b> Manually request a complete <code>get_nodes</code> snapshot;
+      this is optional under normal operation.</li>
+  <li><b>Set commissionCode:</b> Pair a network-commissionable device using its setup code.</li>
+  <li><b>Set setWifiCredentials / getCredentials:</b> Configure or inspect available
+      network credentials (do not expose secrets in logs).</li>
+  <li><b>Attribute disable:</b> Disable or enable the IO connection.</li>
 </ul>
+<p>Newly created logical devices default to room <code>Matter</code>; existing FHEM
+names, rooms and user attributes are retained. A removed node is marked with
+<code>matter_status=removed</code> rather than deleted. This status describes node
+membership on the server, not physical device availability.</p>
+
+=end html
+
+=begin html_DE
+
+<a name="MATTER"></a>
+<h3>MATTER</h3>
+<p>Das MATTER-IO-Device verbindet FHEM per WebSocket mit einem externen Matter-Server.
+Beim Verbindungsaufbau liefert <code>start_listening</code> die vollständige Node-Liste.
+Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
+<code>node_removed</code> die Matter-Knoten und ihre Endpunkte ereignisgesteuert.</p>
+<ul>
+  <li><b>Definition:</b> <code>define &lt;name&gt; MATTER &lt;IP&gt; &lt;PORT&gt;</code>
+      (Standardport: 5580)</li>
+  <li><b>Set connect:</b> Verbindung zum Matter-Server neu aufbauen.</li>
+  <li><b>Set discover:</b> Optional eine vollständige Node-Liste per
+      <code>get_nodes</code> erneut anfordern.</li>
+  <li><b>Set commissionCode:</b> Netzwerkfähiges Matter-Gerät mit Setup-Code koppeln.</li>
+  <li><b>Set setWifiCredentials / getCredentials:</b> Netzwerkzugangsdaten
+      konfigurieren bzw. auslesen.</li>
+  <li><b>Attribut disable:</b> IO-Verbindung deaktivieren oder aktivieren.</li>
+</ul>
+<p>Neue logische Geräte erhalten standardmäßig den Raum <code>Matter</code>.
+Vorhandene Namen, Räume und Benutzerattribute bleiben unverändert. Entfernte
+Nodes werden mit <code>matter_status=removed</code> markiert und nicht automatisch
+gelöscht. Dieses Reading beschreibt die Mitgliedschaft auf dem Matter-Server,
+nicht die physische Erreichbarkeit des Geräts.</p>
 
 =end html
 =cut
