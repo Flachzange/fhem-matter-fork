@@ -248,4 +248,9 @@ is($huge->{BUF}, '', 'oversized payload does not accumulate');
 is(scalar(@timers), 1, 'oversized frame schedules reconnect');
 close($huge_server);
 
+@log = ();
+MATTER_Set($ws, 'ioWS', 'setWifiCredentials', 'SyntheticSSID', 'SyntheticPassword');
+ok(!grep(/SyntheticSSID|SyntheticPassword/, @log),
+   'credential command does not log Wi-Fi SSID or password');
+
 done_testing();
