@@ -1359,6 +1359,16 @@ rooms and attributes during node synchronization.</p>
       the Matter server; <code>removed</code> means it was decommissioned or is
       missing from a complete server snapshot. Neither value is a reachability
       or availability indication.</li>
+  <li><b>Reading available (root only):</b> <code>true</code>/<code>false</code>
+      reflects availability explicitly reported by the Matter server. Unlike
+      <code>matter_status</code>, it describes reachability rather than membership.</li>
+  <li><b>Capabilities:</b> Supported set commands use the Matter
+      <code>AcceptedCommandList</code>, <code>FeatureMap</code> and other cluster
+      metadata when available. Existing <code>has_*</code> values remain a fallback;
+      manually setting a feature flag to <code>0</code> disables that control.</li>
+  <li><b>New readings:</b> PowerSource, SmokeCO alarm, CO concentration, electrical
+      power and cumulative energy clusters, where the server supplies the
+      corresponding attributes.</li>
 </ul>
 <p>Only newly autocreated nodes/endpoints are assigned to room <code>Matter</code>.
 Decommissioned devices are retained in FHEM rather than automatically deleted.</p>
@@ -1386,6 +1396,17 @@ bleiben bestehende Namen, Räume und Benutzerattribute erhalten.</p>
       auf dem Matter-Server vorhanden ist; <code>removed</code> bedeutet, dass er
       dort entfernt wurde oder in einer vollständigen Node-Liste fehlt. Das Reading
       zeigt nicht die physische Erreichbarkeit oder Verfügbarkeit an.</li>
+  <li><b>Reading available (nur Root):</b> <code>true</code>/<code>false</code>
+      zeigt die vom Matter-Server gemeldete Erreichbarkeit des Knotens an,
+      unabhängig von der Mitgliedschaft (<code>matter_status</code>).</li>
+  <li><b>Capabilities:</b> Unterstützte Set-Befehle werden nach Möglichkeit
+      anhand der Matter-Metadaten wie <code>AcceptedCommandList</code> und
+      <code>FeatureMap</code> bestimmt. Vorhandene <code>has_*</code>-Attribute
+      bleiben als Fallback erhalten; ein manuelles <code>0</code> deaktiviert
+      die jeweilige Funktion.</li>
+  <li><b>Weitere Readings:</b> PowerSource, SmokeCO-Alarm,
+      Kohlenmonoxidkonzentration, elektrische Leistung und kumulierte Energie,
+      soweit die Geräte die jeweiligen Attribute liefern.</li>
 </ul>
 <p>Nur neu automatisch erzeugte Geräte werden dem Raum <code>Matter</code>
 zugeordnet. Entfernte Geräte bleiben in FHEM erhalten.</p>
