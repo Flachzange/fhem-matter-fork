@@ -110,23 +110,36 @@ sub MATTER_Set {
         return undef;
     }
     elsif ($opt eq "commissionCode") {
-        my $setup_code = $args[0];
-        return "Please provide a Matter manual pairing code (e.g. 35325335079)" if (!$setup_code);
+        # The existing one-argument command retains its network-only behavior.
+        # 'auto' allows the server to discover the device via BLE as well as IP.
+        my ($setup_code, $mode) = @args;
+        my $usage = "Usage: set $name commissionCode <manual-code|MT:QR-code> [network|auto]";
+        return $usage unless defined($setup_code) && @args <= 2;
+        $mode //= 'network';
+        return $usage unless $mode eq 'network' || $mode eq 'auto';
+
+        # Matter manual codes have 11 or 21 decimal digits; QR payloads use
+        # Base38. Do not echo an invalid pairing code in errors or logs.
+        my $valid_manual = $setup_code =~ /\A(?:[0-9]{11}|[0-9]{21})\z/;
+        my $valid_qr = length($setup_code) <= 2048 &&
+            $setup_code =~ /\AMT:[0-9A-Z.\-]+\z/;
+        return "Invalid Matter pairing code; expected 11/21 digits or an MT: QR code"
+            unless $valid_manual || $valid_qr;
 
         my $msg_id = int(rand(100000) + 1);
         $hash->{helper}{pending_command}{$msg_id} = "commission";
 
-        # Payload für den python-matter-server aufbauen
         my $payload = {
             message_id => $msg_id,
             command    => "commission_with_code",
             args       => {
                 code         => $setup_code,
-                network_only => JSON::true # Erzwingt den reinen Netzwerk-Modus ohne BLE-Voraussetzung
+                network_only => $mode eq 'network' ? JSON::true : JSON::false
             }
         };
 
-        Log3 $name, 3, "MATTER: Commissioning device with manual code (network_only)...";
+        Log3 $name, 3, "MATTER: Commissioning requested (mode=$mode; BLE " .
+            ($mode eq 'auto' ? "allowed" : "disabled") . ")";
         MATTER_SendJsonCommand($hash, $payload);
         return undef;
     }
@@ -787,12 +800,22 @@ sub MATTER_ParseMessage($$) {
             return;
         }
 
-        # Antwort auf commission (Paired ein neues Gerät)
+        # A transport-accepted request is not a successful commission; only
+        # the correlated server response confirms the operation.
         if ($cmd_type && $cmd_type eq "commission") {
             if ($decoded->{result}) {
                 Log3 $name, 3, "MATTER: Device successfully commissioned on IO $name; waiting for node_added event";
             } else {
-                Log3 $name, 2, "MATTER: Commissioning failed on IO $name: " . ($decoded->{error}{message} // "Unknown error");
+                my $details = ref($decoded->{error}) eq 'HASH'
+                    ? $decoded->{error}{message} : undef;
+                $details //= $decoded->{details};
+                $details = "Unknown error" unless defined($details) && !ref($details);
+                # Server diagnostics may repeat the setup code; never log it.
+                $details =~ s/MT:[0-9A-Z.\-]+/[QR code redacted]/gi;
+                $details =~ s/(?<![0-9])[0-9]{8,21}(?![0-9])/[code redacted]/g;
+                $details =~ s/[\x00-\x1f\x7f]/ /g;
+                $details = substr($details, 0, 320);
+                Log3 $name, 2, "MATTER: Commissioning failed on IO $name: $details";
             }
             return;
         }
@@ -872,7 +895,11 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
   <li><b>Set connect:</b> Reconnect the WebSocket to the server.</li>
   <li><b>Set discover:</b> Manually request a complete <code>get_nodes</code> snapshot;
       this is optional under normal operation.</li>
-  <li><b>Set commissionCode:</b> Pair a network-commissionable device using its setup code.</li>
+  <li><b>Set commissionCode:</b> <code>set &lt;IO&gt; commissionCode &lt;manual-code|MT:QR-code&gt; [network|auto]</code>.
+      Default <code>network</code> preserves IP-only commissioning; <code>auto</code> also allows
+      BLE discovery (including a connected BLE proxy) when enabled on the Matter server.
+      The server selects the transport and uses its stored Thread/Wi-Fi credentials.
+      The setup code is not written to module logs.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Configure or inspect available
       network credentials (do not expose secrets in logs).</li>
   <li><b>Attribute disable:</b> Disable or enable the IO connection. Setting
@@ -912,7 +939,11 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
   <li><b>Set connect:</b> Verbindung zum Matter-Server neu aufbauen.</li>
   <li><b>Set discover:</b> Optional eine vollständige Node-Liste per
       <code>get_nodes</code> erneut anfordern.</li>
-  <li><b>Set commissionCode:</b> Netzwerkfähiges Matter-Gerät mit Setup-Code koppeln.</li>
+  <li><b>Set commissionCode:</b> <code>set &lt;IO&gt; commissionCode &lt;Manual-Code|MT:QR-Code&gt; [network|auto]</code>.
+      Standard <code>network</code> nutzt nur IP. <code>auto</code> erlaubt zusätzlich
+      BLE-Discovery (auch über einen verbundenen BLE-Proxy), wenn BLE am Matter-Server
+      aktiviert ist. Der Server wählt den Transport und verwendet seine gespeicherten
+      Thread-/WLAN-Zugangsdaten. Der Setup-Code wird nicht im Modul-Log ausgegeben.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Netzwerkzugangsdaten
       konfigurieren bzw. auslesen.</li>
   <li><b>Attribut disable:</b> IO-Verbindung deaktivieren oder aktivieren.

@@ -46,7 +46,7 @@ Make sure your Matter server is up and running and reachable via IP and port (de
 * **Manual discovery:** `set matterServer discover` still requests a complete `get_nodes` snapshot for diagnostics or manual resynchronization.
 * **Collision-safe FHEM devices:** Node identity is scoped to IODev and node ID; endpoint identity additionally includes endpoint ID. Newly created devices default to room `Matter`; existing names, rooms and attributes remain unchanged.
 * **Node groups and navigation:** Root nodes and endpoints without a custom `group` attribute are grouped as `Node <node_id> (<IODev>)`. In FHEMWEB, the existing root device (endpoint 0) shows direct links to its endpoint devices.
-* **Device Commissioning:** Add new network-connected devices directly via manual pairing codes from FHEM.
+* **Device Commissioning:** Commission using a manual setup code or Matter QR payload. The existing `network` mode (default) uses IP only; optional `auto` also permits BLE discovery through a connected BLE proxy. Stored Thread/Wi-Fi credentials remain managed by matterjs-server.
 * **Dynamic Set-Lists:** Uses Matter global metadata (AcceptedCommandList, FeatureMap, AttributeList and ClusterRevision) to expose supported OnOff, LevelControl, ColorControl/CT/RGB, locking and window-covering commands. The existing `has_*` attributes remain available as a fallback before metadata arrives, and explicit `has_*=0` disables the corresponding control.
 * **Additional cluster readings:** PowerSource (including battery percentage), SmokeCOAlarm, carbon-monoxide concentration, ElectricalPowerMeasurement and ElectricalEnergyMeasurement. Numerical readings use the per-attribute transformations carried forward from the feature branches; device-specific unit and firmware behavior has not been verified live.
 * **Node availability:** The root node's `available` reading tracks the Matter server's reported reachability. This is independent from `matter_status` (`present`/`removed`), which only tracks server node membership.
@@ -93,11 +93,20 @@ define matterServer MATTER <IP_ADDRESS> 5580
 
 ### 2. Commission a New Device (Optional)
 
-If you have a new device prepared in your local network (e.g., via manufacturer app), you can commission it using its manual setup/pairing code:
+The `commissionCode` command belongs to the Matter IO device (`matterServer`), not to an existing `MATTERDevice`. The default behavior is unchanged: commission a device already reachable over IP.
 
 ```text
 set matterServer commissionCode 35325335079
+set matterServer commissionCode 35325335079 network
 ```
+
+To allow Matter-over-Thread devices that still require BLE commissioning, select `auto`:
+
+```text
+set matterServer commissionCode 35325335079 auto
+```
+
+You can also pass a Matter QR payload starting with `MT:`. `auto` permits **both BLE and IP discovery**; it does not force BLE. The matterjs-server must have Bluetooth enabled and a working local adapter or connected BLE proxy for BLE to be usable. Thread/Wi-Fi credentials must already be configured on the server. The FHEM module does not receive or store Thread operational datasets. Its logs record the chosen mode, not the setup code; the FHEM command history itself should still be treated as sensitive.
 
 ### 3. Node Synchronization
 
