@@ -854,7 +854,9 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
   <li><b>Set commissionCode:</b> Pair a network-commissionable device using its setup code.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Configure or inspect available
       network credentials (do not expose secrets in logs).</li>
-  <li><b>Attribute disable:</b> Disable or enable the IO connection.</li>
+  <li><b>Attribute disable:</b> Disable or enable the IO connection. Setting
+      <code>1</code> immediately closes the socket and cancels all pending timers;
+      setting <code>0</code> or removing the attribute reconnects.</li>
   <li><b>Attribute autocreate (0/1):</b> Default <code>1</code>. Set to
       <code>0</code> to suppress automatic creation of new FHEM root and endpoint
       devices from node discovery, commissioning events and attribute updates.
@@ -867,8 +869,11 @@ names, rooms and user attributes are retained. A removed node is marked with
 <code>matter_status=removed</code> rather than deleted. This status describes node
 membership on the server, not physical device availability. The root-only
 <code>available</code> reading reflects a boolean availability report from the
-server, without polling. Incoming WebSocket frames
-larger than 32 MiB are rejected and trigger a reconnect.</p>
+server, without polling. The TCP/WebSocket handshake has a 10-second deadline;
+while connected, WebSocket Ping/Pong checks run every 30 seconds with a 15-second
+Pong deadline. Any connection failure triggers a new attempt after 30 seconds,
+without manual intervention. Numeric IPv4 addresses avoid blocking DNS lookup.
+Incoming WebSocket frames larger than 32 MiB are rejected and trigger a reconnect.</p>
 
 =end html
 
@@ -889,7 +894,9 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
   <li><b>Set commissionCode:</b> Netzwerkfähiges Matter-Gerät mit Setup-Code koppeln.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Netzwerkzugangsdaten
       konfigurieren bzw. auslesen.</li>
-  <li><b>Attribut disable:</b> IO-Verbindung deaktivieren oder aktivieren.</li>
+  <li><b>Attribut disable:</b> IO-Verbindung deaktivieren oder aktivieren.
+      Bei <code>1</code> werden die Verbindung und alle Timer sofort beendet;
+      <code>0</code> oder das Entfernen des Attributs startet einen neuen Verbindungsversuch.</li>
   <li><b>Attribut autocreate (0/1):</b> Standard <code>1</code>. Mit
       <code>0</code> werden weder neue Root- noch Endpoint-Devices in FHEM
       automatisch angelegt. Bestehende Devices werden weiterhin synchronisiert;
@@ -903,8 +910,12 @@ Nodes werden mit <code>matter_status=removed</code> markiert und nicht automatis
 gelöscht. Dieses Reading beschreibt die Mitgliedschaft auf dem Matter-Server,
 nicht die physische Erreichbarkeit des Geräts. Das nur am Root geführte Reading
 <code>available</code> bildet die vom Server ausdrücklich gemeldete Erreichbarkeit ab;
-es erfolgt kein Polling. Eingehende WebSocket-Frames
-über 32 MiB werden abgewiesen; anschließend wird die Verbindung neu aufgebaut.</p>
+es erfolgt kein Polling. TCP-Aufbau und WebSocket-Handshake haben zusammen
+10 Sekunden Zeit. Danach prüfen Ping/Pong alle 30 Sekunden die Verbindung,
+wobei ein Pong spätestens nach weiteren 15 Sekunden eintreffen muss. Bei Fehlern
+erfolgt automatisch alle 30 Sekunden ein Wiederverbindungsversuch. Numerische
+IPv4-Adressen vermeiden eine blockierende DNS-Auflösung. Eingehende WebSocket-
+Frames über 32 MiB werden abgewiesen; anschließend wird neu verbunden.</p>
 
 =end html
 =cut

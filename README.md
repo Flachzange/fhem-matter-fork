@@ -51,7 +51,7 @@ Make sure your Matter server is up and running and reachable via IP and port (de
 * **Additional cluster readings:** PowerSource (including battery percentage), SmokeCOAlarm, carbon-monoxide concentration, ElectricalPowerMeasurement and ElectricalEnergyMeasurement. Numerical readings use the per-attribute transformations carried forward from the feature branches; device-specific unit and firmware behavior has not been verified live.
 * **Node availability:** The root node's `available` reading tracks the Matter server's reported reachability. This is independent from `matter_status` (`present`/`removed`), which only tracks server node membership.
 * **RGB brightness handling:** An RGB command also sends a LevelControl level when the endpoint supports it, in addition to the hue/saturation or XY color command.
-* **Auto-Reconnect:** Built-in resilient connection recovery with safe interval timers.
+* **Auto-Reconnect:** Nonblocking TCP establishment using FHEM's writable socket callback; a 10-second TCP/WebSocket handshake deadline, WebSocket Ping every 30 seconds with a 15-second Pong deadline, and automatic reconnect every 30 seconds after failure. Pending retries and heartbeat timers are canceled when the IO is disabled or deleted.
 * **FHEM Updater Support:** Seamless integration into the FHEM update mechanism.
 
 ---
@@ -74,6 +74,12 @@ update
 ```
 
 (Restart FHEM afterward if required).
+
+## Connection recovery
+
+The `MATTER` IO uses a nonblocking IPv4 TCP connection and then a WebSocket upgrade. Connection and upgrade together must complete within **10 seconds**. While connected, FHEM sends a WebSocket Ping after **30 seconds**, expects the matching Pong within **15 seconds**, and repeats that cycle while the server is responsive. An unresponsive or closed socket triggers a retry after **30 seconds**, repeated until the server returns. After recovery, `start_listening` is sent again automatically; no periodic Matter-node polling is introduced.
+
+Setting `attr matterServer disable 1` closes the connection and removes outstanding IO timers. Changing it back to `0` or deleting the attribute schedules a fresh connection. Deleting the MATTER IO device also cancels its timers. The existing `state` and `ws_status` describe the connection phase; timeouts and retries are logged. Prefer an IPv4 address rather than a hostname for `define`: DNS resolution itself is not asynchronous.
 
 ## Usage
 
