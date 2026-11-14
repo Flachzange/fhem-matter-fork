@@ -371,7 +371,7 @@ sub MATTER_SendWebSocketText($$) {
 
 
 # Keep existing FHEM device names and IO assignments stable during synchronization.
-sub MATTER_SetNodeStatus($$) {
+sub MATTER_SetNodeStatus($$$) {
     my ($hash, $node_id, $status) = @_;
     my $io_name = $hash->{NAME};
     foreach my $device (values %defs) {
@@ -383,7 +383,7 @@ sub MATTER_SetNodeStatus($$) {
     }
 }
 
-sub MATTER_ProcessNode($) {
+sub MATTER_ProcessNode($$) {
     my ($hash, $node) = @_;
     my $io_name = $hash->{NAME};
     return unless ref($node) eq 'HASH';
@@ -455,7 +455,7 @@ sub MATTER_ProcessNode($) {
     return 1;
 }
 
-sub MATTER_ProcessNodeList($$) {
+sub MATTER_ProcessNodeList($$$) {
     my ($hash, $nodes, $source) = @_;
     my $io_name = $hash->{NAME};
     my %present;
@@ -477,7 +477,7 @@ sub MATTER_ProcessNodeList($$) {
     Log3 $io_name, 3, 'MATTER: Synchronized ' . scalar(keys %present) . " nodes from $source";
 }
 
-sub MATTER_ParseMessage($) {
+sub MATTER_ParseMessage($$) {
     my ($hash, $payload) = @_;
     my $name    = $hash->{NAME}; # Name des IO-Moduls (z.B. MATTER_Server1)
     
