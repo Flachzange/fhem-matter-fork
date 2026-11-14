@@ -10,6 +10,7 @@ BEGIN { $INC{'HttpUtils.pm'} = 1; } # No FHEM network stack is needed by these s
 
 my @log;
 my @timers;
+my %bulk_writes;
 my $preferred_io = 'ioA';
 my $fail_io_for = '';
 
@@ -24,11 +25,30 @@ sub readingsSingleUpdate {
     $device->{READINGS}{$reading} = { VAL => $value, TIME => 'test-time' };
 }
 sub readingsBeginUpdate { return; }
-sub readingsBulkUpdate { readingsSingleUpdate($_[0], $_[1], $_[2]); }
+sub readingsBulkUpdate {
+    $bulk_writes{$_[0]{NAME}}{$_[1]}++;
+    readingsSingleUpdate($_[0], $_[1], $_[2]);
+}
 sub readingsEndUpdate { return; }
 sub RemoveInternalTimer { return; }
 sub InternalTimer { push @timers, { at => $_[0], callback => $_[1], owner => $_[2] }; }
 sub gettimeofday { return 1; }
+
+# FHEMWEB URL and HTML helpers as used by FW_detailFn.
+sub urlEncode {
+    my ($value) = @_;
+    $value =~ s/([^A-Za-z0-9_.~-])/sprintf('%%%02X', ord($1))/eg;
+    return $value;
+}
+sub FW_htmlEscape {
+    my ($value) = @_;
+    $value =~ s/&/&amp;/g;
+    $value =~ s/</&lt;/g;
+    $value =~ s/>/&gt;/g;
+    $value =~ s/"/&quot;/g;
+    $value =~ s/'/&#39;/g;
+    return $value;
+}
 
 # Model the relevant FHEM Define/Attr side effects, not just successful return values.
 sub AssignIoPort {
@@ -94,6 +114,12 @@ require './FHEM/97_MATTER.pm';
 
 # FHEM calls Initialize before Define/CommandAttr; expose the real module AttrList.
 MATTERDevice_Initialize($modules{MATTERDevice} ||= {});
+MATTER_Initialize($modules{MATTER} ||= {});
+like($modules{MATTER}{AttrList}, qr/(?:^|\s)autocreate:0,1(?:\s|$)/,
+     'MATTER IO exposes autocreate as a configurable 0/1 attribute');
+is(AttrVal('ioA', 'autocreate', 1), 1, 'autocreate defaults to enabled');
+is($modules{MATTERDevice}{FW_detailFn}, 'MATTERDevice_FWDetail', 'FHEMWEB detail hook is registered');
+ok($modules{MATTERDevice}{FW_deviceOverview}, 'FHEMWEB standard DeviceOverview remains visible');
 like($modules{MATTERDevice}{AttrList}, qr/(?:^|\s)IODev(?:\s|$)/,
      'MATTERDevice declares IODev for FHEM CommandAttr');
 for my $name (qw(ioA ioB)) {
@@ -120,14 +146,97 @@ is($root->{IODev}{NAME}, 'ioA', 'root IODev is correct');
 is($child->{IODev}{NAME}, 'ioA', 'endpoint IODev is correct');
 is($attr{MATTER_Hall_Light}{room}, 'Matter', 'new root gets default room');
 is($attr{MATTER_Hall_Light_EP1}{room}, 'Matter', 'new endpoint gets default room');
+is($attr{MATTER_Hall_Light}{group}, 'Node 42 (ioA)', 'root gets automatic node group');
+is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)', 'endpoint shares node group');
+my $initial_html = MATTERDevice_FWDetail('WEB', 'MATTER_Hall_Light', 'Matter');
+like($initial_html, qr/href="\?detail=MATTER_Hall_Light_EP1"/,
+    'root detail links to existing endpoint');
+ok(!defined(MATTERDevice_FWDetail('WEB', 'MATTER_Hall_Light_EP1', 'Matter')),
+    'endpoint detail does not show another endpoint overview');
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'state', ''), 'on', 'actual attribute path reaches endpoint');
 is($modules{MATTERDevice}{defptr}{'ioA:42'}, $root, 'root registered for owning IO');
 
+# Disabling autocreate must stop all new FHEM devices, without suppressing
+# updates on existing nodes/endpoints or changing the Matter server itself.
+is(CommandAttr(undef, 'ioA autocreate 0'), undef,
+   'autocreate can be disabled on the MATTER IO device');
+my $before_disabled = count_devices();
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_added',
+    data => {node_id => 901, name => 'Commissioned while disabled',
+             attributes => {'1/6/0' => JSON::true}},
+}));
+is(count_devices(), $before_disabled,
+   'node_added does not create root or child when autocreate is disabled');
+ok(!exists($modules{MATTERDevice}{defptr}{'ioA:901'}),
+   'disabled autocreate does not register a new root');
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 42, name => 'Existing node update',
+    attributes => {'1/6/0' => JSON::false, '2/6/0' => JSON::true,
+                   '0/29/3' => [1, 2]},
+});
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'state', ''), 'off',
+   'already-defined endpoint still receives live values with autocreate disabled');
+ok(!$defs{MATTER_Hall_Light_EP2},
+   'unknown endpoint from attribute update and PartsList is not autocreated');
+is(count_devices(), $before_disabled,
+   'existing node updates do not create any new endpoint devices');
+MATTERDevice_Parse($root, encode_json({
+    result => {'1/6/0' => JSON::true, '3/6/0' => JSON::true},
+}));
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'state', ''), 'on',
+   'getConfig results still update already-defined endpoints');
+ok(!exists($defs{MATTER_Hall_Light_EP3}),
+   'getConfig cannot create unknown endpoints while autocreate is disabled');
+
+# Both changing the attribute and deleting it restore the default policy.
+is(CommandAttr(undef, 'ioA autocreate 1'), undef,
+   'autocreate can be explicitly re-enabled');
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 901, name => 'Commissioned while disabled',
+    attributes => {'1/6/0' => JSON::true},
+});
+ok($defs{MATTER_Commissioned_while_disabled} &&
+   $defs{MATTER_Commissioned_while_disabled_EP1},
+   'subsequent discovery creates missing node and endpoint after enabling');
+CommandDelete(undef, 'MATTER_Commissioned_while_disabled_EP1');
+CommandDelete(undef, 'MATTER_Commissioned_while_disabled');
+delete $attr{ioA}{autocreate};
+is(AttrVal('ioA', 'autocreate', 1), 1,
+   'removing the autocreate attribute restores default on behavior');
+
+# Different MATTER IO instances must have independent autocreate policies.
+is(CommandAttr(undef, 'ioB autocreate 0'), undef,
+   'autocreate can be controlled separately on another IO');
+my $before_io_b = count_devices();
+MATTER_ProcessNode($defs{ioB}, {
+    node_id => 902, name => 'Suppressed on B', attributes => {'1/6/0' => JSON::true},
+});
+is(count_devices(), $before_io_b,
+   'disabled autocreate on ioB does not add devices');
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 903, name => 'Enabled on A', attributes => {'1/6/0' => JSON::true},
+});
+ok($defs{MATTER_Enabled_on_A} && $defs{MATTER_Enabled_on_A_EP1},
+   'default-enabled ioA still creates its own devices');
+CommandDelete(undef, 'MATTER_Enabled_on_A_EP1');
+CommandDelete(undef, 'MATTER_Enabled_on_A');
+delete $attr{ioB}{autocreate};
+
 $attr{MATTER_Hall_Light}{room} = 'LivingRoom';
+$attr{MATTER_Hall_Light}{group} = 'My custom group';
+$attr{MATTER_Hall_Light_EP1}{group} = 'My custom endpoint group';
 my $count = count_devices();
 MATTER_ProcessNodeList($defs{ioA}, [node(42, 'Different server label')], 'get_nodes');
 is(count_devices(), $count, 'repeated snapshot does not duplicate devices');
 is($attr{MATTER_Hall_Light}{room}, 'LivingRoom', 'existing room is preserved');
+is($attr{MATTER_Hall_Light}{group}, 'My custom group', 'custom root group is not overwritten');
+is($attr{MATTER_Hall_Light_EP1}{group}, 'My custom endpoint group',
+    'custom endpoint group is not overwritten');
+delete $attr{MATTER_Hall_Light_EP1}{group};
+MATTER_ProcessNode($defs{ioA}, node(42, 'Still same node'));
+is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)',
+    'discovery backfills missing group on existing endpoint');
 
 delete $defs{MATTER_Hall_Light};
 $root->{NAME} = 'ManuallyRenamedRoot';
@@ -137,6 +246,25 @@ MATTER_ProcessNode($defs{ioA}, node(42, 'Yet another label'));
 is($defs{ManuallyRenamedRoot}, $root, 'renamed root reused by identity');
 is($defs{MATTER_Hall_Light_EP1}, $child, 'renamed root reuses existing endpoint');
 is($child->{device}, 'ManuallyRenamedRoot', 'endpoint parent internal updated after rename');
+
+# Migration must work without any fresh endpoint attributes.
+delete $attr{MATTER_Hall_Light_EP1}{group};
+my $prior_devices = count_devices();
+MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'Metadata only'});
+is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)',
+   'group is backfilled on an existing endpoint without an attribute map');
+is(count_devices(), $prior_devices, 'group migration never recreates the endpoint');
+
+# Persisted IODev identifies the endpoint even when its runtime pointer is missing.
+delete $attr{MATTER_Hall_Light_EP1}{group};
+delete $child->{IODev};
+MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'No endpoint attributes'});
+is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)',
+   'configured IODev is sufficient to migrate an endpoint without runtime IODev');
+like(MATTERDevice_FWDetail('WEB', 'ManuallyRenamedRoot', 'Matter'),
+     qr/MATTER_Hall_Light_EP1/, 'root detail also finds endpoint with configured IODev');
+is(CommandAttr(undef, 'MATTER_Hall_Light_EP1 IODev ioA'), undef,
+   'runtime IODev is restored for subsequent test cases');
 
 $defs{MATTER_Conflicted} = { NAME => 'MATTER_Conflicted', TYPE => 'dummy' };
 $defs{MATTER_Conflicted_43_EP1} = { NAME => 'MATTER_Conflicted_43_EP1', TYPE => 'dummy' };
@@ -152,6 +280,24 @@ ok($other_root, 'same numeric node ID may exist on another IODev');
 is($modules{MATTERDevice}{defptr}{'ioA:42'}, $root, 'other IO root registry restored after temporary AssignIoPort');
 is($modules{MATTERDevice}{defptr}{'ioB:42'}, $other_root, 'new IO root registry assigned');
 is($defs{MATTER_Other_IO_light_EP1}{IODev}{NAME}, 'ioB', 'new endpoint binds to matching IO');
+is($attr{MATTER_Other_IO_light}{group}, 'Node 42 (ioB)',
+    'same node ID under another IO gets a different group');
+is($attr{MATTER_Other_IO_light_EP1}{group}, 'Node 42 (ioB)',
+    'other IO endpoint shares only its own group');
+my $io_a_html = MATTERDevice_FWDetail('WEB', 'ManuallyRenamedRoot', 'Matter');
+unlike($io_a_html, qr/MATTER_Other_IO_light_EP1/,
+    'root details exclude endpoints belonging to another IO');
+
+delete $attr{MATTER_Hall_Light_EP1}{group};
+delete $attr{MATTER_Other_IO_light_EP1}{group};
+MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'Metadata only'});
+is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)',
+   'only the matching IO endpoint is grouped during node reconciliation');
+ok(!exists($attr{MATTER_Other_IO_light_EP1}{group}),
+   'a same-ID endpoint belonging to another IO is not modified');
+MATTER_ProcessNode($defs{ioB}, {node_id => 42, name => 'Metadata only'});
+is($attr{MATTER_Other_IO_light_EP1}{group}, 'Node 42 (ioB)',
+   'second IO independently migrates its own endpoint');
 
 MATTER_ProcessNodeList($defs{ioA}, [], 'get_nodes');
 is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'removed', 'missing node marked removed');
@@ -183,6 +329,39 @@ MATTER_ProcessNode($defs{ioB}, node(77, 'IOFailure'));
 ok(!exists($defs{MATTER_IOFailure}), 'failed root IODev assignment rolls back new device');
 ok(!exists($modules{MATTERDevice}{defptr}{'ioB:77'}), 'failed assignment does not claim target IO');
 $fail_io_for = '';
+
+# Multiple endpoints are sorted numerically; links use current names after rename.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 42, name => 'Multi Outlet',
+    attributes => { '3/6/0' => JSON::true, '1/6/0' => JSON::true,
+                    '2/6/0' => JSON::false },
+});
+my $multiple_html = MATTERDevice_FWDetail('WEB', 'ManuallyRenamedRoot', 'Matter');
+like($multiple_html, qr/MATTER_Hall_Light_EP1.*ManuallyRenamedRoot_EP2.*ManuallyRenamedRoot_EP3/s,
+    'endpoint links are ordered by numeric endpoint ID after root rename');
+is($attr{ManuallyRenamedRoot_EP2}{group}, 'Node 42 (ioA)',
+    'new endpoint created after root rename joins the correct node group');
+
+my $old_child_name = $child->{NAME};
+delete $defs{$old_child_name};
+my $new_child_name = 'Renamed&Endpoint';
+$child->{NAME} = $new_child_name;
+$defs{$new_child_name} = $child;
+$attr{$new_child_name} = delete $attr{$old_child_name};
+my $renamed_html = MATTERDevice_FWDetail('WEB', 'ManuallyRenamedRoot', 'Matter');
+like($renamed_html, qr/Renamed&amp;Endpoint/, 'endpoint link label is HTML-escaped');
+like($renamed_html, qr/\?detail=Renamed%26Endpoint/, 'endpoint link target is URL-encoded');
+unlike($renamed_html, qr/\?detail=MATTER_Hall_Light_EP1/,
+    'stale endpoint name is not linked');
+MATTER_ProcessNode($defs{ioA}, node(42, 'Multi Outlet'));
+is($defs{$new_child_name}, $child, 'renamed endpoint stays attached after discovery');
+# Restore the original name for the existing capability/measurement regressions.
+delete $defs{$new_child_name};
+$child->{NAME} = $old_child_name;
+$defs{$old_child_name} = $child;
+$attr{$old_child_name} = delete $attr{$new_child_name};
+MATTER_ProcessNode($defs{ioA}, node(42, 'Multi Outlet'));
+is($defs{$old_child_name}, $child, 'endpoint retains identity after restoring its name');
 
 # Real TCP byte-stream behavior: HTTP upgrade followed by a split >64 KiB WS frame.
 my ($client, $server);
@@ -291,8 +470,8 @@ MATTER_ProcessNode($defs{ioA}, { node_id => 42, name => 'Invalid availability',
                                 available => 'unknown' });
 is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
    'malformed availability is ignored');
-ok(!defined(ReadingsVal('MATTER_Hall_Light_EP1', 'available', undef)),
-   'node-level availability is not copied to endpoints');
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'available', ''), 'true',
+   'node-level availability is mirrored to the existing endpoint');
 
 MATTERDevice_Parse($root, encode_json({
     node_id => 42,
@@ -378,5 +557,245 @@ $attr{$child->{NAME}}{has_color} = 1;
 ok(grep(/^rgb:/, MATTERDevice_GetSetList($child)),
    'legacy has_color still exposes RGB before the server supplies metadata');
 delete $attr{$child->{NAME}}{has_color};
+
+
+# FHEMWEB endpoint type display: real Descriptor DeviceTypeList takes priority;
+# cluster-only fallbacks intentionally describe functions, not assumed hardware.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 88, name => 'TypeDisplay',
+    attributes => {
+        '1/6/0'      => JSON::true,
+        '10/1026/0'  => 2100,  # TemperatureMeasurement (0x0402)
+        '11/1029/0'  => 4500,  # RelativeHumidityMeasurement (0x0405)
+        '12/6/0'     => JSON::false,
+        '12/8/0'     => 45,
+        '12/768/0'   => 128,
+    },
+});
+my $types_root = $defs{MATTER_TypeDisplay};
+my $type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
+like($type_html, qr/<tr><td>EP<\/td><td>Type<\/td><td>FHEM device<\/td><\/tr>/,
+     'compact column labels use regular table cells');
+unlike($type_html, qr/<th(?:\s|>)/i, 'endpoint overview does not use styled header cells');
+like($type_html, qr/<td>1<\/td><td>On\/Off<\/td>/,
+     'OnOff alone is not misidentified as a light or plug');
+like($type_html, qr/<td>10<\/td><td>Temperature measurement<\/td>/,
+     'unknown temperature cluster is described as a measurement');
+like($type_html, qr/<td>11<\/td><td>Humidity measurement<\/td>/,
+     'unknown humidity cluster is described as a measurement');
+like($type_html, qr/<td>12<\/td><td>Color control<\/td>/,
+     'color cluster fallback describes the observed function');
+
+# Snapshot: explicit Matter type distinguishes an actual plug from OnOff devices.
+MATTERDevice_Parse($types_root, encode_json({
+    node_id => 88, attributes => {
+        '1/29/0'  => [{deviceType => 0x010A, revision => 1}],
+        '10/29/0' => [{deviceType => 0x0302, revision => 1}],
+        '11/29/0' => [{deviceType => 0x0307, revision => 1}],
+    },
+}));
+$type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
+like($type_html, qr/<td>1<\/td><td>On\/Off plug-in unit<\/td>/,
+     'Descriptor DeviceTypeList identifies a plug-in unit exactly');
+like($type_html, qr/<td>10<\/td><td>Temperature sensor<\/td>/,
+     'Descriptor DeviceTypeList identifies the temperature sensor');
+like($type_html, qr/<td>11<\/td><td>Humidity sensor<\/td>/,
+     'Descriptor DeviceTypeList identifies the humidity sensor');
+
+# Per-endpoint getConfig reads DeviceTypeList explicitly.
+@sent_requests = ();
+is(MATTERDevice_Set($defs{MATTER_TypeDisplay_EP10}, 'MATTER_TypeDisplay_EP10', 'getConfig'),
+   undef, 'getConfig works on the additional endpoint');
+my $type_request = $sent_requests[-1];
+ok(grep($_ eq '10/29/0', @{$type_request->{args}{attribute_path}}),
+   'getConfig requests the endpoint DeviceTypeList');
+
+# Live updates and read_attribute responses use the same endpoint routing.
+MATTERDevice_Parse($types_root, encode_json({
+    event => 'attribute_updated',
+    data => [88, '11/29/0', [{deviceType => 0x0015, revision => 1}]],
+}));
+$type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
+like($type_html, qr/<td>11<\/td><td>Contact sensor<\/td>/,
+     'live Descriptor update refreshes the endpoint type');
+
+MATTERDevice_Parse($types_root, encode_json({
+    result => {'10/29/0' => [{deviceType => '0x0307', revision => 1}]},
+}));
+$type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
+like($type_html, qr/<td>10<\/td><td>Humidity sensor<\/td>/,
+     'getConfig response refreshes type with a valid hexadecimal ID');
+
+MATTERDevice_Parse($types_root, encode_json({
+    node_id => 88, attributes => {
+        '1/29/0' => [{deviceType => 0x0016, revision => 1},
+                      {deviceType => 0x0100, revision => 1}],
+        '10/29/0' => [{deviceType => 0xF123, revision => 1}],
+    },
+}));
+$type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
+like($type_html, qr/<td>1<\/td><td>On\/Off light<\/td>/,
+     'application type is preferred to the utility root type');
+like($type_html, qr/<td>10<\/td><td>0xF123<\/td>/,
+     'unknown type ID stays explicitly identifiable');
+
+MATTERDevice_Parse($types_root, encode_json({
+    node_id => 88, attributes => { '10/29/0' => [{deviceType => 'invalid'}] },
+}));
+$type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
+like($type_html, qr/<td>10<\/td><td>0xF123<\/td>/,
+     'malformed type metadata does not replace the last valid device type');
+
+ok(!exists($defs{MATTER_TypeDisplay_EP10}{READINGS}{device_type}),
+   'type presentation does not create additional readings');
+
+# Model and availability are the only root readings mirrored onto endpoints.
+# Test all supported input paths with independent nodes sharing an ID on two IOs.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 95, name => 'MetadataNode',
+    attributes => {'1/6/0' => JSON::true},
+});
+my $metadata_root = $defs{MATTER_MetadataNode};
+my $metadata_ep1 = $defs{MATTER_MetadataNode_EP1};
+ok($metadata_root && $metadata_ep1, 'metadata test node and endpoint exist');
+ok(!defined(ReadingsVal($metadata_ep1->{NAME}, 'model', undef)),
+   'an unknown root model is not fabricated on an endpoint');
+ok(!defined(ReadingsVal($metadata_ep1->{NAME}, 'available', undef)),
+   'unknown node availability is not fabricated on an endpoint');
+
+# Unknown order between root BasicInformation and child attributes is harmless.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 95, name => 'MetadataNode', available => JSON::true,
+    attributes => {'0/40/3' => 'Synthetic Model A', '1/6/0' => JSON::true,
+                   '2/6/0' => JSON::false},
+});
+my $metadata_ep2 = $defs{MATTER_MetadataNode_EP2};
+for my $ep ($metadata_ep1, $metadata_ep2) {
+    is(ReadingsVal($ep->{NAME}, 'model', ''), 'Synthetic Model A',
+       'discovery mirrors the root model to an existing/new endpoint');
+    is(ReadingsVal($ep->{NAME}, 'available', ''), 'true',
+       'discovery mirrors reported availability to an existing/new endpoint');
+}
+my $metadata_ep3 = MATTERDevice_GetOrCreateChild($metadata_root, 3);
+ok($metadata_ep3, 'another endpoint is created from an existing node');
+is(ReadingsVal($metadata_ep3->{NAME}, 'model', ''), 'Synthetic Model A',
+   'newly created endpoint immediately receives the known model');
+is(ReadingsVal($metadata_ep3->{NAME}, 'available', ''), 'true',
+   'newly created endpoint immediately receives node availability');
+ok(!defined(ReadingsVal($metadata_ep3->{NAME}, 'producer', undef)),
+   'unrelated root readings are not inherited');
+
+my $model_writes = $bulk_writes{$metadata_ep1->{NAME}}{model} // 0;
+my $available_writes = $bulk_writes{$metadata_ep1->{NAME}}{available} // 0;
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 95, name => 'MetadataNode', available => JSON::true,
+    attributes => {'0/40/3' => 'Synthetic Model A', '1/6/0' => JSON::true},
+});
+is($bulk_writes{$metadata_ep1->{NAME}}{model} // 0, $model_writes,
+   'unchanged model does not write the endpoint reading again');
+is($bulk_writes{$metadata_ep1->{NAME}}{available} // 0, $available_writes,
+   'unchanged available does not write the endpoint reading again');
+
+# Live events update the root model and immediately synchronize endpoints.
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [95, '0/40/3', 'Synthetic Model B'],
+}));
+is(ReadingsVal($metadata_root->{NAME}, 'model', ''), 'Synthetic Model B',
+   'live BasicInformation change is stored at the root');
+is(ReadingsVal($metadata_ep1->{NAME}, 'model', ''), 'Synthetic Model B',
+   'live model changes reach an existing endpoint');
+is(ReadingsVal($metadata_ep3->{NAME}, 'model', ''), 'Synthetic Model B',
+   'live model changes reach a newly created endpoint');
+is($bulk_writes{$metadata_ep1->{NAME}}{model} // 0, $model_writes + 1,
+   'a changed model produces exactly one endpoint update');
+
+# getConfig read_attribute results use the same propagation path.
+$defs{ioA}{helper}{pending_config}{95001} = 95;
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => 95001,
+    result => {'0/40/3' => 'Synthetic Model C'},
+}));
+is(ReadingsVal($metadata_ep2->{NAME}, 'model', ''), 'Synthetic Model C',
+   'root getConfig results synchronize model on existing endpoints');
+
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_updated', data => {node_id => 95, available => JSON::false},
+}));
+is(ReadingsVal($metadata_ep1->{NAME}, 'available', ''), 'false',
+   'node_updated availability is propagated to endpoints');
+is(ReadingsVal($metadata_ep3->{NAME}, 'available', ''), 'false',
+   'node_updated reaches all endpoints');
+is($bulk_writes{$metadata_ep1->{NAME}}{available} // 0, $available_writes + 1,
+   'changed availability produces one endpoint update');
+
+# An invalid or absent value must not turn into an invented state.
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_updated', data => {node_id => 95, available => 'unknown'},
+}));
+MATTER_ProcessNode($defs{ioA}, {node_id => 95, name => 'MetadataNode'});
+is(ReadingsVal($metadata_ep1->{NAME}, 'available', ''), 'false',
+   'unknown or missing availability never overwrites a valid report');
+MATTERDevice_Parse($metadata_root, encode_json({
+    event => 'node_updated', data => {node_id => 95, available => JSON::true},
+}));
+is(ReadingsVal($metadata_ep1->{NAME}, 'available', ''), 'true',
+   'direct MATTERDevice node_updated event mirrors valid availability');
+MATTERDevice_Parse($metadata_root, encode_json({
+    event => 'node_updated', data => {node_id => 95, available => 'unknown'},
+}));
+is(ReadingsVal($metadata_ep1->{NAME}, 'available', ''), 'true',
+   'direct MATTERDevice node_updated ignores malformed availability');
+
+# Same node ID under another MATTER IO must remain isolated.
+$preferred_io = 'ioA';
+MATTER_ProcessNode($defs{ioB}, {
+    node_id => 95, name => 'OtherMetadataNode', available => JSON::false,
+    attributes => {'0/40/3' => 'Other Model', '1/6/0' => JSON::true},
+});
+my $other_metadata_ep = $defs{MATTER_OtherMetadataNode_EP1};
+ok($other_metadata_ep, 'a second IO may have the same Matter node ID');
+is(ReadingsVal($other_metadata_ep->{NAME}, 'model', ''), 'Other Model',
+   'same-ID endpoint on another IO keeps its own model');
+is(ReadingsVal($other_metadata_ep->{NAME}, 'available', ''), 'false',
+   'same-ID endpoint on another IO keeps its own availability');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [95, '0/40/3', 'Synthetic Model D'],
+}));
+is(ReadingsVal($other_metadata_ep->{NAME}, 'model', ''), 'Other Model',
+   'root model updates do not affect another IO');
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 95, name => 'MetadataNode', available => JSON::true,
+});
+is(ReadingsVal($other_metadata_ep->{NAME}, 'available', ''), 'false',
+   'root availability updates do not affect another IO');
+
+# autocreate=0 still allows metadata changes on already defined endpoints.
+is(CommandAttr(undef, 'ioA autocreate 0'), undef,
+   'autocreate can be disabled during metadata synchronization');
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 95, name => 'MetadataNode', available => JSON::false,
+    attributes => {'0/40/3' => 'Synthetic Model E', '4/6/0' => JSON::true},
+});
+is(ReadingsVal($metadata_ep1->{NAME}, 'model', ''), 'Synthetic Model E',
+   'existing endpoint model updates with autocreate disabled');
+is(ReadingsVal($metadata_ep2->{NAME}, 'available', ''), 'false',
+   'existing endpoint availability updates with autocreate disabled');
+ok(!$defs{MATTER_MetadataNode_EP4},
+   'mirroring node metadata cannot create an endpoint when autocreate is disabled');
+delete $attr{ioA}{autocreate};
+
+# Existing endpoints missing mirrored readings are backfilled by an attribute-free
+# snapshot. The persisted IODev also handles a transient missing runtime pointer.
+delete $metadata_ep2->{READINGS}{model};
+delete $metadata_ep2->{READINGS}{available};
+delete $metadata_ep2->{IODev};
+MATTER_ProcessNode($defs{ioA}, {node_id => 95, name => 'MetadataNode'});
+is(ReadingsVal($metadata_ep2->{NAME}, 'model', ''), 'Synthetic Model E',
+   'attribute-free discovery restores model on an existing endpoint');
+is(ReadingsVal($metadata_ep2->{NAME}, 'available', ''), 'false',
+   'attribute-free discovery restores availability on an existing endpoint');
+is(CommandAttr(undef, 'MATTER_MetadataNode_EP2 IODev ioA'), undef,
+   'test restores the endpoint runtime IODev pointer');
+
 
 done_testing();

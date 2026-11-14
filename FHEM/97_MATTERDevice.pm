@@ -18,6 +18,39 @@ my %MATTER_GLOBAL_ATTRIBUTES = (
     0xFFFD => "cluster_revision",
 );
 
+# Device Type IDs from the Matter Device Library; values are used for UI only.
+# Descriptor.DeviceTypeList is authoritative when supplied by the server.
+my %MATTER_DEVICE_TYPE_LABELS = (
+    0x000A => "Door lock",
+    0x000E => "Aggregator",
+    0x000F => "Generic switch",
+    0x0013 => "Bridged node",
+    0x0015 => "Contact sensor",
+    0x0016 => "Root node",
+    0x002B => "Fan",
+    0x002C => "Air quality sensor",
+    0x0076 => "Smoke/CO alarm",
+    0x0100 => "On/Off light",
+    0x0101 => "Dimmable light",
+    0x0103 => "On/Off light switch",
+    0x0104 => "Dimmer switch",
+    0x0105 => "Color dimmer switch",
+    0x0106 => "Light sensor",
+    0x0107 => "Occupancy sensor",
+    0x010A => "On/Off plug-in unit",
+    0x010B => "Dimmable plug-in unit",
+    0x010C => "Color temperature light",
+    0x010D => "Extended color light",
+    0x0202 => "Window covering",
+    0x0301 => "Thermostat",
+    0x0302 => "Temperature sensor",
+    0x0305 => "Pressure sensor",
+    0x0306 => "Flow sensor",
+    0x0307 => "Humidity sensor",
+    0x0850 => "On/Off sensor",
+);
+my %MATTER_UTILITY_DEVICE_TYPES = map { $_ => 1 } (0x000E, 0x0013, 0x0016);
+
 # Zentrale Definition der vom FHEM-Modul fachlich unterstützten Cluster, Attribute und Commands
 my %MATTER_CLUSTERS = (
     0x0006 => {
@@ -277,6 +310,8 @@ sub MATTERDevice_Initialize($) {
     $hash->{SetFn}    = "MATTERDevice_Set";
     $hash->{GetFn}    = "MATTERDevice_Get";
     $hash->{ParseFn}  = "MATTERDevice_Parse";
+    $hash->{FW_detailFn} = "MATTERDevice_FWDetail";
+    $hash->{FW_deviceOverview} = 1; # Keep FHEMWEB DeviceOverview above the endpoint links.
     $hash->{AttrList} = "IODev " .
                         "has_lighting:0,1 " .
                         "has_color:0,1 " .
@@ -911,6 +946,10 @@ sub MATTERDevice_Set($$@) {
             push @paths, "$endpoint_id/*/$attr_id";
         }
 
+        # Read the endpoint's advertised Matter device types, independently of
+        # whether the module supports that endpoint's functional clusters.
+        push @paths, "$endpoint_id/29/0";
+
         # Falls Root-Device (Endpoint 0), auch die PartsList abfragen.
         if ($endpoint_id == 0) {
             push @paths, "0/29/3";
@@ -1000,9 +1039,31 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
     my $cluster = $MATTER_CLUSTERS{$cluster_id};
 
-    # Globale Matter-Attribute gelten für jeden Cluster, auch für Cluster, die das
-    # FHEM-Modul noch nicht fachlich kennt.
+    # Remember cluster presence for conservative fallback labels in FHEMWEB,
+    # including measurement clusters this module does not yet expose as readings.
+    $hash->{helper}{seen_clusters}{$cluster_id} = 1 if defined($value);
+
+    # Globale Matter-Attribute gelten fuer jeden Cluster, auch wenn dessen
+    # Nutzdaten im FHEM-Modul noch nicht abgebildet sind.
     return if (MATTERDevice_ProcessGlobalAttribute($hash, $cluster_id, $attr_id, $value));
+
+    # Descriptor cluster (0x001D), DeviceTypeList (0x0000).
+    # Matter.js supplies an array of DeviceTypeStruct objects (deviceType, revision).
+    # Store validated IDs only in the endpoint's runtime helper; no new readings/events.
+    if ($cluster_id == 0x001D && $attr_id == 0x0000) {
+        if (ref($value) eq 'ARRAY') {
+            my (@types, %seen);
+            foreach my $entry (@{$value}) {
+                next unless ref($entry) eq 'HASH';
+                my $raw_id = $entry->{deviceType} // $entry->{device_type} // $entry->{'0'};
+                my $type_id = MATTERDevice_NormalizeMatterId($raw_id);
+                next unless defined($type_id) && $type_id <= 0xFFFFFFFF;
+                push @types, $type_id unless $seen{$type_id}++;
+            }
+            $hash->{helper}{device_types} = \@types if @types;
+        }
+        return;
+    }
     return if !$cluster;
 
     my $attr_info = $cluster->{attributes}{$attr_id};
@@ -1070,9 +1131,12 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
 
     readingsEndUpdate($hash, 1);
+    # Model on endpoint 0 identifies the physical node, not a single function.
+    MATTERDevice_SyncNodeReadings($hash)
+        if $cluster_id == 0x0028 && $attr_id == 0x0003 && ($hash->{endpoint_id} // 0) == 0;
 }
 
-sub MATTERDevice_Parse($$) {
+sub MATTERDevice_Parse($ $) {
     my ($hash, $data) = @_;
     my $name = $hash->{NAME};
 
@@ -1084,12 +1148,17 @@ sub MATTERDevice_Parse($$) {
 
     my $my_endpoint = $hash->{endpoint_id} // 0;
 
-    # Availability gehört zum Matter-Node und wird daher nur am Root-Device geführt.
+    # Availability is node-wide. An absent or invalid boolean is not a report.
     my $update_available = sub {
         my ($available) = @_;
         return if $my_endpoint != 0;
+        return unless defined($available) &&
+            ((!ref($available) && $available =~ /^(?:0|1)$/) ||
+             ref($available) =~ /Boolean$/);
         my $available_value = $available ? "true" : "false";
-        readingsSingleUpdate($hash, "available", $available_value, 1);
+        readingsSingleUpdate($hash, "available", $available_value, 1)
+            if ReadingsVal($name, 'available', '') ne $available_value;
+        MATTERDevice_SyncNodeReadings($hash);
     };
     
     # Hilfs-Subroutine zur internen Weiterleitung an Root oder Child
@@ -1262,6 +1331,121 @@ sub MATTERDevice_GetSetList($) {
     return @list;
 }
 
+# A single FHEMWEB group per Matter node, also unique across Matter IO devices.
+# Never replace a group explicitly configured by the FHEM user.
+sub MATTERDevice_EnsureNodeGroup($) {
+    my ($device) = @_;
+    return unless $device && defined($device->{NAME});
+    my $name = $device->{NAME};
+    return if defined(AttrVal($name, 'group', undef));
+    my $node_id = $device->{node_id};
+    my $io_name = $device->{IODev} ? $device->{IODev}{NAME} : AttrVal($name, 'IODev', '');
+    return unless defined($node_id) && $node_id =~ /^\d+$/ && defined($io_name) && length($io_name);
+
+    my $group = "Node $node_id ($io_name)";
+    my $error = CommandAttr(undef, "$name group $group");
+    Log3 $name, 3, "MATTERDevice: Cannot set node group for $name: $error" if $error;
+}
+
+# Resolve an existing root's children for both navigation and group migration.
+sub MATTERDevice_NodeChildren($) {
+    my ($root) = @_;
+    return () unless $root && ($root->{TYPE} // '') eq 'MATTERDevice'
+        && ($root->{endpoint_id} // 0) == 0;
+
+    my $node_id = $root->{node_id};
+    my $io_name = $root->{IODev} ? $root->{IODev}{NAME}
+                                   : AttrVal($root->{NAME}, 'IODev', '');
+    return () unless defined($node_id) && length($io_name // '');
+
+    return sort {
+        $a->{endpoint_id} <=> $b->{endpoint_id} || $a->{NAME} cmp $b->{NAME}
+    } grep {
+        ($_->{TYPE} // '') eq 'MATTERDevice'
+            && ($_->{endpoint_id} // 0) > 0
+            && ($_->{node_id} // '') eq $node_id
+            && (($_->{IODev} && $_->{IODev}{NAME} eq $io_name)
+                || (!$_->{IODev} && AttrVal($_->{NAME}, 'IODev', '') eq $io_name))
+    } values %defs;
+}
+
+# Mirror only node-wide readings, using the same IODev/node membership as the
+# endpoint link list. Newly created children can be updated individually.
+# Missing values and unchanged values must not create endpoint events.
+sub MATTERDevice_SyncNodeReadings($;$) {
+    my ($root, $only_child) = @_;
+    return unless $root && ($root->{endpoint_id} // 0) == 0;
+    my @children = $only_child ? ($only_child) : MATTERDevice_NodeChildren($root);
+
+    foreach my $child (@children) {
+        my @changes;
+        foreach my $reading (qw(model available)) {
+            my $source = $root->{READINGS}{$reading};
+            next unless ref($source) eq 'HASH';
+            my $value = $source->{VAL};
+            next unless defined($value) && !ref($value);
+            my $previous = ReadingsVal($child->{NAME}, $reading, undef);
+            next if defined($previous) && $previous eq $value;
+            push @changes, [$reading, $value];
+        }
+        next unless @changes;
+        readingsBeginUpdate($child);
+        readingsBulkUpdate($child, $_->[0], $_->[1]) foreach @changes;
+        readingsEndUpdate($child, 1);
+    }
+}
+
+# Prefer the Descriptor's actual Matter device types. When unavailable, label
+# only observed functions: an OnOff cluster alone cannot distinguish a plug
+# from a switch or a light.
+sub MATTERDevice_EndpointType($) {
+    my ($hash) = @_;
+    my @types = @{$hash->{helper}{device_types} // []};
+    if (@types) {
+        my @specific = grep { !$MATTER_UTILITY_DEVICE_TYPES{$_} } @types;
+        @types = @specific if @specific;
+        return join(", ", map {
+            $MATTER_DEVICE_TYPE_LABELS{$_} // sprintf("0x%04X", $_)
+        } @types);
+    }
+
+    my $clusters = $hash->{helper}{seen_clusters} // {};
+    return "Temperature / humidity measurement"
+        if $clusters->{0x0402} && $clusters->{0x0405};
+    return "Temperature measurement" if $clusters->{0x0402};
+    return "Humidity measurement" if $clusters->{0x0405};
+    return "Smoke/CO alarm" if $clusters->{0x005C};
+    return "Illuminance measurement" if $clusters->{0x0400};
+    return "Occupancy sensing" if $clusters->{0x0406};
+    return "Window covering" if $clusters->{0x0102};
+    return "Door lock" if $clusters->{0x0101};
+    return "Color control" if $clusters->{0x0300};
+    return "Level control" if $clusters->{0x0008};
+    return "On/Off" if $clusters->{0x0006};
+    return "Power measurement" if $clusters->{0x0090};
+    return "Unknown";
+}
+
+# Additional content for the existing root device (endpoint 0) in FHEMWEB.
+sub MATTERDevice_FWDetail($) {
+    my ($web, $name, $room) = @_;
+    my @children = MATTERDevice_NodeChildren($defs{$name});
+    return undef unless @children;
+
+    # FHEMWEB themes style <th> prominently (e.g. large red bold text).
+    # Use plain table cells for a quiet, compact heading row instead.
+    my $html = '<div class="makeTable wide"><span class="mkTitle">Matter endpoints</span>'
+             . '<table class="block wide"><tr><td>EP</td><td>Type</td><td>FHEM device</td></tr>';
+    for my $child (@children) {
+        my $endpoint = int($child->{endpoint_id});
+        my $type = FW_htmlEscape(MATTERDevice_EndpointType($child));
+        my $label = FW_htmlEscape($child->{NAME});
+        my $target = '?detail=' . urlEncode($child->{NAME});
+        $html .= qq(<tr><td>$endpoint</td><td>$type</td><td><a href="$target">$label</a></td></tr>);
+    }
+    return $html . '</table></div>';
+}
+
 sub MATTERDevice_GetOrCreateChild($$) {
     my ($root_hash, $ep_id) = @_;
     my $root_name = $root_hash->{NAME};
@@ -1301,6 +1485,9 @@ sub MATTERDevice_GetOrCreateChild($$) {
     }
 
     unless ($child) {
+        # Allow updates to existing endpoints, but do not define new ones while
+        # the owning MATTER IO has autocreate disabled.
+        return unless AttrVal($io_name, 'autocreate', 1);
         my $child_name = $root_name . "_EP" . $ep_id;
         if ($defs{$child_name}) {
             $child_name .= "_" . $node_id;
@@ -1345,6 +1532,8 @@ sub MATTERDevice_GetOrCreateChild($$) {
     # User-assigned names and attributes are retained for existing endpoint devices.
     $child->{device} = $root_name;
     $root_hash->{$cache_key} = $child;
+    MATTERDevice_EnsureNodeGroup($child);
+    MATTERDevice_SyncNodeReadings($root_hash, $child);
     return $child;
 }
 
@@ -1376,9 +1565,11 @@ rooms and attributes during node synchronization.</p>
       the Matter server; <code>removed</code> means it was decommissioned or is
       missing from a complete server snapshot. Neither value is a reachability
       or availability indication.</li>
-  <li><b>Reading available (root only):</b> <code>true</code>/<code>false</code>
-      reflects availability explicitly reported by the Matter server. Unlike
-      <code>matter_status</code>, it describes reachability rather than membership.</li>
+  <li><b>Readings model and available:</b> The root's <code>model</code> (from
+      BasicInformation) and node-wide <code>available</code> are mirrored to
+      its endpoints if reported. <code>available=true/false</code> describes
+      node reachability, not individual endpoint functionality. Unchanged
+      values do not generate repeated endpoint events.</li>
   <li><b>Capabilities:</b> Supported set commands use the Matter
       <code>AcceptedCommandList</code>, <code>FeatureMap</code> and other cluster
       metadata when available. Existing <code>has_*</code> values remain a fallback;
@@ -1387,6 +1578,11 @@ rooms and attributes during node synchronization.</p>
       power and cumulative energy clusters, where the server supplies the
       corresponding attributes.</li>
 </ul>
+<p>Nodes and their endpoints without a user-defined <code>group</code> attribute
+receive the same FHEMWEB group, <code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code>.
+Existing group values are preserved. Missing groups are also filled on already defined
+endpoints without fresh attribute updates. The detail view of the root device (endpoint 0)
+links to all its endpoint devices, even if they have been renamed.</p>
 <p>Only newly autocreated nodes/endpoints are assigned to room <code>Matter</code>.
 Decommissioned devices are retained in FHEM rather than automatically deleted.</p>
 
@@ -1413,9 +1609,12 @@ bleiben bestehende Namen, Räume und Benutzerattribute erhalten.</p>
       auf dem Matter-Server vorhanden ist; <code>removed</code> bedeutet, dass er
       dort entfernt wurde oder in einer vollständigen Node-Liste fehlt. Das Reading
       zeigt nicht die physische Erreichbarkeit oder Verfügbarkeit an.</li>
-  <li><b>Reading available (nur Root):</b> <code>true</code>/<code>false</code>
-      zeigt die vom Matter-Server gemeldete Erreichbarkeit des Knotens an,
-      unabhängig von der Mitgliedschaft (<code>matter_status</code>).</li>
+  <li><b>Readings model und available:</b> Das am Root über BasicInformation
+      ermittelte <code>model</code> und die Node-weite Erreichbarkeit
+      <code>available</code> werden bei bekannten Werten an die Endpunkte
+      weitergegeben. <code>available=true/false</code> beschreibt die
+      Erreichbarkeit des Knotens, nicht die Funktion einzelner Endpunkte.
+      Unveränderte Werte erzeugen keine weiteren Endpoint-Events.</li>
   <li><b>Capabilities:</b> Unterstützte Set-Befehle werden nach Möglichkeit
       anhand der Matter-Metadaten wie <code>AcceptedCommandList</code> und
       <code>FeatureMap</code> bestimmt. Vorhandene <code>has_*</code>-Attribute
@@ -1425,6 +1624,12 @@ bleiben bestehende Namen, Räume und Benutzerattribute erhalten.</p>
       Kohlenmonoxidkonzentration, elektrische Leistung und kumulierte Energie,
       soweit die Geräte die jeweiligen Attribute liefern.</li>
 </ul>
+<p>Knoten und Endpunkte ohne manuell gesetztes <code>group</code>-Attribut
+erhalten dieselbe FHEMWEB-Gruppe <code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code>.
+Vorhandene Gruppeneinstellungen bleiben erhalten. Fehlende Gruppen werden
+auch bei bereits definierten Endpunkten ohne neue Attributmeldungen ergänzt.
+In der Detailansicht des Root-Devices (Endpunkt 0) werden die Endpunkt-Devices verlinkt,
+auch wenn diese umbenannt wurden.</p>
 <p>Nur neu automatisch erzeugte Geräte werden dem Raum <code>Matter</code>
 zugeordnet. Entfernte Geräte bleiben in FHEM erhalten.</p>
 

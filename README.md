@@ -41,10 +41,11 @@ Make sure your Matter server is up and running and reachable via IP and port (de
 ## Features
 
 * **WebSocket Communication:** Native raw-socket handling with HTTP upgrade validation, masked client Pong responses, and JSON payload exchange. Incoming frames exceeding 32 MiB are rejected to limit memory use.
-* **Automatic node synchronization:** Processes the full node list returned by `start_listening` after every successful connection/reconnect. No manual discovery is required.
+* **Automatic node synchronization:** Processes the full node list returned by `start_listening` after every successful connection/reconnect. No manual discovery is required. The `MATTER` IO attribute `autocreate:0,1` defaults to `1`. Setting it to `0` prevents new FHEM root and endpoint devices without stopping synchronization of existing devices or affecting commissioned nodes on the Matter server.
 * **Live device lifecycle:** `node_added` and `node_updated` synchronize devices and endpoints. `node_removed` marks existing FHEM devices as removed without deleting their configuration.
 * **Manual discovery:** `set matterServer discover` still requests a complete `get_nodes` snapshot for diagnostics or manual resynchronization.
 * **Collision-safe FHEM devices:** Node identity is scoped to IODev and node ID; endpoint identity additionally includes endpoint ID. Newly created devices default to room `Matter`; existing names, rooms and attributes remain unchanged.
+* **Node groups and navigation:** Root nodes and endpoints without a custom `group` attribute are grouped as `Node <node_id> (<IODev>)`. In FHEMWEB, the existing root device (endpoint 0) shows direct links to its endpoint devices.
 * **Device Commissioning:** Add new network-connected devices directly via manual pairing codes from FHEM.
 * **Dynamic Set-Lists:** Uses Matter global metadata (AcceptedCommandList, FeatureMap, AttributeList and ClusterRevision) to expose supported OnOff, LevelControl, ColorControl/CT/RGB, locking and window-covering commands. The existing `has_*` attributes remain available as a fallback before metadata arrives, and explicit `has_*=0` disables the corresponding control.
 * **Additional cluster readings:** PowerSource (including battery percentage), SmokeCOAlarm, carbon-monoxide concentration, ElectricalPowerMeasurement and ElectricalEnergyMeasurement. Numerical readings use the per-attribute transformations carried forward from the feature branches; device-specific unit and firmware behavior has not been verified live.
@@ -104,7 +105,13 @@ set matterServer discover
 
 A `node_removed` event sets the `matter_status` reading to `removed` on the affected FHEM node and endpoints, **without deleting** their configuration.
 
-`available=true/false` is taken only from a server node snapshot or `node_updated` event that explicitly contains an availability boolean. It is recorded on the root node; no recurring polling is introduced. A subsequent `node_added`/`node_updated` restores `matter_status` to `present`. This reading describes server membership, **not** whether a physical device is currently reachable.
+`available=true/false` is taken only from a server node snapshot or `node_updated` event that explicitly contains an availability boolean. It is recorded on the root node and mirrored to its endpoints; no recurring polling is introduced. A subsequent `node_added`/`node_updated` restores `matter_status` to `present`. This reading describes server membership, **not** whether a physical device is currently reachable.
+
+The root's `model` reading (BasicInformation on endpoint 0) is mirrored to the endpoints as well, identifying the physical device from each endpoint detail page. The module copies only `model` and `available` when the source value is known and differs from the current endpoint reading. New and existing endpoints are handled automatically; no other readings are inherited. The existing `matter_status` reading already tracks Matter server membership separately.
+
+Each existing root `MATTERDevice` (endpoint 0) and its endpoint devices appear under the same FHEMWEB `group`, for example `Node 35 (matterServer)`, provided they have no individually configured `group` attribute. Missing groups on previously created devices are added during node synchronization even if the current snapshot contains no endpoint attributes; manual groups are not replaced. The group label incorporates the IO device name to distinguish nodes with identical IDs on different Matter servers.
+
+In the root device's FHEMWEB detail page, **Matter endpoints** shows a compact `EP | Type | FHEM device` table with links to all existing endpoint devices. It uses plain table cells for the headings (avoiding FHEMWEB's brightly colored `th` styling). The type is taken from the endpoint's Matter Descriptor `DeviceTypeList` (cluster `0x001D`, attribute `0x0000`) when available. `getConfig` requests this list explicitly. If no device type has been reported, the UI falls back to conservative descriptions of observed clusters, such as `Temperature measurement` or `On/Off`. An OnOff cluster alone is not assumed to be a plug, light or switch. Unrecognized DeviceType IDs are shown in hexadecimal. The standard DeviceOverview remains visible and no additional FHEM devices, readings or events are created.
 
 ### 4. Control Devices
 
@@ -122,7 +129,8 @@ Once created, individual `MATTERDevice` instances will appear. You can control t
 
 ### MATTER IO-Device
 
-* disable: Temporarily disable the connection (0/1).
+* `disable`: Temporarily disable the connection (0/1).
+* `autocreate`: Default `1`. Set `attr matterServer autocreate 0` to suppress automatic creation of **new** root and endpoint devices. Existing FHEM Matter devices continue to work, and manually defined devices are unaffected. Set to `1` or remove the attribute to restore default behavior. `set matterServer discover` then discovers any missing devices without re-commissioning them.
 
 ### MATTERDevice (Child)
 
