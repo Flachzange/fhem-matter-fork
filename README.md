@@ -47,7 +47,10 @@ Make sure your Matter server is up and running and reachable via IP and port (de
 * **Collision-safe FHEM devices:** Node identity is scoped to IODev and node ID; endpoint identity additionally includes endpoint ID. Newly created devices default to room `Matter`; existing names, rooms and attributes remain unchanged.
 * **Node groups and navigation:** Root nodes and endpoints without a custom `group` attribute are grouped as `Node <node_id> (<IODev>)`. In FHEMWEB, the existing root device (endpoint 0) shows direct links to its endpoint devices.
 * **Device Commissioning:** Add new network-connected devices directly via manual pairing codes from FHEM.
-* **Dynamic Set-Lists:** Automatically detects device capabilities (OnOff, LevelControl, ColorControl/CT/RGB) and adjusts FHEM's `set` options and sliders accordingly.
+* **Dynamic Set-Lists:** Uses Matter global metadata (AcceptedCommandList, FeatureMap, AttributeList and ClusterRevision) to expose supported OnOff, LevelControl, ColorControl/CT/RGB, locking and window-covering commands. The existing `has_*` attributes remain available as a fallback before metadata arrives, and explicit `has_*=0` disables the corresponding control.
+* **Additional cluster readings:** PowerSource (including battery percentage), SmokeCOAlarm, carbon-monoxide concentration, ElectricalPowerMeasurement and ElectricalEnergyMeasurement. Numerical readings use the per-attribute transformations carried forward from the feature branches; device-specific unit and firmware behavior has not been verified live.
+* **Node availability:** The root node's `available` reading tracks the Matter server's reported reachability. This is independent from `matter_status` (`present`/`removed`), which only tracks server node membership.
+* **RGB brightness handling:** An RGB command also sends a LevelControl level when the endpoint supports it, in addition to the hue/saturation or XY color command.
 * **Auto-Reconnect:** Built-in resilient connection recovery with safe interval timers.
 * **FHEM Updater Support:** Seamless integration into the FHEM update mechanism.
 
@@ -100,7 +103,9 @@ Manual resynchronization remains available:
 set matterServer discover
 ```
 
-A `node_removed` event sets the `matter_status` reading to `removed` on the affected FHEM node and endpoints, **without deleting** their configuration. A subsequent `node_added`/`node_updated` restores `matter_status` to `present`. This reading describes server membership, **not** whether a physical device is currently reachable.
+A `node_removed` event sets the `matter_status` reading to `removed` on the affected FHEM node and endpoints, **without deleting** their configuration.
+
+`available=true/false` is taken only from a server node snapshot or `node_updated` event that explicitly contains an availability boolean. It is recorded on the root node; no recurring polling is introduced. A subsequent `node_added`/`node_updated` restores `matter_status` to `present`. This reading describes server membership, **not** whether a physical device is currently reachable.
 
 Each existing root `MATTERDevice` (endpoint 0) and its endpoint devices appear under the same FHEMWEB `group`, for example `Node 35 (matterServer)`, provided they have no individually configured `group` attribute. Missing groups on previously created devices are added during node synchronization; manual groups are not replaced. The group label incorporates the IO device name to distinguish nodes with identical IDs on different Matter servers.
 
@@ -126,7 +131,7 @@ Once created, individual `MATTERDevice` instances will appear. You can control t
 
 ### MATTERDevice (Child)
 
-* `has_onoff`, `has_level`, `has_ct`, `has_hue`, `has_saturation`, `has_xy`: Feature flags (automatically managed during discovery/getConfig).
+* `has_onoff`, `has_level`, `has_ct`, `has_hue`, `has_saturation`, `has_xy`, `has_wc`: Legacy capability flags. Existing values are retained. When the Matter server has supplied an AcceptedCommandList, advertised command support takes precedence; an explicit flag value `0` still disables that command.
 * `max_level`, `color_temp_min`, `color_temp_max`: Limits for sliders and color pickers.
 
 ---
@@ -144,7 +149,7 @@ Once created, individual `MATTERDevice` instances will appear. You can control t
 
 ## Development and tests
 
-`prove -v t/matter_node_sync.t` runs regression tests using modeled FHEM callback side effects and a real socketpair for split WebSocket frames, including a payload over 64 KiB. The GitHub Actions workflow `.github/workflows/perl-tests.yml` installs the Perl JSON dependency and executes this test. These tests do **not** replace a live FHEM/Matter-server integration test.
+`prove -v t/matter_node_sync.t` runs regression tests using modeled FHEM callback side effects and a real socketpair for split WebSocket frames, including a payload over 64 KiB, availability propagation, getConfig correlation, measurement mappings and RGB command construction. The GitHub Actions workflow `.github/workflows/perl-tests.yml` installs the Perl JSON dependency and executes this test. These tests do **not** replace a live FHEM/Matter-server integration test.
 
 The feature branch does not automatically update an installed FHEM instance. The updater configuration shown above points to the upstream GitLab repository, not this fork's feature branch.
 
