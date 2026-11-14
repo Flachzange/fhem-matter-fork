@@ -519,6 +519,10 @@ is(scalar(@timers), 1, 'one timeout timer follows an outstanding Ping');
 RemoveInternalTimer($silent, 'MATTER_Heartbeat'); # Simulated expiry
 MATTER_Heartbeat($silent);
 is($silent->{ws_status}, 'disconnected', 'Pong deadline detects silent connection');
+like(join("\n", @log), qr/\[silentIO\] WebSocket pong timeout after 15 seconds; reconnecting/,
+     'Pong timeout explains the failure in the FHEM log');
+like(join("\n", @log), qr/\[silentIO\] Reconnect scheduled in 30 seconds/,
+     'retry schedule is logged');
 is(scalar(@timers), 1, 'Pong timeout leaves exactly one retry timer');
 is($timers[0]{callback}, 'MATTER_Open', 'Pong timeout schedules TCP reconnect');
 ok(!exists($selectlist{silentIO}), 'dead WebSocket is removed from FHEM selectlist');
@@ -535,6 +539,8 @@ $defs{slowIO} = $slow;
 $selectlist{slowIO} = $slow;
 MATTER_ConnectTimeout($slow);
 is($slow->{ws_status}, 'disconnected', 'incomplete handshake times out');
+like(join("\n", @log), qr/\[slowIO\] WebSocket upgrade timed out after 10 seconds/,
+     'handshake timeout is logged with phase and deadline');
 is(scalar(@timers), 1, 'handshake timeout leaves only a reconnect timer');
 close($slow_peer);
 
@@ -558,6 +564,8 @@ ok(select(undef, $wout, undef, 1) > 0,
    'nonblocking socket becomes writable when TCP connection completes');
 $async->{directWriteFn}->($async);
 is($async->{ws_status}, 'handshake', 'writable connect sends HTTP WebSocket upgrade');
+like(join("\n", @log), qr/\[asyncIO\] TCP connect attempt 1 to 127\.0\.0\.1:/,
+     'connect attempt is logged with attempt count and target');
 my $accepted = $listener->accept() or die "accept local WebSocket: $!";
 my $request;
 sysread($accepted, $request, 2048);
@@ -566,6 +574,8 @@ my $http101 = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnect
 syswrite($accepted, $http101) == length($http101) or die 'HTTP 101 write failed';
 MATTER_Read($async);
 is($async->{ws_status}, 'connected', 'successful upgrade finishes the async handshake');
+like(join("\n", @log), qr/\[asyncIO\] WebSocket connected \(attempt 1\); restarting node listening/,
+     'successful WebSocket recovery is logged at connection completion');
 ok(!grep($_->{callback} eq 'MATTER_ConnectTimeout', @timers),
    'successful handshake cancels its connect timeout');
 is(scalar(grep { $_->{callback} eq 'MATTER_Heartbeat' } @timers), 1,
@@ -589,11 +599,15 @@ $selectlist{disableIO} = $disabled;
 InternalTimer(31, 'MATTER_Heartbeat', $disabled, 0);
 is(CommandAttr(undef, 'disableIO disable 1'), undef,
    'disable=1 is accepted on a running MATTER IO');
+like(join("\n", @log), qr/\[disableIO\] Disabled: connection closed, pending timers cancelled/,
+     'disable transition and cleanup are logged');
 ok(!$disabled->{CD} && !exists($selectlist{disableIO}),
    'disable=1 immediately closes its running connection');
 is(scalar(@timers), 0, 'disable=1 cancels all pending IO timers');
 is(CommandAttr(undef, 'disableIO disable 0'), undef,
    'disable=0 is accepted after shutdown');
+like(join("\n", @log), qr/\[disableIO\] Enabled: connection attempt scheduled/,
+     'enable transition and recovery attempt are logged');
 is(scalar(@timers), 1, 're-enabling schedules one connection attempt');
 is($timers[0]{callback}, 'MATTER_Open', 're-enable defers reconnect until AttrVal is updated');
 is(CommandAttr(undef, 'disableIO disable 0'), undef, 'repeated enable is accepted');

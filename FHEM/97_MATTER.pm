@@ -207,6 +207,7 @@ sub MATTER_Attr {
     # so MATTER_Open sees the updated AttrVal rather than the previous value.
     if ($cmd eq 'set' && defined($attr_value) && $attr_value eq '1') {
         MATTER_Close($hash);
+        delete $hash->{helper}{connect_attempts};
         Log3 $name, 3, "[$name] Disabled: connection closed, pending timers cancelled";
     } elsif (($cmd eq 'set' && defined($attr_value) && $attr_value eq '0')
              || $cmd eq 'del') {
