@@ -154,7 +154,8 @@ sub MATTERDevice_Initialize($) {
     $hash->{SetFn}    = "MATTERDevice_Set";
     $hash->{GetFn}    = "MATTERDevice_Get";
     $hash->{ParseFn}  = "MATTERDevice_Parse";
-    $hash->{AttrList} = "has_onoff:0,1 " .
+    $hash->{AttrList} = "IODev " .
+                        "has_onoff:0,1 " .
                         "has_level:0,1 " .
                         "has_ct:0,1 " .
                         "has_hue:0,1 " .
