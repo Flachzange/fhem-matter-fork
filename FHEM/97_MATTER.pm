@@ -730,7 +730,8 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
 <p>Newly created logical devices default to room <code>Matter</code>; existing FHEM
 names, rooms and user attributes are retained. A removed node is marked with
 <code>matter_status=removed</code> rather than deleted. This status describes node
-membership on the server, not physical device availability.</p>
+membership on the server, not physical device availability. Incoming WebSocket frames
+larger than 32 MiB are rejected and trigger a reconnect.</p>
 
 =end html
 
@@ -757,7 +758,8 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
 Vorhandene Namen, Räume und Benutzerattribute bleiben unverändert. Entfernte
 Nodes werden mit <code>matter_status=removed</code> markiert und nicht automatisch
 gelöscht. Dieses Reading beschreibt die Mitgliedschaft auf dem Matter-Server,
-nicht die physische Erreichbarkeit des Geräts.</p>
+nicht die physische Erreichbarkeit des Geräts. Eingehende WebSocket-Frames
+über 32 MiB werden abgewiesen; anschließend wird die Verbindung neu aufgebaut.</p>
 
 =end html
 =cut
