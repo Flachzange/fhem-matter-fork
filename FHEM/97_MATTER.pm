@@ -312,7 +312,7 @@ sub MATTER_Read {
             $header_len = 4;
         } elsif ($payload_len == 127) {
             return if length($hash->{BUF}) < 10;
-            my @l_bytes = unpack("x2 N N", substr($hash->{BUF}, 2, 8));
+            my @l_bytes = unpack("NN", substr($hash->{BUF}, 2, 8));
             $payload_len = ($l_bytes[0] * 4294967296) + $l_bytes[1];
             $header_len = 10;
         }
@@ -388,14 +388,14 @@ sub MATTER_ProcessNode($$) {
     my $io_name = $hash->{NAME};
     return unless ref($node) eq 'HASH';
     my $node_id = $node->{node_id};
-    unless (defined($node_id) && $node_id =~ /^\d+$/) {
+    unless (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
         Log3 $io_name, 2, 'MATTER: Ignoring node without a valid node_id';
         return;
     }
 
     my $root_key = "$io_name:$node_id";
     my $root = $modules{MATTERDevice}{defptr}{$root_key};
-    if ($root && (!$defs{$root->{NAME}} || $defs{$root->{NAME}} ne $root ||
+    if ($root && (!$root->{NAME} || !$defs{$root->{NAME}} || $defs{$root->{NAME}} ne $root ||
                   ($root->{node_id} // '') ne $node_id || ($root->{endpoint_id} // 0) != 0 ||
                   !$root->{IODev} || $root->{IODev}{NAME} ne $io_name)) {
         delete $modules{MATTERDevice}{defptr}{$root_key};
@@ -403,7 +403,7 @@ sub MATTER_ProcessNode($$) {
     }
 
     unless ($root) {
-        # A renamed device may still exist when its defptr entry was lost.
+        # Reuse renamed roots by identity, never by the server-provided label.
         foreach my $device (values %defs) {
             next unless ($device->{TYPE} // '') eq 'MATTERDevice';
             next unless defined($device->{node_id}) && $device->{node_id} eq $node_id;
@@ -415,35 +415,66 @@ sub MATTER_ProcessNode($$) {
     }
 
     unless ($root) {
-        my $base_name = $node->{name} // "MatterDevice_$node_id";
+        my $base_name = $node->{name};
+        $base_name = "MatterDevice_$node_id" unless defined($base_name) && !ref($base_name) && length($base_name);
         $base_name =~ s/[^a-zA-Z0-9_.-]/_/g;
         $base_name = "MatterDevice_$node_id" unless length($base_name);
+        $base_name = substr($base_name, 0, 64);
         my $device_name = "MATTER_$base_name";
         if ($defs{$device_name}) {
-            $device_name .= "_$node_id";
+            $device_name = "MATTER_" . $base_name . "_" . $node_id;
             my $candidate = $device_name;
             my $suffix = 2;
-            $device_name = $candidate . "_" . $suffix++ while $defs{$device_name};
+            while ($defs{$device_name}) {
+                $device_name = $candidate . "_" . $suffix++;
+            }
+        }
+
+        # MATTERDevice_Define uses AssignIoPort by default. Save other IO owners
+        # before defining, as the temporary automatic assignment may reuse their defptr key.
+        my %other_roots;
+        foreach my $existing (values %defs) {
+            next unless ($existing->{TYPE} // '') eq 'MATTERDevice';
+            next unless ($existing->{node_id} // '') eq $node_id && ($existing->{endpoint_id} // 0) == 0;
+            next unless $existing->{IODev};
+            my $existing_io = $existing->{IODev}{NAME};
+            next if $existing_io eq $io_name;
+            $other_roots{"$existing_io:$node_id"} = $existing;
         }
 
         my $error = CommandDefine(undef, "$device_name MATTERDevice $node_id");
-        if ($error) {
-            Log3 $io_name, 2, "MATTER: Cannot create $device_name: $error";
-            return;
-        }
         $root = $defs{$device_name};
-        unless ($root && ($root->{TYPE} // '') eq 'MATTERDevice' &&
-                ($root->{node_id} // '') eq $node_id && ($root->{endpoint_id} // 0) == 0) {
-            Log3 $io_name, 2, "MATTER: Root device $device_name was not created correctly";
+        if ($error || !$root || ($root->{TYPE} // '') ne 'MATTERDevice' ||
+            ($root->{node_id} // '') ne $node_id || ($root->{endpoint_id} // 0) != 0) {
+            Log3 $io_name, 2, "MATTER: Cannot create root $device_name: " . ($error // 'invalid result');
+            foreach my $key (keys %other_roots) {
+                $modules{MATTERDevice}{defptr}{$key} = $other_roots{$key};
+            }
             return;
         }
 
+        # Use the FHEM core path to set IODev, including its attribute and reading.
         my $old_io = $root->{IODev} ? $root->{IODev}{NAME} : 'no_io';
+        my $attr_error = CommandAttr(undef, "$device_name IODev $io_name");
+        if ($attr_error || !$root->{IODev} || $root->{IODev}{NAME} ne $io_name) {
+            Log3 $io_name, 2, "MATTER: IODev assignment failed for $device_name: " .
+                ($attr_error // 'wrong IODev after assignment');
+            CommandDelete(undef, $device_name);
+            foreach my $key (keys %other_roots) {
+                $modules{MATTERDevice}{defptr}{$key} = $other_roots{$key};
+            }
+            return;
+        }
         if ($old_io ne $io_name &&
             ($modules{MATTERDevice}{defptr}{"$old_io:$node_id"} // '') eq $root) {
             delete $modules{MATTERDevice}{defptr}{"$old_io:$node_id"};
         }
-        $root->{IODev} = $hash;
+        foreach my $key (keys %other_roots) {
+            $modules{MATTERDevice}{defptr}{$key} = $other_roots{$key};
+        }
+
+        my $room_error = CommandAttr(undef, "$device_name room Matter");
+        Log3 $io_name, 3, "MATTER: Cannot set default room on $device_name: $room_error" if $room_error;
         Log3 $io_name, 3, "MATTER: Created root device $device_name for node $node_id";
     }
     $modules{MATTERDevice}{defptr}{$root_key} = $root;
@@ -460,8 +491,11 @@ sub MATTER_ProcessNodeList($$$) {
     my $io_name = $hash->{NAME};
     my %present;
     foreach my $node (@$nodes) {
-        next unless ref($node) eq 'HASH' &&
-                    defined($node->{node_id}) && $node->{node_id} =~ /^\d+$/;
+        unless (ref($node) eq 'HASH' && defined($node->{node_id}) &&
+                !ref($node->{node_id}) && $node->{node_id} =~ /^\d+$/) {
+            Log3 $io_name, 2, "MATTER: Invalid node in $source response, ignoring incomplete snapshot";
+            return;
+        }
         $present{$node->{node_id}} = 1;
         MATTER_ProcessNode($hash, $node);
     }
