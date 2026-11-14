@@ -112,6 +112,7 @@ is($attr{MATTER_Hall_Light}{room}, 'LivingRoom', 'existing room is preserved');
 delete $defs{MATTER_Hall_Light};
 $root->{NAME} = 'ManuallyRenamedRoot';
 $defs{ManuallyRenamedRoot} = $root;
+$attr{ManuallyRenamedRoot} = delete $attr{MATTER_Hall_Light}; # FHEM CommandRename moves attributes too.
 MATTER_ProcessNode($defs{ioA}, node(42, 'Yet another label'));
 is($defs{ManuallyRenamedRoot}, $root, 'renamed root reused by identity');
 is($defs{MATTER_Hall_Light_EP1}, $child, 'renamed root reuses existing endpoint');
