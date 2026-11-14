@@ -12,19 +12,39 @@ The architecture consists of two modules:
 ## Architecture Overview
 
 ```mermaid
-graph TD
-    subgraph FHEM Server
-        A[FHEM Core] -->|loads| B[97_MATTER.pm IO-Device]
-        B -->|creates / controls| C[97_MATTERDevice.pm Child-Device]
+flowchart TD
+    subgraph FHEM["FHEM server"]
+        CORE["FHEM Core"] -->|"loads"| IO["97_MATTER.pm (IO device)"]
+        IO -->|"creates / synchronizes"| NODE["97_MATTERDevice.pm (nodes and endpoints)"]
     end
 
-    subgraph External Host / Network
-        D[matter-js / python-matter-server]
+    SERVER["matterjs-server (Matter controller)"]
+    IO <-->|"WebSocket / JSON (port 5580)"| SERVER
+
+    BACKBONE["IPv6 infrastructure backbone"]
+    SERVER <-->|"Matter over IPv6"| BACKBONE
+
+    subgraph ESP["THBR firmware on ESP32-C6"]
+        BR["OpenThread Border Router"]
+        BLE["BLE proxy (optional)"]
     end
 
-    B <-->|WebSocket JSON / Port 5580| D
-    D <-->|Matter Protocol over IP/Thread| E[Smart Home Devices]
+    BACKBONE <-->|"W5500 Ethernet (THBR-ETH) or USB/TAP / PPP (THBR)"| BR
+    SERVER <-->|"BLE proxy WebSocket (/ble)"| BLE
+
+    DEVICE["Matter-over-Thread device"]
+    BR <-->|"Thread / IEEE 802.15.4"| DEVICE
+    BLE -.->|"Bluetooth LE (initial commissioning)"| DEVICE
 ```
+
+The ESP32-C6 can run **two distinct functions**: the OpenThread Border Router provides the IPv6 route into the Thread mesh, while the optional **BLE proxy** lends the ESP32-C6 Bluetooth radio to matterjs-server for initial commissioning. The proxy connects to the Matter server through its separate `/ble` WebSocket endpoint; FHEM does not communicate with the proxy directly. After commissioning, Matter device traffic uses IPv6 through the Border Router, **not BLE**.
+
+The backbone connection shown above represents two alternative THBR deployments:
+
+- **[tostmann/THBR](https://github.com/tostmann/THBR)** — original ESP32-C6 firmware with host-based USB/TAP or PPP backbone and BLE proxy.
+- **[Flachzange/THBR-ETH](https://github.com/Flachzange/THBR-ETH)** — fork with standalone W5500 Ethernet/PoE backbone; its W5500 profile also includes the BLE proxy.
+
+The BLE-proxy path requires **matterjs-server** with proxy support enabled. Compatibility with a WebSocket-based Matter server does not by itself imply that it supports the THBR BLE proxy.
 
 ---
 
@@ -157,7 +177,7 @@ Once created, individual `MATTERDevice` instances will appear. You can control t
 ## Open Issues:
 
 * multiple endpoints are supported, but not tested so far, as I have only devices witrh one endpoint.
-* Commissioning via Bluetooth not realiezed so far
+* BLE-proxy-assisted commissioning is available via `commissionCode ... auto`, but a live FHEM commissioning test with a real Matter-over-Thread device is still pending.
 * Window Covering (Shutters) are included but not tested
 * Door locks are not supported (only some readings)
 * Thermostats are not supported
