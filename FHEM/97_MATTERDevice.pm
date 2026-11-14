@@ -480,20 +480,24 @@ sub MATTERDevice_AttributeUsable($$$) {
 # hinterlegten FeatureMap-Bedingungen erfüllt sind.
 sub MATTERDevice_CommandSupported($$$) {
     my ($hash, $cluster_id, $command_id) = @_;
+    my %legacy = (
+        0x0006 => { 0x00 => 'has_onoff', 0x01 => 'has_onoff', 0x02 => 'has_onoff' },
+        0x0008 => { 0x00 => 'has_level', 0x04 => 'has_level', 0x08 => 'has_frequency' },
+        0x0101 => { 0x00 => 'has_lock', 0x01 => 'has_lock' },
+        0x0102 => { 0x00 => 'has_wc', 0x01 => 'has_wc', 0x02 => 'has_wc',
+                    0x05 => 'has_position_lift', 0x08 => 'has_position_tilt' },
+        0x0300 => { 0x06 => 'has_hue', 0x07 => 'has_xy', 0x0A => 'has_ct' },
+    );
+    my $flag = $legacy{$cluster_id}{$command_id};
+    my $override = $flag ? AttrVal($hash->{NAME}, $flag, undef) : undef;
+    # Explicit has_*=0 remains authoritative even when the server advertises
+    # a command. An explicit 1 alone never invents a missing advertised command.
+    return 0 if defined($override) && $override eq '0';
+
     my $accepted = $hash->{helper}{capabilities}{$cluster_id}{accepted_commands};
     if (ref($accepted) ne 'HASH') {
-        # Retain legacy FHEM has_* controls while the server has not supplied
-        # an AcceptedCommandList. Advertised commands take precedence once known.
-        my %legacy = (
-            0x0006 => { 0x00 => 'has_onoff', 0x01 => 'has_onoff', 0x02 => 'has_onoff' },
-            0x0008 => { 0x00 => 'has_level', 0x04 => 'has_level', 0x08 => 'has_frequency' },
-            0x0101 => { 0x00 => 'has_lock', 0x01 => 'has_lock' },
-            0x0102 => { 0x00 => 'has_wc', 0x01 => 'has_wc', 0x02 => 'has_wc',
-                        0x05 => 'has_position_lift', 0x08 => 'has_position_tilt' },
-            0x0300 => { 0x06 => 'has_hue', 0x07 => 'has_xy', 0x0A => 'has_ct' },
-        );
-        my $flag = $legacy{$cluster_id}{$command_id};
-        return $flag && AttrVal($hash->{NAME}, $flag, 0) ? 1 : 0;
+        # A legacy FHEM installation may have no command metadata yet.
+        return defined($override) && $override ? 1 : 0;
     }
     return 0 if (!MATTERDevice_CommandAccepted($hash, $cluster_id, $command_id));
 
