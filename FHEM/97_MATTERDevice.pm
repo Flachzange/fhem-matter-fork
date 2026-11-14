@@ -360,7 +360,7 @@ sub MATTERDevice_NormalizeMatterId($) {
 
 # Verarbeitet die globalen Matter-Attribute clusterunabhängig und speichert sie
 # pro Endpoint-Device und Cluster. Rückgabe 1 bedeutet: globales Attribut wurde behandelt.
-sub MATTERDevice_ProcessGlobalAttribute($$) {
+sub MATTERDevice_ProcessGlobalAttribute($$$$) {
     my ($hash, $cluster_id, $attr_id, $value) = @_;
     return 0 if (!exists($MATTER_GLOBAL_ATTRIBUTES{$attr_id}));
 
@@ -393,34 +393,34 @@ sub MATTERDevice_ProcessGlobalAttribute($$) {
     return 1;
 }
 
-sub MATTERDevice_CapabilityContains($$) {
+sub MATTERDevice_CapabilityContains($$$$) {
     my ($hash, $cluster_id, $list_name, $id) = @_;
     my $list = $hash->{helper}{capabilities}{$cluster_id}{$list_name};
     return 0 if (ref($list) ne 'HASH');
     return exists($list->{$id}) ? 1 : 0;
 }
 
-sub MATTERDevice_CommandGenerated($$) {
+sub MATTERDevice_CommandGenerated($$$) {
     my ($hash, $cluster_id, $command_id) = @_;
     return MATTERDevice_CapabilityContains($hash, $cluster_id, "generated_commands", $command_id);
 }
 
-sub MATTERDevice_CommandAccepted($$) {
+sub MATTERDevice_CommandAccepted($$$) {
     my ($hash, $cluster_id, $command_id) = @_;
     return MATTERDevice_CapabilityContains($hash, $cluster_id, "accepted_commands", $command_id);
 }
 
-sub MATTERDevice_EventSupported($$) {
+sub MATTERDevice_EventSupported($$$) {
     my ($hash, $cluster_id, $event_id) = @_;
     return MATTERDevice_CapabilityContains($hash, $cluster_id, "event_list", $event_id);
 }
 
-sub MATTERDevice_AttributeSupported($$) {
+sub MATTERDevice_AttributeSupported($$$) {
     my ($hash, $cluster_id, $attr_id) = @_;
     return MATTERDevice_CapabilityContains($hash, $cluster_id, "attribute_list", $attr_id);
 }
 
-sub MATTERDevice_FeatureSupported($$) {
+sub MATTERDevice_FeatureSupported($$$) {
     my ($hash, $cluster_id, $feature) = @_;
     my $feature_map = $hash->{helper}{capabilities}{$cluster_id}{feature_map};
     return 0 if (!defined($feature_map) || ref($feature_map));
@@ -438,14 +438,14 @@ sub MATTERDevice_FeatureSupported($$) {
     return (($feature_map & (1 << $bit)) != 0) ? 1 : 0;
 }
 
-sub MATTERDevice_ClusterRevision($) {
+sub MATTERDevice_ClusterRevision($$) {
     my ($hash, $cluster_id) = @_;
     my $revision = $hash->{helper}{capabilities}{$cluster_id}{cluster_revision};
     return undef if (!defined($revision) || ref($revision));
     return int($revision);
 }
 
-sub MATTERDevice_ClusterRevisionAtLeast($$) {
+sub MATTERDevice_ClusterRevisionAtLeast($$$) {
     my ($hash, $cluster_id, $minimum) = @_;
     my $revision = MATTERDevice_ClusterRevision($hash, $cluster_id);
     return 0 if (!defined($revision));
@@ -455,7 +455,7 @@ sub MATTERDevice_ClusterRevisionAtLeast($$) {
 # AttributeList ist die Quelle für die tatsächliche Präsenz. Für bekannte
 # Attribute werden zusätzlich FeatureMap- und ClusterRevision-Bedingungen
 # aus der lokalen Matter-Abbildung geprüft.
-sub MATTERDevice_AttributeUsable($$) {
+sub MATTERDevice_AttributeUsable($$$) {
     my ($hash, $cluster_id, $attr_id) = @_;
     return 0 if (!MATTERDevice_AttributeSupported($hash, $cluster_id, $attr_id));
 
@@ -478,12 +478,12 @@ sub MATTERDevice_AttributeUsable($$) {
 # Ein FHEM-Command gilt nur dann als verfügbar, wenn der Matter-Server ihn
 # tatsächlich in AcceptedCommandList meldet und die für diesen Command
 # hinterlegten FeatureMap-Bedingungen erfüllt sind.
-sub MATTERDevice_CommandSupported($$) {
+sub MATTERDevice_CommandSupported($$$) {
     my ($hash, $cluster_id, $command_id) = @_;
     my $accepted = $hash->{helper}{capabilities}{$cluster_id}{accepted_commands};
     if (ref($accepted) ne 'HASH') {
-        # Existing FHEM installations may not yet have global Matter command metadata.
-        # Preserve the legacy has_* controls until a current AcceptedCommandList arrives.
+        # Retain legacy FHEM has_* controls while the server has not supplied
+        # an AcceptedCommandList. Advertised commands take precedence once known.
         my %legacy = (
             0x0006 => { 0x00 => 'has_onoff', 0x01 => 'has_onoff', 0x02 => 'has_onoff' },
             0x0008 => { 0x00 => 'has_level', 0x04 => 'has_level', 0x08 => 'has_frequency' },
@@ -513,7 +513,7 @@ sub MATTERDevice_CommandSupported($$) {
     return 1;
 }
 
-sub MATTERDevice_Set($@) {
+sub MATTERDevice_Set($$@) {
     my ($hash, $name, $cmd, @args) = @_;
 
     my @setList = MATTERDevice_GetSetList($hash);
@@ -966,10 +966,10 @@ sub MATTERDevice_Set($@) {
     return undef;
 }
 
-sub MATTERDevice_Get($@) { return undef; }
+sub MATTERDevice_Get($$@) { return undef; }
 
 # --- Zentraler Parser für alle Attribut-Updates ---
-sub MATTERDevice_ProcessAttributeValue($$) {
+sub MATTERDevice_ProcessAttributeValue($$$$) {
     my ($hash, $cluster_id, $attr_id, $value) = @_; # quick unpack
     my $name = $hash->{NAME};
 
@@ -999,15 +999,15 @@ sub MATTERDevice_ProcessAttributeValue($$) {
 
     return if !defined($value);
     if ($transform && ref($transform) eq 'CODE') {
-        # Numeric transformations must never convert malformed objects into zero.
+        # Numeric transformations must not turn malformed values into zero.
         if ($cluster_id != 0x0091) {
-            return if ref($value) || $value !~ /^-?(?:\\d+(?:\\.\\d+)?|\\.\\d+)$/;
+            return if ref($value) || $value !~ /^-?(?:\d+(?:\.\d+)?|\.\d+)$/;
         }
         $value = $transform->($value);
         return if !defined($value);
     }
 
-    # Keep pre-existing user capability attributes usable until command metadata is received.
+    # Existing installations may depend on manually managed has_* attributes.
     my %legacy_features = (
         '6/0'   => 'has_onoff', '8/0'   => 'has_level', '8/4'   => 'has_frequency',
         '258/0' => 'has_wc',    '258/3' => 'has_position_lift',
@@ -1051,7 +1051,7 @@ sub MATTERDevice_ProcessAttributeValue($$) {
     readingsEndUpdate($hash, 1);
 }
 
-sub MATTERDevice_Parse($) {
+sub MATTERDevice_Parse($$) {
     my ($hash, $data) = @_;
     my $name = $hash->{NAME};
 
