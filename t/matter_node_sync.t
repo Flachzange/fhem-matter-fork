@@ -146,6 +146,23 @@ $defs{ioA}{helper}{pending_command}{17} = 'get_nodes';
 MATTER_Close($defs{ioA});
 ok(!exists($defs{ioA}{helper}{pending_command}), 'close clears pending commands');
 
+# Restore logical ownership after losing runtime IODev pointers (rereadcfg/reload case).
+delete $root->{IODev};
+MATTER_ProcessNode($defs{ioA}, node(42, 'Hall Light'));
+is($root->{IODev}{NAME}, 'ioA', 'existing root restores configured IODev');
+is($defs{ManuallyRenamedRoot}, $root, 'rebind does not replace the root FUUID');
+delete $child->{IODev};
+MATTER_ProcessNode($defs{ioA}, node(42, 'Hall Light'));
+is($child->{IODev}{NAME}, 'ioA', 'existing endpoint restores configured IODev');
+is($defs{MATTER_Hall_Light_EP1}, $child, 'rebind does not replace endpoint');
+
+# Failed FHEM IODev assignment must not leave a misbound autocreated device.
+$fail_io_for = 'MATTER_IOFailure';
+MATTER_ProcessNode($defs{ioB}, node(77, 'IOFailure'));
+ok(!exists($defs{MATTER_IOFailure}), 'failed root IODev assignment rolls back new device');
+ok(!exists($modules{MATTERDevice}{defptr}{'ioB:77'}), 'failed assignment does not claim target IO');
+$fail_io_for = '';
+
 # Real TCP byte-stream behavior: HTTP upgrade followed by a split >64 KiB WS frame.
 my ($client, $server);
 socketpair($client, $server, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die "socketpair: $!";
