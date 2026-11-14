@@ -7,12 +7,18 @@ use HttpUtils;
 use Time::Piece;
 use JSON;
 use IO::Socket::INET;
+use Socket qw(SOL_SOCKET SO_ERROR);
 use MIME::Base64;
 use Data::Dumper;
 
 our $readingFnAttributes;
 
 my $MATTER_version = "V0.2 22.08.2026";
+
+my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
+my $MATTER_ping_interval = 30;
+my $MATTER_pong_timeout = 15;
+my $MATTER_reconnect_delay = 30;
 
 my %MATTER_sets = (
     "connect"  => "noArg",
@@ -59,10 +65,10 @@ sub MATTER_Define {
     $hash->{fhem}{helper}{sendWS} = sub {
         my ($msg) = @_;
         my $socket = $hash->{CD};
-        if ($socket) {
-            MATTER_SendWebSocketText($socket, $msg);
+        if ($socket && $hash->{websocket} && ($hash->{ws_status} // '') eq 'connected') {
+            MATTER_SendWebSocketText($hash, $msg);
         } else {
-            Log3 $hash->{NAME}, 2, "MATTER: No active WebSocket socket for sending!";
+            Log3 $hash->{NAME}, 2, "MATTER: No active WebSocket connection for sending!";
         }
     };
 
@@ -71,8 +77,8 @@ sub MATTER_Define {
 }
 
 sub MATTER_Undef {
-    my ($hash, $arg) = @_; 
-    MATTER_Close($hash);
+    my ($hash, $arg) = @_;
+    MATTER_Close($hash); # Also removes all connect, heartbeat and retry timers.
     return undef;
 }
 
@@ -193,6 +199,21 @@ sub MATTER_Set {
 
 sub MATTER_Attr {
     my ($cmd, $name, $attr_name, $attr_value) = @_;
+    return undef unless $attr_name eq 'disable';
+    my $hash = $defs{$name};
+    return undef unless $hash;
+
+    # FHEM calls AttrFn before storing the attribute. Reconnect from a timer
+    # so MATTER_Open sees the updated AttrVal rather than the previous value.
+    if ($cmd eq 'set' && defined($attr_value) && $attr_value eq '1') {
+        MATTER_Close($hash);
+    } elsif (($cmd eq 'set' && defined($attr_value) && $attr_value eq '0')
+             || $cmd eq 'del') {
+        unless ($hash->{CD}) {
+            RemoveInternalTimer($hash);
+            InternalTimer(gettimeofday() + 0.01, 'MATTER_Open', $hash, 0);
+        }
+    }
     return undef;
 }
 
@@ -202,98 +223,185 @@ sub MATTER_Open($) {
     my $host = $hash->{ip};
     my $port = $hash->{port};
 
-    RemoveInternalTimer($hash);
     MATTER_Close($hash);
-    return if (AttrVal($hash->{NAME}, "disable", 0));
+    return if AttrVal($name, 'disable', 0);
 
-    Log3 $name, 3, "[$name] Connecting to $host:$port via raw socket...";
-
+    Log3 $name, 3, "[$name] Connecting to $host:$port via nonblocking TCP...";
+    # Blocking=>0 returns during EINPROGRESS instead of waiting for TCP.
+    # FHEM uses directWriteFn to finish the asynchronous connection.
+    # A numeric IP avoids a potentially blocking DNS lookup.
     my $socket = IO::Socket::INET->new(
         PeerAddr => $host,
         PeerPort => $port,
         Proto    => 'tcp',
-        Timeout  => 5,
+        Blocking => 0,
     );
-
     unless ($socket) {
-        Log3 $name, 1, "[$name] Connection failed: $@";
-        InternalTimer(gettimeofday() + 30, "MATTER_Open", $hash, 0);
+        Log3 $name, 2, "[$name] TCP connect failed: $!";
+        InternalTimer(gettimeofday() + $MATTER_reconnect_delay, 'MATTER_Open', $hash, 0);
         return;
     }
 
-    $socket->blocking(0);
     $hash->{CD} = $socket;
     $hash->{FD} = $socket->fileno();
-    $hash->{BUF} = "";
+    $hash->{BUF} = '';
     $hash->{websocket} = 0;
-
+    $hash->{ws_status} = 'tcp_connecting';
+    $hash->{directWriteFn} = \&MATTER_ConnectWritable;
     $selectlist{$name} = $hash;
+    readingsSingleUpdate($hash, 'state', 'connecting', 1);
+    InternalTimer(gettimeofday() + $MATTER_connect_timeout,
+                  'MATTER_ConnectTimeout', $hash, 0);
+}
 
-    # WebSocket Handshake vorbereiten
-    my $rand_bytes = pack("C*", map { int(rand(256)) } 1 .. 16);
-    my $key = encode_base64($rand_bytes, "");
-    
-    my $handshake = "GET /ws HTTP/1.1\r\n" .
-                    "Host: $host:$port\r\n" .
-                    "Upgrade: websocket\r\n" .
-                    "Connection: Upgrade\r\n" .
-                    "Sec-WebSocket-Key: $key\r\n" .
-                    "Sec-WebSocket-Version: 13\r\n" .
-                    "Origin: http://$host:$port\r\n\r\n";
+sub MATTER_ConnectWritable($) {
+    my ($hash) = @_;
+    my $socket = $hash->{CD};
+    return unless $socket && ($hash->{ws_status} // '') eq 'tcp_connecting';
 
-    syswrite($socket, $handshake);
-    $hash->{ws_status} = "handshake";
-    Log3 $name, 3, "[$name] WebSocket handshake sent.";
-    readingsSingleUpdate($hash, "state", "connecting", 1);
+    # A writable socket may mean a failed connect; inspect SO_ERROR.
+    my $error = getsockopt($socket, SOL_SOCKET, SO_ERROR);
+    if (!defined($error) || unpack('i', $error) != 0 || !getpeername($socket)) {
+        Log3 $hash->{NAME}, 2, "[$hash->{NAME}] Nonblocking TCP connect failed";
+        MATTER_Reconnect($hash);
+        return;
+    }
+
+    delete $hash->{directWriteFn};
+    $hash->{ws_status} = 'handshake';
+    my $host = $hash->{ip};
+    my $port = $hash->{port};
+    my $key = encode_base64(pack('C*', map { int(rand(256)) } 1 .. 16), '');
+    my $request = "GET /ws HTTP/1.1\r\n" .
+                  "Host: $host:$port\r\n" .
+                  "Upgrade: websocket\r\n" .
+                  "Connection: Upgrade\r\n" .
+                  "Sec-WebSocket-Key: $key\r\n" .
+                  "Sec-WebSocket-Version: 13\r\n" .
+                  "Origin: http://$host:$port\r\n\r\n";
+    Log3 $hash->{NAME}, 3, "[$hash->{NAME}] WebSocket handshake sent";
+    MATTER_QueueBytes($hash, $request);
+}
+
+sub MATTER_ConnectTimeout($) {
+    my ($hash) = @_;
+    return unless $hash->{CD} &&
+        ($hash->{ws_status} // '') =~ /^(?:tcp_connecting|handshake)$/;
+    Log3 $hash->{NAME}, 2, "[$hash->{NAME}] TCP/WebSocket handshake timed out after $MATTER_connect_timeout seconds";
+    MATTER_Reconnect($hash);
 }
 
 sub MATTER_Close($) {
     my ($hash) = @_;
     my $name = $hash->{NAME};
 
+    # No retry/heartbeat/handshake timer survives closing or undefining a device.
+    RemoveInternalTimer($hash);
     delete $selectlist{$name};
-
     if ($hash->{CD}) {
         close($hash->{CD});
         delete $hash->{CD};
     }
     delete $hash->{FD};
-    
+    delete $hash->{directWriteFn};
+    delete $hash->{wantWrite};
+    delete $hash->{helper}{write_buffer};
+    delete $hash->{helper}{pending_pong};
     $hash->{websocket} = 0;
-    $hash->{ws_status} = "disconnected";
-    $hash->{BUF} = "";
+    $hash->{ws_status} = 'disconnected';
+    $hash->{BUF} = '';
     delete $hash->{helper}{pending_command};
     delete $hash->{helper}{pending_config};
     delete $hash->{fhem}{helper}{pending_config};
-    
     Log3 $name, 3, "[$name] Connection closed.";
-    readingsSingleUpdate($hash, "state", "disconnected", 1);
+    readingsSingleUpdate($hash, 'state', 'disconnected', 1)
+        if ReadingsVal($name, 'state', '') ne 'disconnected';
 }
 
 sub MATTER_Reconnect($) {
     my ($hash) = @_;
     MATTER_Close($hash);
-    InternalTimer(gettimeofday() + 30, "MATTER_Open", $hash, 0)
-        unless AttrVal($hash->{NAME}, "disable", 0);
+    InternalTimer(gettimeofday() + $MATTER_reconnect_delay, 'MATTER_Open', $hash, 0)
+        unless AttrVal($hash->{NAME}, 'disable', 0);
+}
+
+sub MATTER_Heartbeat($) {
+    my ($hash) = @_;
+    return unless $hash->{CD} && ($hash->{ws_status} // '') eq 'connected';
+
+    if (defined($hash->{helper}{pending_pong})) {
+        Log3 $hash->{NAME}, 2, "[$hash->{NAME}] WebSocket pong timeout after $MATTER_pong_timeout seconds; reconnecting";
+        MATTER_Reconnect($hash);
+        return;
+    }
+
+    my $token = pack('N', int(rand(4294967296)));
+    $hash->{helper}{pending_pong} = $token;
+    MATTER_SendWebSocketFrame($hash, 0x9, $token);
+    return unless $hash->{CD} && ($hash->{ws_status} // '') eq 'connected';
+    InternalTimer(gettimeofday() + $MATTER_pong_timeout,
+                  'MATTER_Heartbeat', $hash, 0);
+}
+
+# Handle partial writes on nonblocking sockets in FHEM's writable event loop.
+sub MATTER_QueueBytes($$) {
+    my ($hash, $bytes) = @_;
+    return unless $hash->{CD};
+    $hash->{helper}{write_buffer} .= $bytes;
+    MATTER_FlushWrite($hash);
+}
+
+sub MATTER_FlushWrite($) {
+    my ($hash) = @_;
+    return unless $hash->{CD};
+    my $pending = $hash->{helper}{write_buffer} // '';
+    unless (length($pending)) {
+        delete $hash->{directWriteFn};
+        return;
+    }
+
+    # Limit each write callback to one chunk to avoid monopolizing FHEM's loop.
+    my $chunk = substr($pending, 0, 65536);
+    my $sent = syswrite($hash->{CD}, $chunk);
+    if (!defined($sent)) {
+        if ($!{EAGAIN} || $!{EWOULDBLOCK} || $!{EINTR}) {
+            $hash->{directWriteFn} = \&MATTER_FlushWrite;
+            return;
+        }
+        Log3 $hash->{NAME}, 2, "[$hash->{NAME}] WebSocket write failed: $!";
+        MATTER_Reconnect($hash);
+        return;
+    }
+    unless ($sent) {
+        Log3 $hash->{NAME}, 2, "[$hash->{NAME}] WebSocket write returned EOF";
+        MATTER_Reconnect($hash);
+        return;
+    }
+    substr($hash->{helper}{write_buffer}, 0, $sent, '');
+    if (length($hash->{helper}{write_buffer})) {
+        $hash->{directWriteFn} = \&MATTER_FlushWrite;
+    } else {
+        delete $hash->{directWriteFn};
+    }
 }
 
 sub MATTER_Read {
     my ($hash) = @_;
     my $name = $hash->{NAME};
     my $socket = $hash->{CD};
+    return unless $socket;
 
-    my $buf = "";
+    my $buf = '';
     my $n = sysread($socket, $buf, 65536);
-
+    return if !defined($n) && ($!{EAGAIN} || $!{EWOULDBLOCK} || $!{EINTR});
     if (!defined($n) || $n == 0) {
-        Log3 $name, 2, "[$name] Connection lost, retrying in 30s";
+        Log3 $name, 2, "[$name] Connection lost, retrying in $MATTER_reconnect_delay seconds";
         MATTER_Reconnect($hash);
         return;
     }
     $hash->{BUF} .= $buf;
 
-    # 1. Handshake verarbeiten
-    if ($hash->{ws_status} eq "handshake") {
+    if (($hash->{ws_status} // '') eq 'handshake') {
         unless ($hash->{BUF} =~ m/\x0d\x0a\x0d\x0a/) {
             if (length($hash->{BUF}) > 8192) {
                 Log3 $name, 2, "[$name] WebSocket HTTP handshake exceeds 8192 bytes";
@@ -306,36 +414,32 @@ sub MATTER_Read {
             MATTER_Reconnect($hash);
             return;
         }
-        $hash->{ws_status} = "connected";
+        RemoveInternalTimer($hash, 'MATTER_ConnectTimeout');
+        $hash->{ws_status} = 'connected';
         $hash->{websocket} = 1;
         $hash->{BUF} =~ s/(.*?)\x0d\x0a\x0d\x0a//s;
-        readingsSingleUpdate($hash, "state", "connected", 1);
-
-        # The start_listening response contains the initial complete node list.
-        $hash->{helper}{pending_command}{fhem_init_1} = "start_listening";
-        MATTER_SendJsonCommand($hash, { message_id => "fhem_init_1", command => "start_listening" });
-        # A complete WebSocket frame may already follow the HTTP handshake.
+        readingsSingleUpdate($hash, 'state', 'connected', 1);
+        InternalTimer(gettimeofday() + $MATTER_ping_interval,
+                      'MATTER_Heartbeat', $hash, 0);
+        $hash->{helper}{pending_command}{fhem_init_1} = 'start_listening';
+        MATTER_SendJsonCommand($hash, { message_id => 'fhem_init_1', command => 'start_listening' });
     }
 
-    # 2. WebSocket Frames auslesen
     while (length($hash->{BUF}) >= 2) {
-        my ($b1, $b2) = unpack("CC", substr($hash->{BUF}, 0, 2));
+        my ($b1, $b2) = unpack('CC', substr($hash->{BUF}, 0, 2));
         my $opcode = $b1 & 0x0f;
         my $payload_len = $b2 & 0x7f;
         my $header_len = 2;
-
         if ($payload_len == 126) {
             return if length($hash->{BUF}) < 4;
-            $payload_len = unpack("n", substr($hash->{BUF}, 2, 2));
+            $payload_len = unpack('n', substr($hash->{BUF}, 2, 2));
             $header_len = 4;
         } elsif ($payload_len == 127) {
             return if length($hash->{BUF}) < 10;
-            my @l_bytes = unpack("NN", substr($hash->{BUF}, 2, 8));
+            my @l_bytes = unpack('NN', substr($hash->{BUF}, 2, 8));
             $payload_len = ($l_bytes[0] * 4294967296) + $l_bytes[1];
             $header_len = 10;
         }
-
-        # A single server snapshot can be large; cap malformed frames to protect FHEM memory.
         if ($payload_len > 32 * 1024 * 1024) {
             Log3 $name, 2, "[$name] WebSocket frame exceeds 32 MiB limit";
             MATTER_Reconnect($hash);
@@ -343,16 +447,23 @@ sub MATTER_Read {
         }
         my $total_len = $header_len + $payload_len;
         return if length($hash->{BUF}) < $total_len;
-
         my $payload = substr($hash->{BUF}, $header_len, $payload_len);
-        substr($hash->{BUF}, 0, $total_len) = "";
+        substr($hash->{BUF}, 0, $total_len) = '';
 
-        if ($opcode == 0x1) { # Text Frame (JSON)
+        if ($opcode == 0x1) {
             MATTER_ParseMessage($hash, $payload);
-        } elsif ($opcode == 0x9) { # Pong echoes the ping body and must be masked by the client.
-            MATTER_SendWebSocketFrame($socket, 0xA, $payload);
-        } elsif ($opcode == 0x8) { # Close Frame
-            Log3 $name, 3, "[$name] WebSocket close received, retrying in 30s";
+        } elsif ($opcode == 0x9) {
+            MATTER_SendWebSocketFrame($hash, 0xA, $payload);
+        } elsif ($opcode == 0xA) {
+            if (defined($hash->{helper}{pending_pong}) &&
+                $payload eq $hash->{helper}{pending_pong}) {
+                delete $hash->{helper}{pending_pong};
+                RemoveInternalTimer($hash, 'MATTER_Heartbeat');
+                InternalTimer(gettimeofday() + $MATTER_ping_interval,
+                              'MATTER_Heartbeat', $hash, 0);
+            }
+        } elsif ($opcode == 0x8) {
+            Log3 $name, 3, "[$name] WebSocket close received, retrying in $MATTER_reconnect_delay seconds";
             MATTER_Reconnect($hash);
             return;
         }
@@ -361,40 +472,36 @@ sub MATTER_Read {
 
 sub MATTER_SendJsonCommand($$) {
     my ($hash, $cmd_hash) = @_;
-    MATTER_SendWebSocketText($hash->{CD}, encode_json($cmd_hash)) if $hash->{CD};
+    return unless $hash->{CD} && $hash->{websocket};
+    MATTER_SendWebSocketText($hash, encode_json($cmd_hash));
 }
 
 sub MATTER_SendWebSocketText($$) {
-    my ($socket, $msg) = @_;
-    MATTER_SendWebSocketFrame($socket, 0x1, $msg);
+    my ($hash, $msg) = @_;
+    MATTER_SendWebSocketFrame($hash, 0x1, $msg);
 }
 
 sub MATTER_SendWebSocketFrame($$$) {
-    my ($socket, $opcode, $msg) = @_;
-    return unless $socket;
+    my ($hash, $opcode, $msg) = @_;
+    return unless $hash->{CD};
     my $length = length($msg);
-    my $frame = chr(0x80 | $opcode); # FIN and opcode
-
+    my $frame = chr(0x80 | $opcode);
     if ($length <= 125) {
         $frame .= chr(0x80 | $length);
     } elsif ($length <= 65535) {
-        $frame .= chr(0x80 | 126) . pack("n", $length);
+        $frame .= chr(0x80 | 126) . pack('n', $length);
     } else {
-        $frame .= chr(0x80 | 127) . pack("Q>", $length);
+        $frame .= chr(0x80 | 127) . pack('Q>', $length);
     }
-
-    my $mask = pack("N", int(rand(2**32)));
+    my $mask = pack('N', int(rand(4294967296)));
     $frame .= $mask;
-
-    my $masked_payload = "";
+    my $masked_payload = '';
     for (my $i = 0; $i < $length; $i++) {
         my $m_byte = ord(substr($mask, $i % 4, 1));
         my $p_byte = ord(substr($msg, $i, 1));
         $masked_payload .= chr($p_byte ^ $m_byte);
     }
-
-    $frame .= $masked_payload;
-    syswrite($socket, $frame);
+    MATTER_QueueBytes($hash, $frame . $masked_payload);
 }
 
 
