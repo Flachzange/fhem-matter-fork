@@ -52,8 +52,6 @@ The original [tostmann/THBR](https://github.com/tostmann/THBR) uses a host-based
 - **Commissioning:** manual pairing codes or `MT:` QR payloads, with `network` (IP-only, default) or `auto` (IP and optionally BLE via the Matter server).
 - **Native FHEM updates:** a versioned `controls_matter.txt` published on this fork's `main` branch and validated by CI.
 
-Automated regression coverage does **not** imply that every mapped Matter cluster or device model has been tested on physical hardware.
-
 ## Requirements and security
 
 - A running FHEM installation with Perl's `JSON` module and network access to the external Matter server.
@@ -128,7 +126,7 @@ set matterServer commissionCode 35325335079 auto
 
 The omitted mode and explicit `network` both request **IP-only** commissioning. `auto` permits **IP and BLE discovery**, including a compatible BLE proxy connected to the Matter server; it does not force BLE. A Matter QR payload beginning with `MT:` can be used instead of an 11- or 21-digit manual code.
 
-The Matter server handles commissioning, fabric and stored Thread/Wi-Fi network credentials. The FHEM module neither stores a Thread operational dataset nor operates the BLE radio. BLE commissioning for a real Thread device from FHEM through the THBR proxy remains **to be validated in a live installation**.
+The Matter server handles commissioning, fabric and stored Thread/Wi-Fi network credentials. The FHEM module neither stores a Thread operational dataset nor operates the BLE radio.
 
 ### Node synchronization and status
 
@@ -152,18 +150,16 @@ Supported MATTER IO attributes include `disable:0,1` and `autocreate:0,1` (defau
 
 MATTERDevice attributes include `IODev`, legacy capability overrides (for example `has_onoff`, `has_level`, `has_ct`, `has_wc` and `has_lock`) and level/color limits. If a command list has been reported, that server metadata takes precedence over legacy positive flags; a manually configured `has_*=0` disables the corresponding control.
 
-## Known limitations and validation status
+## Known limitations
 
-- **Multiple endpoints:** creation, routing, grouping, rename preservation and navigation are covered by modeled regression tests. End-to-end verification with a multi-endpoint physical device is still outstanding.
-- **BLE-proxy commissioning:** `commissionCode ... auto` and its WebSocket request payload are covered by tests; live commissioning through THBR's BLE proxy from FHEM is outstanding.
-- **Window coverings:** basic controls and percentage/tilt mappings exist; behavior with physical shutter devices has not been validated here.
-- **Door locks:** basic `lock` and `unlock` commands plus several readings are implemented; this is **not** complete DoorLock-cluster support and has not been validated with physical locks.
+- **Window coverings:** supports basic open/close, stop, lift percentage and tilt commands when exposed by the device; not every WindowCovering-cluster function is mapped.
+- **Door locks:** basic `lock`/`unlock` commands and selected readings are implemented; management of users, PINs and credentials is not implemented.
 - **Thermostats:** device types can be displayed, but thermostat-control commands are not implemented.
-- **Transport:** the FHEM IO connects via IPv4 to a WebSocket server and rejects incoming frames over 32 MiB. It has no built-in TLS or authenticated WebSocket transport. The Matter server, not FHEM, handles IPv6 Matter transport and Thread routing.
+- **Transport:** the FHEM IO supports an IPv4 WebSocket connection without built-in TLS or authentication; the network boundary and security requirements are described above.
 
 ## Development and tests
 
-`prove -v t/matter_node_sync.t` runs modeled FHEM callback tests and WebSocket socketpair tests (including fragmented TCP delivery, large frames, node identity, capability handling, commissioning and endpoint synchronization). `.github/workflows/perl-tests.yml` runs those Perl tests in CI. These tests do not replace a production FHEM/Matter-server/hardware test.
+`prove -v t/matter_node_sync.t` runs modeled FHEM callback tests and WebSocket socketpair tests (including fragmented TCP delivery, large frames, node identity, capability handling, commissioning and endpoint synchronization). `.github/workflows/perl-tests.yml` runs those Perl tests in CI. The suite tests module behavior against simulated peers, not physical device behavior.
 
 For module changes, run `bash make_controls.sh` and commit its updated `controls_matter.txt` alongside the changed Perl source. `bash make_controls.sh --check` and `.github/workflows/controls-matter.yml` verify the generated manifest. Its Git-blob sizes match the raw published files and its timestamps advance for changed modules, including same-size edits. `CHANGED` records user-facing changes.
 
