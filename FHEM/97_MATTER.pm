@@ -141,7 +141,9 @@ sub MATTER_Set {
         Log3 $name, 3, "MATTER: Commissioning requested (mode=$mode; BLE " .
             ($mode eq 'auto' ? "allowed" : "disabled") . ")";
         MATTER_SendJsonCommand($hash, $payload);
-        return undef;
+        # FHEM's DoSet would otherwise synthesize a "set commissionCode <code>"
+        # event and expose the setup code to event consumers and DbLog.
+        return wantarray ? (undef, 1) : undef;
     }
     elsif ($opt eq "setWifiCredentials") {
         # Wir holen den kompletten String aus @args
