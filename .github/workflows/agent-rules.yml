@@ -1,0 +1,12 @@
+name: Shared agent rules
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    uses: Flachzange/FHEM_Agent_Rules/.github/workflows/check-consumer.yml@17c125a44718f18238ea16a2142d77d5819e5afd
+    with:
+      tooling-ref: 17c125a44718f18238ea16a2142d77d5819e5afd
