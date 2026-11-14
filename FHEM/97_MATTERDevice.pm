@@ -1268,31 +1268,30 @@ sub MATTERDevice_GetSetList($) {
 # Never replace a group explicitly configured by the FHEM user.
 sub MATTERDevice_EnsureNodeGroup($) {
     my ($device) = @_;
-    return unless $device && $device->{IODev};
+    return unless $device && defined($device->{NAME});
     my $name = $device->{NAME};
     return if defined(AttrVal($name, 'group', undef));
     my $node_id = $device->{node_id};
-    my $io_name = $device->{IODev}{NAME};
-    return unless defined($node_id) && $node_id =~ /^\d+$/ && defined($io_name);
+    my $io_name = $device->{IODev} ? $device->{IODev}{NAME} : AttrVal($name, 'IODev', '');
+    return unless defined($node_id) && $node_id =~ /^\d+$/ && defined($io_name) && length($io_name);
 
     my $group = "Node $node_id ($io_name)";
     my $error = CommandAttr(undef, "$name group $group");
     Log3 $name, 3, "MATTERDevice: Cannot set node group for $name: $error" if $error;
 }
 
-# Additional content for the existing root device (endpoint 0) in FHEMWEB.
-# Resolve children by node ID and IODev, not by their names or a stale runtime cache.
-sub MATTERDevice_FWDetail($$$) {
-    my ($web, $name, $room) = @_;
-    my $root = $defs{$name};
-    return undef unless $root && ($root->{TYPE} // '') eq 'MATTERDevice'
+# Resolve an existing root's children for both navigation and group migration.
+sub MATTERDevice_NodeChildren($) {
+    my ($root) = @_;
+    return () unless $root && ($root->{TYPE} // '') eq 'MATTERDevice'
         && ($root->{endpoint_id} // 0) == 0;
 
     my $node_id = $root->{node_id};
-    my $io_name = $root->{IODev} ? $root->{IODev}{NAME} : AttrVal($name, 'IODev', '');
-    return undef unless defined($node_id) && length($io_name // '');
+    my $io_name = $root->{IODev} ? $root->{IODev}{NAME}
+                                   : AttrVal($root->{NAME}, 'IODev', '');
+    return () unless defined($node_id) && length($io_name // '');
 
-    my @children = sort {
+    return sort {
         $a->{endpoint_id} <=> $b->{endpoint_id} || $a->{NAME} cmp $b->{NAME}
     } grep {
         ($_->{TYPE} // '') eq 'MATTERDevice'
@@ -1301,6 +1300,12 @@ sub MATTERDevice_FWDetail($$$) {
             && (($_->{IODev} && $_->{IODev}{NAME} eq $io_name)
                 || (!$_->{IODev} && AttrVal($_->{NAME}, 'IODev', '') eq $io_name))
     } values %defs;
+}
+
+# Additional content for the existing root device (endpoint 0) in FHEMWEB.
+sub MATTERDevice_FWDetail($$) {
+    my ($web, $name, $room) = @_;
+    my @children = MATTERDevice_NodeChildren($defs{$name});
     return undef unless @children;
 
     my $html = '<div class="makeTable wide"><span class="mkTitle">Matter endpoints</span>'
@@ -1442,7 +1447,8 @@ rooms and attributes during node synchronization.</p>
 </ul>
 <p>Nodes and their endpoints without a user-defined <code>group</code> attribute
 receive the same FHEMWEB group, <code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code>.
-Existing group values are preserved. The detail view of the root device (endpoint 0)
+Existing group values are preserved. Missing groups are also filled on already defined
+endpoints without fresh attribute updates. The detail view of the root device (endpoint 0)
 links to all its endpoint devices, even if they have been renamed.</p>
 <p>Only newly autocreated nodes/endpoints are assigned to room <code>Matter</code>.
 Decommissioned devices are retained in FHEM rather than automatically deleted.</p>
@@ -1484,8 +1490,9 @@ bleiben bestehende Namen, Räume und Benutzerattribute erhalten.</p>
 </ul>
 <p>Knoten und Endpunkte ohne manuell gesetztes <code>group</code>-Attribut
 erhalten dieselbe FHEMWEB-Gruppe <code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code>.
-Vorhandene Gruppeneinstellungen bleiben erhalten. In der Detailansicht des
-Root-Devices (Endpunkt 0) werden die zugehörigen Endpunkt-Devices verlinkt,
+Vorhandene Gruppeneinstellungen bleiben erhalten. Fehlende Gruppen werden
+auch bei bereits definierten Endpunkten ohne neue Attributmeldungen ergänzt.
+In der Detailansicht des Root-Devices (Endpunkt 0) werden die Endpunkt-Devices verlinkt,
 auch wenn diese umbenannt wurden.</p>
 <p>Nur neu automatisch erzeugte Geräte werden dem Raum <code>Matter</code>
 zugeordnet. Entfernte Geräte bleiben in FHEM erhalten.</p>

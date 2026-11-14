@@ -107,7 +107,7 @@ A `node_removed` event sets the `matter_status` reading to `removed` on the affe
 
 `available=true/false` is taken only from a server node snapshot or `node_updated` event that explicitly contains an availability boolean. It is recorded on the root node; no recurring polling is introduced. A subsequent `node_added`/`node_updated` restores `matter_status` to `present`. This reading describes server membership, **not** whether a physical device is currently reachable.
 
-Each existing root `MATTERDevice` (endpoint 0) and its endpoint devices appear under the same FHEMWEB `group`, for example `Node 35 (matterServer)`, provided they have no individually configured `group` attribute. Missing groups on previously created devices are added during node synchronization; manual groups are not replaced. The group label incorporates the IO device name to distinguish nodes with identical IDs on different Matter servers.
+Each existing root `MATTERDevice` (endpoint 0) and its endpoint devices appear under the same FHEMWEB `group`, for example `Node 35 (matterServer)`, provided they have no individually configured `group` attribute. Missing groups on previously created devices are added during node synchronization even if the current snapshot contains no endpoint attributes; manual groups are not replaced. The group label incorporates the IO device name to distinguish nodes with identical IDs on different Matter servers.
 
 In the root device's FHEMWEB detail page, **Matter endpoints** lists links to the associated endpoint devices. It resolves their current FHEM names, so individually renamed endpoints remain linked. The standard DeviceOverview remains visible, and no additional FHEM devices or readings are created.
 

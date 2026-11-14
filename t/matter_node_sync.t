@@ -172,6 +172,25 @@ is($defs{ManuallyRenamedRoot}, $root, 'renamed root reused by identity');
 is($defs{MATTER_Hall_Light_EP1}, $child, 'renamed root reuses existing endpoint');
 is($child->{device}, 'ManuallyRenamedRoot', 'endpoint parent internal updated after rename');
 
+# Migration must work without any fresh endpoint attributes.
+delete $attr{MATTER_Hall_Light_EP1}{group};
+my $prior_devices = count_devices();
+MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'Metadata only'});
+is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)',
+   'group is backfilled on an existing endpoint without an attribute map');
+is(count_devices(), $prior_devices, 'group migration never recreates the endpoint');
+
+# Persisted IODev identifies the endpoint even when its runtime pointer is missing.
+delete $attr{MATTER_Hall_Light_EP1}{group};
+delete $child->{IODev};
+MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'No endpoint attributes'});
+is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)',
+   'configured IODev is sufficient to migrate an endpoint without runtime IODev');
+like(MATTERDevice_FWDetail('WEB', 'ManuallyRenamedRoot', 'Matter'),
+     qr/MATTER_Hall_Light_EP1/, 'root detail also finds endpoint with configured IODev');
+is(CommandAttr(undef, 'MATTER_Hall_Light_EP1 IODev ioA'), undef,
+   'runtime IODev is restored for subsequent test cases');
+
 $defs{MATTER_Conflicted} = { NAME => 'MATTER_Conflicted', TYPE => 'dummy' };
 $defs{MATTER_Conflicted_43_EP1} = { NAME => 'MATTER_Conflicted_43_EP1', TYPE => 'dummy' };
 MATTER_ProcessNode($defs{ioA}, node(43, 'Conflicted'));
@@ -193,6 +212,17 @@ is($attr{MATTER_Other_IO_light_EP1}{group}, 'Node 42 (ioB)',
 my $io_a_html = MATTERDevice_FWDetail('WEB', 'ManuallyRenamedRoot', 'Matter');
 unlike($io_a_html, qr/MATTER_Other_IO_light_EP1/,
     'root details exclude endpoints belonging to another IO');
+
+delete $attr{MATTER_Hall_Light_EP1}{group};
+delete $attr{MATTER_Other_IO_light_EP1}{group};
+MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'Metadata only'});
+is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)',
+   'only the matching IO endpoint is grouped during node reconciliation');
+ok(!exists($attr{MATTER_Other_IO_light_EP1}{group}),
+   'a same-ID endpoint belonging to another IO is not modified');
+MATTER_ProcessNode($defs{ioB}, {node_id => 42, name => 'Metadata only'});
+is($attr{MATTER_Other_IO_light_EP1}{group}, 'Node 42 (ioB)',
+   'second IO independently migrates its own endpoint');
 
 MATTER_ProcessNodeList($defs{ioA}, [], 'get_nodes');
 is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'removed', 'missing node marked removed');
