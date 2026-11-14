@@ -40,8 +40,11 @@ Make sure your Matter server is up and running and reachable via IP and port (de
 
 ## Features
 
-* **WebSocket Communication:** Native raw-socket handling with automatic handshake and JSON payload exchange.
-* **Auto-Discovery:** Automatically queries the Matter server for nodes and creates corresponding FHEM devices (`MATTERDevice`).
+* **WebSocket Communication:** Native raw-socket handling with HTTP upgrade validation, masked client Pong responses, and JSON payload exchange. Incoming frames exceeding 32 MiB are rejected to limit memory use.
+* **Automatic node synchronization:** Processes the full node list returned by `start_listening` after every successful connection/reconnect. No manual discovery is required.
+* **Live device lifecycle:** `node_added` and `node_updated` synchronize devices and endpoints. `node_removed` marks existing FHEM devices as removed without deleting their configuration.
+* **Manual discovery:** `set matterServer discover` still requests a complete `get_nodes` snapshot for diagnostics or manual resynchronization.
+* **Collision-safe FHEM devices:** Node identity is scoped to IODev and node ID; endpoint identity additionally includes endpoint ID. Newly created devices default to room `Matter`; existing names, rooms and attributes remain unchanged.
 * **Device Commissioning:** Add new network-connected devices directly via manual pairing codes from FHEM.
 * **Dynamic Set-Lists:** Automatically detects device capabilities (OnOff, LevelControl, ColorControl/CT/RGB) and adjusts FHEM's `set` options and sliders accordingly.
 * **Auto-Reconnect:** Built-in resilient connection recovery with safe interval timers.
@@ -86,13 +89,17 @@ If you have a new device prepared in your local network (e.g., via manufacturer 
 set matterServer commissionCode 35325335079
 ```
 
-### 3. Discover Nodes
+### 3. Node Synchronization
 
-Trigger the discovery to automatically fetch and create all paired Matter devices from your server:
+Newly commissioned nodes appear automatically while FHEM is connected. On connection or reconnection, the Matter server returns the complete node list in the response to `start_listening`. No manual action is required.
+
+Manual resynchronization remains available:
 
 ```text
 set matterServer discover
 ```
+
+A `node_removed` event sets the `matter_status` reading to `removed` on the affected FHEM node and endpoints, **without deleting** their configuration. A subsequent `node_added`/`node_updated` restores `matter_status` to `present`. This reading describes server membership, **not** whether a physical device is currently reachable.
 
 ### 4. Control Devices
 
@@ -126,9 +133,15 @@ Once created, individual `MATTERDevice` instances will appear. You can control t
 * Window Covering (Shutters) are included but not tested
 * Door locks are not supported (only some readings)
 * Thermostats are not supported
-* Thread connection not realized so far
+* Thread and IP transport are handled by the connected Matter server and Thread Border Router, not directly by the FHEM modules.
 
 ---
+
+## Development and tests
+
+`prove -v t/matter_node_sync.t` runs regression tests using modeled FHEM callback side effects and a real socketpair for split WebSocket frames, including a payload over 64 KiB. The GitHub Actions workflow `.github/workflows/perl-tests.yml` installs the Perl JSON dependency and executes this test. These tests do **not** replace a live FHEM/Matter-server integration test.
+
+The feature branch does not automatically update an installed FHEM instance. The updater configuration shown above points to the upstream GitLab repository, not this fork's feature branch.
 
 ## License
 

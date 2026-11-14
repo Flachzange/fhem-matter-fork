@@ -167,7 +167,7 @@ sub MATTER_Set {
         
         $payload->{args}{id} = int($id) if (defined($id) && $id ne '');
 
-        Log3 $name, 3, "MATTER: Set Wifi credentials for SSID: '$ssid' / Pass: '$credentials' (ID: " . ($id // 'none') . ")";
+        Log3 $name, 3, "MATTER: Sending Wi-Fi credentials (ID: " . ($id // 'default') . ")";
         MATTER_SendJsonCommand($hash, $payload);
         return undef;
     }
@@ -257,13 +257,24 @@ sub MATTER_Close($) {
         close($hash->{CD});
         delete $hash->{CD};
     }
+    delete $hash->{FD};
     
     $hash->{websocket} = 0;
     $hash->{ws_status} = "disconnected";
     $hash->{BUF} = "";
+    delete $hash->{helper}{pending_command};
+    delete $hash->{helper}{pending_config};
+    delete $hash->{fhem}{helper}{pending_config};
     
     Log3 $name, 3, "[$name] Connection closed.";
     readingsSingleUpdate($hash, "state", "disconnected", 1);
+}
+
+sub MATTER_Reconnect($) {
+    my ($hash) = @_;
+    MATTER_Close($hash);
+    InternalTimer(gettimeofday() + 30, "MATTER_Open", $hash, 0)
+        unless AttrVal($hash->{NAME}, "disable", 0);
 }
 
 sub MATTER_Read {
@@ -276,24 +287,34 @@ sub MATTER_Read {
 
     if (!defined($n) || $n == 0) {
         Log3 $name, 2, "[$name] Connection lost, retrying in 30s";
-        MATTER_Close($hash);
-        InternalTimer(gettimeofday() + 30, "MATTER_Open", $hash, 0); # Automatischer Reconnect
+        MATTER_Reconnect($hash);
         return;
     }
     $hash->{BUF} .= $buf;
 
     # 1. Handshake verarbeiten
     if ($hash->{ws_status} eq "handshake") {
-        if ($hash->{BUF} =~ m/\x0d\x0a\x0d\x0a/) {
-            $hash->{ws_status} = "connected";
-            $hash->{websocket} = 1;
-            $hash->{BUF} =~ s/(.*?)\x0d\x0a\x0d\x0a//s;
-            readingsSingleUpdate($hash, "state", "connected", 1);
-            
-            # Start listening beim Server anfordern
-            MATTER_SendJsonCommand($hash, { message_id => "fhem_init_1", command => "start_listening" });
+        unless ($hash->{BUF} =~ m/\x0d\x0a\x0d\x0a/) {
+            if (length($hash->{BUF}) > 8192) {
+                Log3 $name, 2, "[$name] WebSocket HTTP handshake exceeds 8192 bytes";
+                MATTER_Reconnect($hash);
+            }
+            return;
         }
-        return;
+        unless ($hash->{BUF} =~ m/^HTTP\/1\.[01]\s+101\b/i) {
+            Log3 $name, 2, "[$name] WebSocket upgrade was not accepted";
+            MATTER_Reconnect($hash);
+            return;
+        }
+        $hash->{ws_status} = "connected";
+        $hash->{websocket} = 1;
+        $hash->{BUF} =~ s/(.*?)\x0d\x0a\x0d\x0a//s;
+        readingsSingleUpdate($hash, "state", "connected", 1);
+
+        # The start_listening response contains the initial complete node list.
+        $hash->{helper}{pending_command}{fhem_init_1} = "start_listening";
+        MATTER_SendJsonCommand($hash, { message_id => "fhem_init_1", command => "start_listening" });
+        # A complete WebSocket frame may already follow the HTTP handshake.
     }
 
     # 2. WebSocket Frames auslesen
@@ -309,11 +330,17 @@ sub MATTER_Read {
             $header_len = 4;
         } elsif ($payload_len == 127) {
             return if length($hash->{BUF}) < 10;
-            my @l_bytes = unpack("x2 N N", substr($hash->{BUF}, 2, 8));
+            my @l_bytes = unpack("NN", substr($hash->{BUF}, 2, 8));
             $payload_len = ($l_bytes[0] * 4294967296) + $l_bytes[1];
             $header_len = 10;
         }
 
+        # A single server snapshot can be large; cap malformed frames to protect FHEM memory.
+        if ($payload_len > 32 * 1024 * 1024) {
+            Log3 $name, 2, "[$name] WebSocket frame exceeds 32 MiB limit";
+            MATTER_Reconnect($hash);
+            return;
+        }
         my $total_len = $header_len + $payload_len;
         return if length($hash->{BUF}) < $total_len;
 
@@ -322,11 +349,11 @@ sub MATTER_Read {
 
         if ($opcode == 0x1) { # Text Frame (JSON)
             MATTER_ParseMessage($hash, $payload);
-        } elsif ($opcode == 0x9) { # Ping -> Pong antworten
-            my $pong = chr(0x8A) . chr(0x00);
-            syswrite($socket, $pong);
+        } elsif ($opcode == 0x9) { # Pong echoes the ping body and must be masked by the client.
+            MATTER_SendWebSocketFrame($socket, 0xA, $payload);
         } elsif ($opcode == 0x8) { # Close Frame
-            MATTER_Close($hash);
+            Log3 $name, 3, "[$name] WebSocket close received, retrying in 30s";
+            MATTER_Reconnect($hash);
             return;
         }
     }
@@ -339,10 +366,14 @@ sub MATTER_SendJsonCommand($$) {
 
 sub MATTER_SendWebSocketText($$) {
     my ($socket, $msg) = @_;
+    MATTER_SendWebSocketFrame($socket, 0x1, $msg);
+}
+
+sub MATTER_SendWebSocketFrame($$$) {
+    my ($socket, $opcode, $msg) = @_;
     return unless $socket;
-    
     my $length = length($msg);
-    my $frame = chr(0x81); # Text Frame + FIN
+    my $frame = chr(0x80 | $opcode); # FIN and opcode
 
     if ($length <= 125) {
         $frame .= chr(0x80 | $length);
@@ -366,6 +397,161 @@ sub MATTER_SendWebSocketText($$) {
     syswrite($socket, $frame);
 }
 
+
+# Keep existing FHEM device names and IO assignments stable during synchronization.
+sub MATTER_SetNodeStatus($$$) {
+    my ($hash, $node_id, $status) = @_;
+    my $io_name = $hash->{NAME};
+    foreach my $device (values %defs) {
+        next unless ($device->{TYPE} // '') eq 'MATTERDevice';
+        next unless defined($device->{node_id}) && $device->{node_id} eq $node_id;
+        next unless $device->{IODev} && $device->{IODev}{NAME} eq $io_name;
+        next if ReadingsVal($device->{NAME}, 'matter_status', '') eq $status;
+        readingsSingleUpdate($device, 'matter_status', $status, 1);
+    }
+}
+
+sub MATTER_ProcessNode($$) {
+    my ($hash, $node) = @_;
+    my $io_name = $hash->{NAME};
+    return unless ref($node) eq 'HASH';
+    my $node_id = $node->{node_id};
+    unless (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
+        Log3 $io_name, 2, 'MATTER: Ignoring node without a valid node_id';
+        return;
+    }
+
+    my $root_key = "$io_name:$node_id";
+    my $root = $modules{MATTERDevice}{defptr}{$root_key};
+    if ($root && (!$root->{NAME} || !$defs{$root->{NAME}} || $defs{$root->{NAME}} ne $root ||
+                  ($root->{node_id} // '') ne $node_id || ($root->{endpoint_id} // 0) != 0 ||
+                  !$root->{IODev} || $root->{IODev}{NAME} ne $io_name)) {
+        delete $modules{MATTERDevice}{defptr}{$root_key};
+        $root = undef;
+    }
+
+    unless ($root) {
+        # Reuse renamed roots by identity, never by the server-provided label.
+        foreach my $device (values %defs) {
+            next unless ($device->{TYPE} // '') eq 'MATTERDevice';
+            next unless defined($device->{node_id}) && $device->{node_id} eq $node_id;
+            next unless ($device->{endpoint_id} // 0) == 0;
+            my $configured_io = AttrVal($device->{NAME}, 'IODev', '');
+            next if $configured_io && $configured_io ne $io_name;
+            next unless ($device->{IODev} && $device->{IODev}{NAME} eq $io_name)
+                || $configured_io eq $io_name;
+            $root = $device;
+            last;
+        }
+    }
+
+    if ($root && (!$root->{IODev} || $root->{IODev}{NAME} ne $io_name)) {
+        # A configured IODev can survive rereadcfg while its runtime pointer is stale.
+        my $error = CommandAttr(undef, "$root->{NAME} IODev $io_name");
+        if ($error || !$root->{IODev} || $root->{IODev}{NAME} ne $io_name) {
+            Log3 $io_name, 2, "MATTER: Cannot restore IODev of $root->{NAME}: " .
+                ($error // 'wrong IODev after assignment');
+            return;
+        }
+    }
+
+    unless ($root) {
+        my $base_name = $node->{name};
+        $base_name = "MatterDevice_$node_id" unless defined($base_name) && !ref($base_name) && length($base_name);
+        $base_name =~ s/[^a-zA-Z0-9_.-]/_/g;
+        $base_name = "MatterDevice_$node_id" unless length($base_name);
+        $base_name = substr($base_name, 0, 64);
+        my $device_name = "MATTER_$base_name";
+        if ($defs{$device_name}) {
+            $device_name = "MATTER_" . $base_name . "_" . $node_id;
+            my $candidate = $device_name;
+            my $suffix = 2;
+            while ($defs{$device_name}) {
+                $device_name = $candidate . "_" . $suffix++;
+            }
+        }
+
+        # MATTERDevice_Define uses AssignIoPort by default. Save other IO owners
+        # before defining, as the temporary automatic assignment may reuse their defptr key.
+        my %other_roots;
+        foreach my $existing (values %defs) {
+            next unless ($existing->{TYPE} // '') eq 'MATTERDevice';
+            next unless ($existing->{node_id} // '') eq $node_id && ($existing->{endpoint_id} // 0) == 0;
+            next unless $existing->{IODev};
+            my $existing_io = $existing->{IODev}{NAME};
+            next if $existing_io eq $io_name;
+            $other_roots{"$existing_io:$node_id"} = $existing;
+        }
+
+        my $error = CommandDefine(undef, "$device_name MATTERDevice $node_id");
+        $root = $defs{$device_name};
+        if ($error || !$root || ($root->{TYPE} // '') ne 'MATTERDevice' ||
+            ($root->{node_id} // '') ne $node_id || ($root->{endpoint_id} // 0) != 0) {
+            Log3 $io_name, 2, "MATTER: Cannot create root $device_name: " . ($error // 'invalid result');
+            foreach my $key (keys %other_roots) {
+                $modules{MATTERDevice}{defptr}{$key} = $other_roots{$key};
+            }
+            return;
+        }
+
+        # Use the FHEM core path to set IODev, including its attribute and reading.
+        my $old_io = $root->{IODev} ? $root->{IODev}{NAME} : 'no_io';
+        my $attr_error = CommandAttr(undef, "$device_name IODev $io_name");
+        if ($attr_error || !$root->{IODev} || $root->{IODev}{NAME} ne $io_name) {
+            Log3 $io_name, 2, "MATTER: IODev assignment failed for $device_name: " .
+                ($attr_error // 'wrong IODev after assignment');
+            CommandDelete(undef, $device_name);
+            foreach my $key (keys %other_roots) {
+                $modules{MATTERDevice}{defptr}{$key} = $other_roots{$key};
+            }
+            return;
+        }
+        if ($old_io ne $io_name &&
+            ($modules{MATTERDevice}{defptr}{"$old_io:$node_id"} // '') eq $root) {
+            delete $modules{MATTERDevice}{defptr}{"$old_io:$node_id"};
+        }
+        foreach my $key (keys %other_roots) {
+            $modules{MATTERDevice}{defptr}{$key} = $other_roots{$key};
+        }
+
+        my $room_error = CommandAttr(undef, "$device_name room Matter");
+        Log3 $io_name, 3, "MATTER: Cannot set default room on $device_name: $room_error" if $room_error;
+        Log3 $io_name, 3, "MATTER: Created root device $device_name for node $node_id";
+    }
+    $modules{MATTERDevice}{defptr}{$root_key} = $root;
+
+    if (ref($node->{attributes}) eq 'HASH') {
+        MATTERDevice_Parse($root, encode_json({ node_id => $node_id, attributes => $node->{attributes} }));
+    }
+    MATTER_SetNodeStatus($hash, $node_id, 'present');
+    return 1;
+}
+
+sub MATTER_ProcessNodeList($$$) {
+    my ($hash, $nodes, $source) = @_;
+    my $io_name = $hash->{NAME};
+    my %present;
+    foreach my $node (@$nodes) {
+        unless (ref($node) eq 'HASH' && defined($node->{node_id}) &&
+                !ref($node->{node_id}) && $node->{node_id} =~ /^\d+$/) {
+            Log3 $io_name, 2, "MATTER: Invalid node in $source response, ignoring incomplete snapshot";
+            return;
+        }
+        $present{$node->{node_id}} = 1;
+        MATTER_ProcessNode($hash, $node);
+    }
+
+    # Full snapshots are authoritative; mark missing nodes without deleting FHEM devices.
+    foreach my $device (values %defs) {
+        next unless ($device->{TYPE} // '') eq 'MATTERDevice';
+        next unless ($device->{endpoint_id} // 0) == 0;
+        next unless $device->{IODev} && $device->{IODev}{NAME} eq $io_name;
+        next if $present{$device->{node_id} // ''};
+        MATTER_SetNodeStatus($hash, $device->{node_id}, 'removed');
+    }
+    Log3 $io_name, 3, 'MATTER: Synchronized ' . scalar(keys %present) . " nodes from $source";
+}
+
 sub MATTER_ParseMessage($$) {
     my ($hash, $payload) = @_;
     my $name    = $hash->{NAME}; # Name des IO-Moduls (z.B. MATTER_Server1)
@@ -387,6 +573,22 @@ sub MATTER_ParseMessage($$) {
         readingsBulkUpdate($hash, "bluetooth_enabled", $decoded->{bluetooth_enabled} ? "true" : "false");
         readingsEndUpdate($hash, 1);
         return;
+    }
+
+    # Structural node events are pushed by the server after start_listening.
+    if (exists $decoded->{event}) {
+        my $event = $decoded->{event};
+        if (($event eq 'node_added' || $event eq 'node_updated') && ref($decoded->{data}) eq 'HASH') {
+            MATTER_ProcessNode($hash, $decoded->{data});
+            return;
+        }
+        if ($event eq 'node_removed') {
+            if (defined($decoded->{data}) && $decoded->{data} =~ /^\d+$/) {
+                MATTER_SetNodeStatus($hash, $decoded->{data}, 'removed');
+                Log3 $name, 3, "MATTER: Node $decoded->{data} removed from server; FHEM devices retained";
+            }
+            return;
+        }
     }
 
     # B) Live-Events (z.B. attribute_updated) an das Root-Device der Node weiterleiten
@@ -421,53 +623,24 @@ sub MATTER_ParseMessage($$) {
             return;
         }
         
-        # Antwort auf get_nodes (Discover)
+        # start_listening and get_nodes both return a complete node list.
         my $cmd_type = delete $hash->{helper}{pending_command}{$msg_id};
-        if ($cmd_type && $cmd_type eq "get_nodes") {
-            if ($decoded->{result} && ref($decoded->{result}) eq 'ARRAY') {
-                Log3 $name, 3, "MATTER: Processing node list from get_nodes response on IO $name...";
-
-                foreach my $node (@{$decoded->{result}}) {
-                    my $node_id   = $node->{node_id};
-                    my $node_name = $node->{name} // "MatterDevice_$node_id";
-                    
-                    $node_name =~ s/[^a-zA-Z0-9_\.-]/_/g;
-                    $node_name = "MATTER_" . $node_name;
-
-                    # Prüfen, ob das Root-Device (Endpoint 0) für DIESES IO schon existiert
-                    my $root_key  = "$name:$node_id";
-                    my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
-                    
-                    unless ($root_hash) {
-                        Log3 $name, 3, "MATTER: Auto-creating root device $node_name for Node ID $node_id on IO $name";
-                        
-                        # Syntax für Root-Device: define <name> MATTERDevice <node_id>
-                        CommandDefine(undef, "$node_name MATTERDevice $node_id");
-                        
-                        $root_hash = $defs{$node_name};
-                        if ($root_hash) {
-                            # IODev explizit zuweisen, falls AssignIoPort beim Define nicht reichte
-                            $root_hash->{IODev} = $hash;
-                            # Im defptr für dieses IO registrieren
-                            $modules{MATTERDevice}{defptr}{$root_key} = $root_hash;
-                            Log3 $name, 3, "MATTER: Assigned IODev $name to Root-Device $node_name";
-                        }
-                    }
-
-                    # Initiale Attribute ans Root-Device übergeben (das verteilt es an die Endpoints)
-                    if ($root_hash && $node->{attributes}) {
-                        MATTERDevice_Parse($root_hash, encode_json({ node_id => $node_id, attributes => $node->{attributes} }));
-                    }
-                }
+        if ($cmd_type && ($cmd_type eq "get_nodes" || $cmd_type eq "start_listening")) {
+            if (ref($decoded->{result}) eq 'ARRAY') {
+                MATTER_ProcessNodeList($hash, $decoded->{result}, $cmd_type);
+            } else {
+                my $details = ref($decoded->{error}) eq 'HASH' ? $decoded->{error}{message} : undef;
+                $details //= $decoded->{details} // 'missing or invalid node list';
+                Log3 $name, 2, "MATTER: $cmd_type failed on IO $name: $details"
+                    . (defined($decoded->{error_code}) ? " (code $decoded->{error_code})" : '');
             }
             return;
         }
-        
+
         # Antwort auf commission (Paired ein neues Gerät)
         if ($cmd_type && $cmd_type eq "commission") {
             if ($decoded->{result}) {
-                Log3 $name, 3, "MATTER: Device successfully commissioned on IO $name! Triggering discover...";
-                CommandSet(undef, "$name discover");
+                Log3 $name, 3, "MATTER: Device successfully commissioned on IO $name; waiting for node_added event";
             } else {
                 Log3 $name, 2, "MATTER: Commissioning failed on IO $name: " . ($decoded->{error}{message} // "Unknown error");
             }
@@ -532,51 +705,61 @@ sub MATTER_ParseMessage($$) {
 
 =pod
 =item device
-=item summary    Interface module for Matter protocol via WebSocket/JSON
-=item summary_DE Schnittstellenmodul für das Matter-Protokoll via WebSocket/JSON
+=item summary    IO module for the Matter-server WebSocket/JSON API
+=item summary_DE IO-Modul für die WebSocket/JSON-API des Matter-Servers
+
 =begin html
 
 <a name="MATTER"></a>
 <h3>MATTER</h3>
+<p>The MATTER IO device communicates with an external Matter server over WebSocket.
+After connecting, <code>start_listening</code> supplies the complete node list.
+Subsequent <code>node_added</code>, <code>node_updated</code> and <code>node_removed</code>
+events synchronize logical MATTERDevice nodes and their endpoints automatically.</p>
 <ul>
-  The MATTER module serves as the central IO-Device for communicating with a 
-  Matter-Server via WebSockets. It handles the raw connection, the WebSocket 
-  handshake, and the routing of JSON-based messages to individual MatterDevice 
-  instances.<br><br>
-
-  <a name="MATTER-define"></a>
-  <b>Define</b>
-  <ul>
-    <code>define &lt;name&gt; MATTER &lt;IP&gt; &lt;PORT&gt;</code><br><br>
-    The IP and PORT point to your Matter-Bridge or server implementation (default port: 5580).
-  </ul>
-  <br>
-
-  <a name="MATTER-set"></a>
-  <b>Set</b>
-  <ul>
-    <li><code>connect</code><br>
-        Manually opens/re-establishes the connection to the Matter server.</li>
-    <li><code>discover</code><br>
-        Queries the server for available nodes and automatically creates corresponding 
-        MATTERDevice instances if they do not exist yet.</li>
-  </ul>
-  <br>
-
-  <a name="MATTER-get"></a>
-  <b>Get</b>
-  <ul>
-    <li><code>update</code><br>
-        Placeholder for future functionality.</li>
-  </ul>
-  <br>
-
-  <a name="MATTER-attr"></a>
-  <b>Attributes</b>
-  <ul>
-    <li>Standard FHEM attributes are supported (e.g., <code>IODev</code>, <code>room</code>).</li>
-  </ul>
+  <li><b>Define:</b> <code>define &lt;name&gt; MATTER &lt;IP&gt; &lt;PORT&gt;</code>
+      (default server port: 5580)</li>
+  <li><b>Set connect:</b> Reconnect the WebSocket to the server.</li>
+  <li><b>Set discover:</b> Manually request a complete <code>get_nodes</code> snapshot;
+      this is optional under normal operation.</li>
+  <li><b>Set commissionCode:</b> Pair a network-commissionable device using its setup code.</li>
+  <li><b>Set setWifiCredentials / getCredentials:</b> Configure or inspect available
+      network credentials (do not expose secrets in logs).</li>
+  <li><b>Attribute disable:</b> Disable or enable the IO connection.</li>
 </ul>
+<p>Newly created logical devices default to room <code>Matter</code>; existing FHEM
+names, rooms and user attributes are retained. A removed node is marked with
+<code>matter_status=removed</code> rather than deleted. This status describes node
+membership on the server, not physical device availability. Incoming WebSocket frames
+larger than 32 MiB are rejected and trigger a reconnect.</p>
+
+=end html
+
+=begin html_DE
+
+<a name="MATTER"></a>
+<h3>MATTER</h3>
+<p>Das MATTER-IO-Device verbindet FHEM per WebSocket mit einem externen Matter-Server.
+Beim Verbindungsaufbau liefert <code>start_listening</code> die vollständige Node-Liste.
+Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
+<code>node_removed</code> die Matter-Knoten und ihre Endpunkte ereignisgesteuert.</p>
+<ul>
+  <li><b>Definition:</b> <code>define &lt;name&gt; MATTER &lt;IP&gt; &lt;PORT&gt;</code>
+      (Standardport: 5580)</li>
+  <li><b>Set connect:</b> Verbindung zum Matter-Server neu aufbauen.</li>
+  <li><b>Set discover:</b> Optional eine vollständige Node-Liste per
+      <code>get_nodes</code> erneut anfordern.</li>
+  <li><b>Set commissionCode:</b> Netzwerkfähiges Matter-Gerät mit Setup-Code koppeln.</li>
+  <li><b>Set setWifiCredentials / getCredentials:</b> Netzwerkzugangsdaten
+      konfigurieren bzw. auslesen.</li>
+  <li><b>Attribut disable:</b> IO-Verbindung deaktivieren oder aktivieren.</li>
+</ul>
+<p>Neue logische Geräte erhalten standardmäßig den Raum <code>Matter</code>.
+Vorhandene Namen, Räume und Benutzerattribute bleiben unverändert. Entfernte
+Nodes werden mit <code>matter_status=removed</code> markiert und nicht automatisch
+gelöscht. Dieses Reading beschreibt die Mitgliedschaft auf dem Matter-Server,
+nicht die physische Erreichbarkeit des Geräts. Eingehende WebSocket-Frames
+über 32 MiB werden abgewiesen; anschließend wird die Verbindung neu aufgebaut.</p>
 
 =end html
 =cut
