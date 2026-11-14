@@ -1,0 +1,31 @@
+name: FHEM updater manifest
+
+on:
+  push:
+    paths:
+      - 'FHEM/*.pm'
+      - 'controls_matter.txt'
+      - 'make_controls.sh'
+      - 't/matter_controls_manifest.sh'
+      - '.github/workflows/controls-matter.yml'
+  pull_request:
+    paths:
+      - 'FHEM/*.pm'
+      - 'controls_matter.txt'
+      - 'make_controls.sh'
+      - 't/matter_controls_manifest.sh'
+      - '.github/workflows/controls-matter.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check that tracked module bytes match FHEM updater metadata
+        run: bash make_controls.sh --check
+      - name: Test stable generation and stale-manifest detection
+        run: bash t/matter_controls_manifest.sh
