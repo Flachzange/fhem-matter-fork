@@ -96,13 +96,12 @@ require './FHEM/97_MATTER.pm';
 MATTERDevice_Initialize($modules{MATTERDevice} ||= {});
 like($modules{MATTERDevice}{AttrList}, qr/(?:^|\s)IODev(?:\s|$)/,
      'MATTERDevice declares IODev for FHEM CommandAttr');
-my $unknown_attr_result = CommandAttr(undef, 'ioA unknown_attribute 1');
-like($unknown_attr_result // '', qr/unknown attribute/,
-     'CommandAttr stub rejects attributes absent from FHEM and module lists');
-
 for my $name (qw(ioA ioB)) {
     $defs{$name} = { NAME => $name, TYPE => 'MATTER', READINGS => {}, helper => {} };
 }
+my $unknown_attr_result = CommandAttr(undef, 'ioA unknown_attribute 1');
+like($unknown_attr_result // '', qr/unknown attribute/,
+     'CommandAttr stub rejects attributes absent from FHEM and module lists');
 
 sub node {
     my ($id, $name) = @_;
