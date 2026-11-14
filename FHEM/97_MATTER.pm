@@ -523,6 +523,19 @@ sub MATTER_ProcessNode($$) {
     if (ref($node->{attributes}) eq 'HASH') {
         MATTERDevice_Parse($root, encode_json({ node_id => $node_id, attributes => $node->{attributes} }));
     }
+    # Physical availability is node-wide, unlike matter_status (server membership).
+    # Only update it when the server actually supplies a boolean value.
+    if (exists $node->{available}) {
+        my $available = $node->{available};
+        my $valid_boolean = defined($available) &&
+            ((!ref($available) && $available =~ /^(?:0|1)$/) ||
+             ref($available) =~ /Boolean$/);
+        if ($valid_boolean) {
+            my $value = $available ? 'true' : 'false';
+            readingsSingleUpdate($root, 'available', $value, 1)
+                if ReadingsVal($root->{NAME}, 'available', '') ne $value;
+        }
+    }
     MATTER_SetNodeStatus($hash, $node_id, 'present');
     return 1;
 }
