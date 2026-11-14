@@ -789,6 +789,16 @@ sub MATTERDevice_GetOrCreateChild($$) {
         Log3 $root_name, 3, "MATTERDevice: Created endpoint $ep_id as $child_name";
     }
 
+    # An endpoint restored without a runtime IODev must be rebound through FHEM.
+    unless ($child->{IODev}) {
+        my $error = CommandAttr(undef, "$child->{NAME} IODev $io_name");
+        if ($error || !$child->{IODev} || $child->{IODev}{NAME} ne $io_name) {
+            Log3 $root_name, 2, "MATTERDevice: Cannot restore IODev of $child->{NAME}: " .
+                ($error // 'wrong IODev after assignment');
+            return;
+        }
+    }
+
     # User-assigned names and attributes are retained for existing endpoint devices.
     $child->{device} = $root_name;
     $root_hash->{$cache_key} = $child;
