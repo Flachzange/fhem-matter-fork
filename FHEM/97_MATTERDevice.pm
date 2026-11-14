@@ -760,6 +760,8 @@ sub MATTERDevice_Set($$@) {
         };
     }
     elsif ($cmd eq "rgb") {
+        return "Usage: set $name rgb RRGGBB"
+            unless @args == 1 && defined($args[0]) && $args[0] =~ /^#?[0-9a-fA-F]{6}$/;
         my $hex = $args[0];
         $hex =~ s/^#//;
         my ($r, $g, $b) = map { hex($_) } ($hex =~ /(..)(..)(..)/);
