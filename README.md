@@ -41,7 +41,7 @@ Make sure your Matter server is up and running and reachable via IP and port (de
 ## Features
 
 * **WebSocket Communication:** Native raw-socket handling with HTTP upgrade validation, masked client Pong responses, and JSON payload exchange. Incoming frames exceeding 32 MiB are rejected to limit memory use.
-* **Automatic node synchronization:** Processes the full node list returned by `start_listening` after every successful connection/reconnect. No manual discovery is required.
+* **Automatic node synchronization:** Processes the full node list returned by `start_listening` after every successful connection/reconnect. No manual discovery is required. The `MATTER` IO attribute `autocreate:0,1` defaults to `1`. Setting it to `0` prevents new FHEM root and endpoint devices without stopping synchronization of existing devices or affecting commissioned nodes on the Matter server.
 * **Live device lifecycle:** `node_added` and `node_updated` synchronize devices and endpoints. `node_removed` marks existing FHEM devices as removed without deleting their configuration.
 * **Manual discovery:** `set matterServer discover` still requests a complete `get_nodes` snapshot for diagnostics or manual resynchronization.
 * **Collision-safe FHEM devices:** Node identity is scoped to IODev and node ID; endpoint identity additionally includes endpoint ID. Newly created devices default to room `Matter`; existing names, rooms and attributes remain unchanged.
@@ -127,7 +127,8 @@ Once created, individual `MATTERDevice` instances will appear. You can control t
 
 ### MATTER IO-Device
 
-* disable: Temporarily disable the connection (0/1).
+* `disable`: Temporarily disable the connection (0/1).
+* `autocreate`: Default `1`. Set `attr matterServer autocreate 0` to suppress automatic creation of **new** root and endpoint devices. Existing FHEM Matter devices continue to work, and manually defined devices are unaffected. Set to `1` or remove the attribute to restore default behavior. `set matterServer discover` then discovers any missing devices without re-commissioning them.
 
 ### MATTERDevice (Child)
 

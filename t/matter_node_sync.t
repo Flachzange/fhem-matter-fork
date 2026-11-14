@@ -110,6 +110,10 @@ require './FHEM/97_MATTER.pm';
 
 # FHEM calls Initialize before Define/CommandAttr; expose the real module AttrList.
 MATTERDevice_Initialize($modules{MATTERDevice} ||= {});
+MATTER_Initialize($modules{MATTER} ||= {});
+like($modules{MATTER}{AttrList}, qr/(?:^|\s)autocreate:0,1(?:\s|$)/,
+     'MATTER IO exposes autocreate as a configurable 0/1 attribute');
+is(AttrVal('ioA', 'autocreate', 1), 1, 'autocreate defaults to enabled');
 is($modules{MATTERDevice}{FW_detailFn}, 'MATTERDevice_FWDetail', 'FHEMWEB detail hook is registered');
 ok($modules{MATTERDevice}{FW_deviceOverview}, 'FHEMWEB standard DeviceOverview remains visible');
 like($modules{MATTERDevice}{AttrList}, qr/(?:^|\s)IODev(?:\s|$)/,
@@ -147,6 +151,73 @@ ok(!defined(MATTERDevice_FWDetail('WEB', 'MATTER_Hall_Light_EP1', 'Matter')),
     'endpoint detail does not show another endpoint overview');
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'state', ''), 'on', 'actual attribute path reaches endpoint');
 is($modules{MATTERDevice}{defptr}{'ioA:42'}, $root, 'root registered for owning IO');
+
+# Disabling autocreate must stop all new FHEM devices, without suppressing
+# updates on existing nodes/endpoints or changing the Matter server itself.
+is(CommandAttr(undef, 'ioA autocreate 0'), undef,
+   'autocreate can be disabled on the MATTER IO device');
+my $before_disabled = count_devices();
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_added',
+    data => {node_id => 901, name => 'Commissioned while disabled',
+             attributes => {'1/6/0' => JSON::true}},
+}));
+is(count_devices(), $before_disabled,
+   'node_added does not create root or child when autocreate is disabled');
+ok(!exists($modules{MATTERDevice}{defptr}{'ioA:901'}),
+   'disabled autocreate does not register a new root');
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 42, name => 'Existing node update',
+    attributes => {'1/6/0' => JSON::false, '2/6/0' => JSON::true,
+                   '0/29/3' => [1, 2]},
+});
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'state', ''), 'off',
+   'already-defined endpoint still receives live values with autocreate disabled');
+ok(!$defs{MATTER_Hall_Light_EP2},
+   'unknown endpoint from attribute update and PartsList is not autocreated');
+is(count_devices(), $before_disabled,
+   'existing node updates do not create any new endpoint devices');
+MATTERDevice_Parse($root, encode_json({
+    result => {'1/6/0' => JSON::true, '3/6/0' => JSON::true},
+}));
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'state', ''), 'on',
+   'getConfig results still update already-defined endpoints');
+ok(!exists($defs{MATTER_Hall_Light_EP3}),
+   'getConfig cannot create unknown endpoints while autocreate is disabled');
+
+# Both changing the attribute and deleting it restore the default policy.
+is(CommandAttr(undef, 'ioA autocreate 1'), undef,
+   'autocreate can be explicitly re-enabled');
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 901, name => 'Commissioned while disabled',
+    attributes => {'1/6/0' => JSON::true},
+});
+ok($defs{MATTER_Commissioned_while_disabled} &&
+   $defs{MATTER_Commissioned_while_disabled_EP1},
+   'subsequent discovery creates missing node and endpoint after enabling');
+CommandDelete(undef, 'MATTER_Commissioned_while_disabled_EP1');
+CommandDelete(undef, 'MATTER_Commissioned_while_disabled');
+delete $attr{ioA}{autocreate};
+is(AttrVal('ioA', 'autocreate', 1), 1,
+   'removing the autocreate attribute restores default on behavior');
+
+# Different MATTER IO instances must have independent autocreate policies.
+is(CommandAttr(undef, 'ioB autocreate 0'), undef,
+   'autocreate can be controlled separately on another IO');
+my $before_io_b = count_devices();
+MATTER_ProcessNode($defs{ioB}, {
+    node_id => 902, name => 'Suppressed on B', attributes => {'1/6/0' => JSON::true},
+});
+is(count_devices(), $before_io_b,
+   'disabled autocreate on ioB does not add devices');
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 903, name => 'Enabled on A', attributes => {'1/6/0' => JSON::true},
+});
+ok($defs{MATTER_Enabled_on_A} && $defs{MATTER_Enabled_on_A_EP1},
+   'default-enabled ioA still creates its own devices');
+CommandDelete(undef, 'MATTER_Enabled_on_A_EP1');
+CommandDelete(undef, 'MATTER_Enabled_on_A');
+delete $attr{ioB}{autocreate};
 
 $attr{MATTER_Hall_Light}{room} = 'LivingRoom';
 $attr{MATTER_Hall_Light}{group} = 'My custom group';

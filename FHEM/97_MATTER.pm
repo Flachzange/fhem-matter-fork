@@ -37,7 +37,7 @@ sub MATTER_Initialize {
     $hash->{Clients}    = ":MATTERDevice:";
     $hash->{MatchList}  = { "1" => ".*" };
 
-    $hash->{AttrList} = "disable:0,1 " . $readingFnAttributes;
+    $hash->{AttrList} = "disable:0,1 autocreate:0,1 " . $readingFnAttributes;
 }
 
 sub MATTER_Define {
@@ -456,6 +456,9 @@ sub MATTER_ProcessNode($$) {
     }
 
     unless ($root) {
+        # Disable FHEM device creation only; the Matter server still owns the node.
+        # Previously defined nodes continue to receive status/attribute updates.
+        return unless AttrVal($io_name, 'autocreate', 1);
         my $base_name = $node->{name};
         $base_name = "MatterDevice_$node_id" unless defined($base_name) && !ref($base_name) && length($base_name);
         $base_name =~ s/[^a-zA-Z0-9_.-]/_/g;
@@ -744,6 +747,12 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
   <li><b>Set setWifiCredentials / getCredentials:</b> Configure or inspect available
       network credentials (do not expose secrets in logs).</li>
   <li><b>Attribute disable:</b> Disable or enable the IO connection.</li>
+  <li><b>Attribute autocreate (0/1):</b> Default <code>1</code>. Set to
+      <code>0</code> to suppress automatic creation of new FHEM root and endpoint
+      devices from node discovery, commissioning events and attribute updates.
+      Existing devices remain synchronized; the Matter server keeps its nodes.
+      Re-enabling autocreate allows missing devices to be created on subsequent
+      discovery/events.</li>
 </ul>
 <p>Newly created logical devices default to room <code>Matter</code>; existing FHEM
 names, rooms and user attributes are retained. A removed node is marked with
@@ -773,6 +782,12 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
   <li><b>Set setWifiCredentials / getCredentials:</b> Netzwerkzugangsdaten
       konfigurieren bzw. auslesen.</li>
   <li><b>Attribut disable:</b> IO-Verbindung deaktivieren oder aktivieren.</li>
+  <li><b>Attribut autocreate (0/1):</b> Standard <code>1</code>. Mit
+      <code>0</code> werden weder neue Root- noch Endpoint-Devices in FHEM
+      automatisch angelegt. Bestehende Devices werden weiterhin synchronisiert;
+      die Nodes auf dem Matter-Server bleiben unverändert. Nach dem erneuten
+      Aktivieren können fehlende Devices beim nächsten Abgleich oder Event
+      angelegt werden.</li>
 </ul>
 <p>Neue logische Geräte erhalten standardmäßig den Raum <code>Matter</code>.
 Vorhandene Namen, Räume und Benutzerattribute bleiben unverändert. Entfernte

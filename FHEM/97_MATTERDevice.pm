@@ -1451,6 +1451,9 @@ sub MATTERDevice_GetOrCreateChild($$) {
     }
 
     unless ($child) {
+        # Allow updates to existing endpoints, but do not define new ones while
+        # the owning MATTER IO has autocreate disabled.
+        return unless AttrVal($io_name, 'autocreate', 1);
         my $child_name = $root_name . "_EP" . $ep_id;
         if ($defs{$child_name}) {
             $child_name .= "_" . $node_id;
