@@ -42,6 +42,13 @@
 - Validate Perl syntax with the actual FHEM dependencies available, and document dependency gaps if a standalone `perl -c` cannot load the module. Verify on a real FHEM + Matter server only when feasible, and state which integration/hardware paths remain untested.
 - Keep PRs narrow: provide observed problem, source evidence, changed paths, tests run/not run, and compatibility risk. Do a second review of both modules and their interaction after modifications. Avoid changing Matter server or Thread Border Router repositories as part of a FHEM module fix without separate explicit authorization.
 
+## Matter documentation and release metadata
+
+- For each user-visible module change, review and update `README.md` and the German/English FHEM command reference embedded in `FHEM/97_MATTER.pm` and `FHEM/97_MATTERDevice.pm` as applicable. Describe only behavior supported by the current source and tests. Distinguish implemented functionality, automated regression coverage, live hardware validation, and known limitations; remove stale statements instead of accumulating contradictory claims.
+- For a functional Matter-module release, review and advance the existing FHEM-visible `$MATTER_version` declaration in `FHEM/97_MATTER.pm`, using the actual release date. It currently populates the existing `VERSION` internal; preserve that interface rather than introducing a duplicate version field without a separate justification. Check whether the version also needs to change when only `97_MATTERDevice.pm` changes. Do not bump the module version for documentation-only changes.
+- Keep `CHANGED` current with the relevant user-facing changes. After editing any `FHEM/*.pm` file, regenerate `controls_matter.txt` with `bash make_controls.sh` and check it with `bash make_controls.sh --check`; include its resulting changes in the same commit so the FHEM updater publishes the correct module bytes.
+- Review README installation/update instructions against the tracked release source (`main`), including the original Zeppelin source and any FHEM security consequences. Never claim a live Matter/Thread/BLE commissioning test took place based only on modeled Perl tests.
+
 ## Shared rules management
 
 - Keep `AGENTS.md` byte-identical to the accepted central `Flachzange/FHEM_Agent_Rules` revision in `.github/agent-rules.json`. Never edit generic rules locally.

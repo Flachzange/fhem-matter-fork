@@ -13,7 +13,7 @@ use Data::Dumper;
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.2 22.08.2026";
+my $MATTER_version = "V0.3 14.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;

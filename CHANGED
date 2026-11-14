@@ -1,3 +1,4 @@
+2026-11-14  Documentation: clarify Matter architecture, security, supported commands, hardware validation and upstream attribution; update MATTER IO version to V0.3 (14.11.2026).
 2026-11-14  FHEM updater: publish fork modules via controls_matter.txt; add deterministic manifest generation and CI validation (PR #12).
 2026-11-14  Documentation: show THBR BLE proxy and IPv6 Thread border-routing paths; link original THBR and THBR-ETH fork (PR #12).
 2026-11-14  MATTER IO: support commissionCode network (default) or auto (IP plus optional BLE proxy); protect pairing codes in module logs and FHEM set events (PR #11).
