@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "source": {
+    "repository": "Flachzange/FHEM_Agent_Rules",
+    "path": "AGENTS.md",
+    "revision": "0713f28abe4d0a5401a586409e3ffb9fadccd6af"
+  },
+  "supplement": "AGENTS-MATTER.md"
+}
