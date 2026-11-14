@@ -524,15 +524,8 @@ sub MATTER_ProcessNode($$) {
     $modules{MATTERDevice}{defptr}{$root_key} = $root;
     MATTERDevice_EnsureNodeGroup($root);
 
-    if (ref($node->{attributes}) eq 'HASH') {
-        MATTERDevice_Parse($root, encode_json({ node_id => $node_id, attributes => $node->{attributes} }));
-    }
-    # Backfill groups on existing endpoints even if the snapshot contains no attributes.
-    foreach my $child (MATTERDevice_NodeChildren($root)) {
-        MATTERDevice_EnsureNodeGroup($child);
-    }
-    # Physical availability is node-wide, unlike matter_status (server membership).
-    # Only update it when the server actually supplies a boolean value.
+    # Apply the reported node availability before endpoint creation to avoid
+    # briefly inheriting an outdated value during discovery.
     if (exists $node->{available}) {
         my $available = $node->{available};
         my $valid_boolean = defined($available) &&
@@ -544,6 +537,14 @@ sub MATTER_ProcessNode($$) {
                 if ReadingsVal($root->{NAME}, 'available', '') ne $value;
         }
     }
+    if (ref($node->{attributes}) eq 'HASH') {
+        MATTERDevice_Parse($root, encode_json({ node_id => $node_id, attributes => $node->{attributes} }));
+    }
+    # Synchronize already defined endpoints even without endpoint attributes.
+    foreach my $child (MATTERDevice_NodeChildren($root)) {
+        MATTERDevice_EnsureNodeGroup($child);
+    }
+    MATTERDevice_SyncNodeReadings($root);
     MATTER_SetNodeStatus($hash, $node_id, 'present');
     return 1;
 }

@@ -105,7 +105,9 @@ set matterServer discover
 
 A `node_removed` event sets the `matter_status` reading to `removed` on the affected FHEM node and endpoints, **without deleting** their configuration.
 
-`available=true/false` is taken only from a server node snapshot or `node_updated` event that explicitly contains an availability boolean. It is recorded on the root node; no recurring polling is introduced. A subsequent `node_added`/`node_updated` restores `matter_status` to `present`. This reading describes server membership, **not** whether a physical device is currently reachable.
+`available=true/false` is taken only from a server node snapshot or `node_updated` event that explicitly contains an availability boolean. It is recorded on the root node and mirrored to its endpoints; no recurring polling is introduced. A subsequent `node_added`/`node_updated` restores `matter_status` to `present`. This reading describes server membership, **not** whether a physical device is currently reachable.
+
+The root's `model` reading (BasicInformation on endpoint 0) is mirrored to the endpoints as well, identifying the physical device from each endpoint detail page. The module copies only `model` and `available` when the source value is known and differs from the current endpoint reading. New and existing endpoints are handled automatically; no other readings are inherited. The existing `matter_status` reading already tracks Matter server membership separately.
 
 Each existing root `MATTERDevice` (endpoint 0) and its endpoint devices appear under the same FHEMWEB `group`, for example `Node 35 (matterServer)`, provided they have no individually configured `group` attribute. Missing groups on previously created devices are added during node synchronization even if the current snapshot contains no endpoint attributes; manual groups are not replaced. The group label incorporates the IO device name to distinguish nodes with identical IDs on different Matter servers.
 

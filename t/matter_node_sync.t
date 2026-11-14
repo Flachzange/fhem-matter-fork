@@ -10,6 +10,7 @@ BEGIN { $INC{'HttpUtils.pm'} = 1; } # No FHEM network stack is needed by these s
 
 my @log;
 my @timers;
+my %bulk_writes;
 my $preferred_io = 'ioA';
 my $fail_io_for = '';
 
@@ -24,7 +25,10 @@ sub readingsSingleUpdate {
     $device->{READINGS}{$reading} = { VAL => $value, TIME => 'test-time' };
 }
 sub readingsBeginUpdate { return; }
-sub readingsBulkUpdate { readingsSingleUpdate($_[0], $_[1], $_[2]); }
+sub readingsBulkUpdate {
+    $bulk_writes{$_[0]{NAME}}{$_[1]}++;
+    readingsSingleUpdate($_[0], $_[1], $_[2]);
+}
 sub readingsEndUpdate { return; }
 sub RemoveInternalTimer { return; }
 sub InternalTimer { push @timers, { at => $_[0], callback => $_[1], owner => $_[2] }; }
@@ -466,8 +470,8 @@ MATTER_ProcessNode($defs{ioA}, { node_id => 42, name => 'Invalid availability',
                                 available => 'unknown' });
 is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
    'malformed availability is ignored');
-ok(!defined(ReadingsVal('MATTER_Hall_Light_EP1', 'available', undef)),
-   'node-level availability is not copied to endpoints');
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'available', ''), 'true',
+   'node-level availability is mirrored to the existing endpoint');
 
 MATTERDevice_Parse($root, encode_json({
     node_id => 42,
@@ -644,5 +648,141 @@ like($type_html, qr/<td>10<\/td><td>0xF123<\/td>/,
 
 ok(!exists($defs{MATTER_TypeDisplay_EP10}{READINGS}{device_type}),
    'type presentation does not create additional readings');
+
+# Model and availability are the only root readings mirrored onto endpoints.
+# Test all supported input paths with independent nodes sharing an ID on two IOs.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 95, name => 'MetadataNode',
+    attributes => {'1/6/0' => JSON::true},
+});
+my $metadata_root = $defs{MATTER_MetadataNode};
+my $metadata_ep1 = $defs{MATTER_MetadataNode_EP1};
+ok($metadata_root && $metadata_ep1, 'metadata test node and endpoint exist');
+ok(!defined(ReadingsVal($metadata_ep1->{NAME}, 'model', undef)),
+   'an unknown root model is not fabricated on an endpoint');
+ok(!defined(ReadingsVal($metadata_ep1->{NAME}, 'available', undef)),
+   'unknown node availability is not fabricated on an endpoint');
+
+# Unknown order between root BasicInformation and child attributes is harmless.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 95, name => 'MetadataNode', available => JSON::true,
+    attributes => {'0/40/3' => 'Synthetic Model A', '1/6/0' => JSON::true,
+                   '2/6/0' => JSON::false},
+});
+my $metadata_ep2 = $defs{MATTER_MetadataNode_EP2};
+for my $ep ($metadata_ep1, $metadata_ep2) {
+    is(ReadingsVal($ep->{NAME}, 'model', ''), 'Synthetic Model A',
+       'discovery mirrors the root model to an existing/new endpoint');
+    is(ReadingsVal($ep->{NAME}, 'available', ''), 'true',
+       'discovery mirrors reported availability to an existing/new endpoint');
+}
+my $metadata_ep3 = MATTERDevice_GetOrCreateChild($metadata_root, 3);
+ok($metadata_ep3, 'another endpoint is created from an existing node');
+is(ReadingsVal($metadata_ep3->{NAME}, 'model', ''), 'Synthetic Model A',
+   'newly created endpoint immediately receives the known model');
+is(ReadingsVal($metadata_ep3->{NAME}, 'available', ''), 'true',
+   'newly created endpoint immediately receives node availability');
+ok(!defined(ReadingsVal($metadata_ep3->{NAME}, 'producer', undef)),
+   'unrelated root readings are not inherited');
+
+my $model_writes = $bulk_writes{$metadata_ep1->{NAME}}{model} // 0;
+my $available_writes = $bulk_writes{$metadata_ep1->{NAME}}{available} // 0;
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 95, name => 'MetadataNode', available => JSON::true,
+    attributes => {'0/40/3' => 'Synthetic Model A', '1/6/0' => JSON::true},
+});
+is($bulk_writes{$metadata_ep1->{NAME}}{model} // 0, $model_writes,
+   'unchanged model does not write the endpoint reading again');
+is($bulk_writes{$metadata_ep1->{NAME}}{available} // 0, $available_writes,
+   'unchanged available does not write the endpoint reading again');
+
+# Live events update the root model and immediately synchronize endpoints.
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [95, '0/40/3', 'Synthetic Model B'],
+}));
+is(ReadingsVal($metadata_root->{NAME}, 'model', ''), 'Synthetic Model B',
+   'live BasicInformation change is stored at the root');
+is(ReadingsVal($metadata_ep1->{NAME}, 'model', ''), 'Synthetic Model B',
+   'live model changes reach an existing endpoint');
+is(ReadingsVal($metadata_ep3->{NAME}, 'model', ''), 'Synthetic Model B',
+   'live model changes reach a newly created endpoint');
+is($bulk_writes{$metadata_ep1->{NAME}}{model} // 0, $model_writes + 1,
+   'a changed model produces exactly one endpoint update');
+
+# getConfig read_attribute results use the same propagation path.
+$defs{ioA}{helper}{pending_config}{95001} = 95;
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => 95001,
+    result => {'0/40/3' => 'Synthetic Model C'},
+}));
+is(ReadingsVal($metadata_ep2->{NAME}, 'model', ''), 'Synthetic Model C',
+   'root getConfig results synchronize model on existing endpoints');
+
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_updated', data => {node_id => 95, available => JSON::false},
+}));
+is(ReadingsVal($metadata_ep1->{NAME}, 'available', ''), 'false',
+   'node_updated availability is propagated to endpoints');
+is(ReadingsVal($metadata_ep3->{NAME}, 'available', ''), 'false',
+   'node_updated reaches all endpoints');
+is($bulk_writes{$metadata_ep1->{NAME}}{available} // 0, $available_writes + 1,
+   'changed availability produces one endpoint update');
+
+# An invalid or absent value must not turn into an invented state.
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_updated', data => {node_id => 95, available => 'unknown'},
+}));
+MATTER_ProcessNode($defs{ioA}, {node_id => 95, name => 'MetadataNode'});
+is(ReadingsVal($metadata_ep1->{NAME}, 'available', ''), 'false',
+   'unknown or missing availability never overwrites a valid report');
+MATTERDevice_Parse($metadata_root, encode_json({
+    event => 'node_updated', data => {node_id => 95, available => JSON::true},
+}));
+is(ReadingsVal($metadata_ep1->{NAME}, 'available', ''), 'true',
+   'direct MATTERDevice node_updated event mirrors valid availability');
+MATTERDevice_Parse($metadata_root, encode_json({
+    event => 'node_updated', data => {node_id => 95, available => 'unknown'},
+}));
+is(ReadingsVal($metadata_ep1->{NAME}, 'available', ''), 'true',
+   'direct MATTERDevice node_updated ignores malformed availability');
+
+# Same node ID under another MATTER IO must remain isolated.
+$preferred_io = 'ioA';
+MATTER_ProcessNode($defs{ioB}, {
+    node_id => 95, name => 'OtherMetadataNode', available => JSON::false,
+    attributes => {'0/40/3' => 'Other Model', '1/6/0' => JSON::true},
+});
+my $other_metadata_ep = $defs{MATTER_OtherMetadataNode_EP1};
+ok($other_metadata_ep, 'a second IO may have the same Matter node ID');
+is(ReadingsVal($other_metadata_ep->{NAME}, 'model', ''), 'Other Model',
+   'same-ID endpoint on another IO keeps its own model');
+is(ReadingsVal($other_metadata_ep->{NAME}, 'available', ''), 'false',
+   'same-ID endpoint on another IO keeps its own availability');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [95, '0/40/3', 'Synthetic Model D'],
+}));
+is(ReadingsVal($other_metadata_ep->{NAME}, 'model', ''), 'Other Model',
+   'root model updates do not affect another IO');
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 95, name => 'MetadataNode', available => JSON::true,
+});
+is(ReadingsVal($other_metadata_ep->{NAME}, 'available', ''), 'false',
+   'root availability updates do not affect another IO');
+
+# autocreate=0 still allows metadata changes on already defined endpoints.
+is(CommandAttr(undef, 'ioA autocreate 0'), undef,
+   'autocreate can be disabled during metadata synchronization');
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 95, name => 'MetadataNode', available => JSON::false,
+    attributes => {'0/40/3' => 'Synthetic Model E', '4/6/0' => JSON::true},
+});
+is(ReadingsVal($metadata_ep1->{NAME}, 'model', ''), 'Synthetic Model E',
+   'existing endpoint model updates with autocreate disabled');
+is(ReadingsVal($metadata_ep2->{NAME}, 'available', ''), 'false',
+   'existing endpoint availability updates with autocreate disabled');
+ok(!$defs{MATTER_MetadataNode_EP4},
+   'mirroring node metadata cannot create an endpoint when autocreate is disabled');
+delete $attr{ioA}{autocreate};
+
 
 done_testing();

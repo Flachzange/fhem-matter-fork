@@ -1131,9 +1131,12 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
 
     readingsEndUpdate($hash, 1);
+    # Model on endpoint 0 identifies the physical node, not a single function.
+    MATTERDevice_SyncNodeReadings($hash)
+        if $cluster_id == 0x0028 && $attr_id == 0x0003 && ($hash->{endpoint_id} // 0) == 0;
 }
 
-sub MATTERDevice_Parse($$) {
+sub MATTERDevice_Parse($) {
     my ($hash, $data) = @_;
     my $name = $hash->{NAME};
 
@@ -1145,12 +1148,17 @@ sub MATTERDevice_Parse($$) {
 
     my $my_endpoint = $hash->{endpoint_id} // 0;
 
-    # Availability gehört zum Matter-Node und wird daher nur am Root-Device geführt.
+    # Availability is node-wide. An absent or invalid boolean is not a report.
     my $update_available = sub {
         my ($available) = @_;
         return if $my_endpoint != 0;
+        return unless defined($available) &&
+            ((!ref($available) && $available =~ /^(?:0|1)$/) ||
+             ref($available) =~ /Boolean$/);
         my $available_value = $available ? "true" : "false";
-        readingsSingleUpdate($hash, "available", $available_value, 1);
+        readingsSingleUpdate($hash, "available", $available_value, 1)
+            if ReadingsVal($name, 'available', '') ne $available_value;
+        MATTERDevice_SyncNodeReadings($hash);
     };
     
     # Hilfs-Subroutine zur internen Weiterleitung an Root oder Child
@@ -1361,6 +1369,32 @@ sub MATTERDevice_NodeChildren($) {
     } values %defs;
 }
 
+# Mirror only node-wide readings, using the same IODev/node membership as the
+# endpoint link list. Newly created children can be updated individually.
+# Missing values and unchanged values must not create endpoint events.
+sub MATTERDevice_SyncNodeReadings($;$) {
+    my ($root, $only_child) = @_;
+    return unless $root && ($root->{endpoint_id} // 0) == 0;
+    my @children = $only_child ? ($only_child) : MATTERDevice_NodeChildren($root);
+
+    foreach my $child (@children) {
+        my @changes;
+        foreach my $reading (qw(model available)) {
+            my $source = $root->{READINGS}{$reading};
+            next unless ref($source) eq 'HASH';
+            my $value = $source->{VAL};
+            next unless defined($value) && !ref($value);
+            my $previous = ReadingsVal($child->{NAME}, $reading, undef);
+            next if defined($previous) && $previous eq $value;
+            push @changes, [$reading, $value];
+        }
+        next unless @changes;
+        readingsBeginUpdate($child);
+        readingsBulkUpdate($child, $_->[0], $_->[1]) foreach @changes;
+        readingsEndUpdate($child, 1);
+    }
+}
+
 # Prefer the Descriptor's actual Matter device types. When unavailable, label
 # only observed functions: an OnOff cluster alone cannot distinguish a plug
 # from a switch or a light.
@@ -1499,6 +1533,7 @@ sub MATTERDevice_GetOrCreateChild($$) {
     $child->{device} = $root_name;
     $root_hash->{$cache_key} = $child;
     MATTERDevice_EnsureNodeGroup($child);
+    MATTERDevice_SyncNodeReadings($root_hash, $child);
     return $child;
 }
 
@@ -1530,9 +1565,11 @@ rooms and attributes during node synchronization.</p>
       the Matter server; <code>removed</code> means it was decommissioned or is
       missing from a complete server snapshot. Neither value is a reachability
       or availability indication.</li>
-  <li><b>Reading available (root only):</b> <code>true</code>/<code>false</code>
-      reflects availability explicitly reported by the Matter server. Unlike
-      <code>matter_status</code>, it describes reachability rather than membership.</li>
+  <li><b>Readings model and available:</b> The root's <code>model</code> (from
+      BasicInformation) and node-wide <code>available</code> are mirrored to
+      its endpoints if reported. <code>available=true/false</code> describes
+      node reachability, not individual endpoint functionality. Unchanged
+      values do not generate repeated endpoint events.</li>
   <li><b>Capabilities:</b> Supported set commands use the Matter
       <code>AcceptedCommandList</code>, <code>FeatureMap</code> and other cluster
       metadata when available. Existing <code>has_*</code> values remain a fallback;
@@ -1572,9 +1609,12 @@ bleiben bestehende Namen, Räume und Benutzerattribute erhalten.</p>
       auf dem Matter-Server vorhanden ist; <code>removed</code> bedeutet, dass er
       dort entfernt wurde oder in einer vollständigen Node-Liste fehlt. Das Reading
       zeigt nicht die physische Erreichbarkeit oder Verfügbarkeit an.</li>
-  <li><b>Reading available (nur Root):</b> <code>true</code>/<code>false</code>
-      zeigt die vom Matter-Server gemeldete Erreichbarkeit des Knotens an,
-      unabhängig von der Mitgliedschaft (<code>matter_status</code>).</li>
+  <li><b>Readings model und available:</b> Das am Root über BasicInformation
+      ermittelte <code>model</code> und die Node-weite Erreichbarkeit
+      <code>available</code> werden bei bekannten Werten an die Endpunkte
+      weitergegeben. <code>available=true/false</code> beschreibt die
+      Erreichbarkeit des Knotens, nicht die Funktion einzelner Endpunkte.
+      Unveränderte Werte erzeugen keine weiteren Endpoint-Events.</li>
   <li><b>Capabilities:</b> Unterstützte Set-Befehle werden nach Möglichkeit
       anhand der Matter-Metadaten wie <code>AcceptedCommandList</code> und
       <code>FeatureMap</code> bestimmt. Vorhandene <code>has_*</code>-Attribute
