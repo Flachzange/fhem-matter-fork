@@ -3,6 +3,7 @@ use strict;
 use warnings;
 use Test::More;
 use JSON qw(encode_json);
+use IO::Socket::INET;
 use Socket qw(AF_UNIX SOCK_STREAM PF_UNSPEC);
 use vars qw(%defs %attr %modules %selectlist $readingFnAttributes);
 
@@ -30,7 +31,13 @@ sub readingsBulkUpdate {
     readingsSingleUpdate($_[0], $_[1], $_[2]);
 }
 sub readingsEndUpdate { return; }
-sub RemoveInternalTimer { return; }
+sub RemoveInternalTimer {
+    my ($owner, $callback) = @_;
+    @timers = grep {
+        !($_->{owner} eq $owner &&
+          (!defined($callback) || $_->{callback} eq $callback))
+    } @timers;
+}
 sub InternalTimer { push @timers, { at => $_[0], callback => $_[1], owner => $_[2] }; }
 sub gettimeofday { return 1; }
 
@@ -97,7 +104,23 @@ sub CommandAttr {
         $defs{$name}{IODev} = $defs{$value};
         readingsSingleUpdate($defs{$name}, 'IODev', $value);
     }
+    # FHEM invokes AttrFn before updating the attribute map.
+    if ($defs{$name}{TYPE} eq 'MATTER') {
+        my $error = MATTER_Attr('set', $name, $key, $value);
+        return $error if defined($error);
+    }
     $attr{$name}{$key} = $value;
+    return undef;
+}
+sub CommandDeleteAttr {
+    my (undef, $command) = @_;
+    my ($name, $key) = split /\s+/, $command, 2;
+    return "Device missing" unless $defs{$name};
+    if ($defs{$name}{TYPE} eq 'MATTER') {
+        my $error = MATTER_Attr('del', $name, $key, undef);
+        return $error if defined($error);
+    }
+    delete $attr{$name}{$key};
     return undef;
 }
 sub CommandDelete {
@@ -411,6 +434,35 @@ for my $i (0 .. $pong_len - 1) {
 }
 is($unmasked_body, 'abc', 'Pong echoes original ping payload');
 
+# After the upgrade, exactly one heartbeat timer is active.
+is(scalar(grep { $_->{callback} eq 'MATTER_Heartbeat' && $_->{owner} eq $ws } @timers),
+   1, 'WebSocket upgrade starts one heartbeat timer');
+RemoveInternalTimer($ws, 'MATTER_Heartbeat'); # Simulate FHEM consuming the timer.
+MATTER_Heartbeat($ws);
+my $client_ping;
+sysread($server, $client_ping, 128);
+is(ord(substr($client_ping, 0, 1)), 0x89, 'heartbeat sends a WebSocket ping');
+ok(ord(substr($client_ping, 1, 1)) & 0x80, 'client heartbeat ping is masked');
+my $ping_mask = substr($client_ping, 2, 4);
+my $ping_raw = substr($client_ping, 6, 4);
+my $ping_token = '';
+for my $i (0..3) {
+    $ping_token .= chr(ord(substr($ping_raw, $i, 1)) ^
+                       ord(substr($ping_mask, $i, 1)));
+}
+is($ws->{helper}{pending_pong}, $ping_token,
+   'heartbeat expects the exact outstanding ping token');
+my $wrong_pong = pack('CC', 0x8A, 4) . 'nope';
+syswrite($server, $wrong_pong) == length($wrong_pong) or die 'wrong pong write failed';
+MATTER_Read($ws);
+is($ws->{helper}{pending_pong}, $ping_token, 'unmatched Pong does not clear watchdog');
+my $valid_pong = pack('CC', 0x8A, 4) . $ping_token;
+syswrite($server, $valid_pong) == length($valid_pong) or die 'valid pong write failed';
+MATTER_Read($ws);
+ok(!defined($ws->{helper}{pending_pong}), 'matching Pong clears outstanding heartbeat');
+is(scalar(grep { $_->{callback} eq 'MATTER_Heartbeat' && $_->{owner} eq $ws } @timers),
+   1, 'matching Pong schedules exactly one next heartbeat');
+
 my $close_frame = pack('CC', 0x88, 0);
 syswrite($server, $close_frame) == length($close_frame) or die 'close frame write failed';
 MATTER_Read($ws);
@@ -450,6 +502,128 @@ close($huge_server);
 MATTER_Set($ws, 'ioWS', 'setWifiCredentials', 'SyntheticSSID', 'SyntheticPassword');
 ok(!grep(/SyntheticSSID|SyntheticPassword/, @log),
    'credential command does not log Wi-Fi SSID or password');
+
+
+# A silent TCP connection is detected by a missing matching Pong.
+@timers = ();
+socketpair(my $silent_socket, my $silent_peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+    or die "socketpair: $!";
+my $silent = {NAME => 'silentIO', TYPE => 'MATTER', READINGS => {},
+    helper => {}, CD => $silent_socket, FD => fileno($silent_socket),
+    websocket => 1, ws_status => 'connected', BUF => ''};
+$defs{silentIO} = $silent;
+$selectlist{silentIO} = $silent;
+MATTER_Heartbeat($silent);
+ok(defined($silent->{helper}{pending_pong}), 'heartbeat records a pending Pong');
+is(scalar(@timers), 1, 'one timeout timer follows an outstanding Ping');
+RemoveInternalTimer($silent, 'MATTER_Heartbeat'); # Simulated expiry
+MATTER_Heartbeat($silent);
+is($silent->{ws_status}, 'disconnected', 'Pong deadline detects silent connection');
+like(join("\n", @log), qr/\[silentIO\] WebSocket pong timeout after 15 seconds; reconnecting/,
+     'Pong timeout explains the failure in the FHEM log');
+like(join("\n", @log), qr/\[silentIO\] Reconnect scheduled in 30 seconds/,
+     'retry schedule is logged');
+is(scalar(@timers), 1, 'Pong timeout leaves exactly one retry timer');
+is($timers[0]{callback}, 'MATTER_Open', 'Pong timeout schedules TCP reconnect');
+ok(!exists($selectlist{silentIO}), 'dead WebSocket is removed from FHEM selectlist');
+close($silent_peer);
+
+# A partial TCP/HTTP connection cannot remain in "connecting" indefinitely.
+@timers = ();
+socketpair(my $slow_socket, my $slow_peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+    or die "socketpair: $!";
+my $slow = {NAME => 'slowIO', TYPE => 'MATTER', READINGS => {},
+    helper => {}, CD => $slow_socket, FD => fileno($slow_socket),
+    websocket => 0, ws_status => 'handshake', BUF => ''};
+$defs{slowIO} = $slow;
+$selectlist{slowIO} = $slow;
+MATTER_ConnectTimeout($slow);
+is($slow->{ws_status}, 'disconnected', 'incomplete handshake times out');
+like(join("\n", @log), qr/\[slowIO\] WebSocket upgrade timed out after 10 seconds/,
+     'handshake timeout is logged with phase and deadline');
+is(scalar(@timers), 1, 'handshake timeout leaves only a reconnect timer');
+close($slow_peer);
+
+# Exercise the actual nonblocking connect against a local listening socket.
+@timers = ();
+my $listener = IO::Socket::INET->new(
+    LocalAddr => '127.0.0.1', LocalPort => 0, Proto => 'tcp', Listen => 2,
+) or die "local TCP listener: $!";
+my $async = {NAME => 'asyncIO', TYPE => 'MATTER', READINGS => {},
+             helper => {}, ip => '127.0.0.1', port => $listener->sockport};
+$defs{asyncIO} = $async;
+MATTER_Open($async);
+is($async->{ws_status}, 'tcp_connecting',
+   'nonblocking connect enters a separate TCP completion phase');
+ok($async->{directWriteFn}, 'TCP completion is registered for FHEM writable callbacks');
+is(scalar(@timers), 1, 'only one connect/upgrade deadline is scheduled');
+my $write_ready = '';
+vec($write_ready, $async->{FD}, 1) = 1;
+my $wout = $write_ready;
+ok(select(undef, $wout, undef, 1) > 0,
+   'nonblocking socket becomes writable when TCP connection completes');
+$async->{directWriteFn}->($async);
+is($async->{ws_status}, 'handshake', 'writable connect sends HTTP WebSocket upgrade');
+like(join("\n", @log), qr/\[asyncIO\] TCP connect attempt 1 to 127\.0\.0\.1:/,
+     'connect attempt is logged with attempt count and target');
+my $accepted = $listener->accept() or die "accept local WebSocket: $!";
+my $request;
+sysread($accepted, $request, 2048);
+like($request, qr{^GET /ws HTTP/1\.1\r\n}, 'nonblocking connect sent a complete HTTP upgrade');
+my $http101 = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+syswrite($accepted, $http101) == length($http101) or die 'HTTP 101 write failed';
+MATTER_Read($async);
+is($async->{ws_status}, 'connected', 'successful upgrade finishes the async handshake');
+like(join("\n", @log), qr/\[asyncIO\] WebSocket connected \(attempt 1\); restarting node listening/,
+     'successful WebSocket recovery is logged at connection completion');
+ok(!grep($_->{callback} eq 'MATTER_ConnectTimeout', @timers),
+   'successful handshake cancels its connect timeout');
+is(scalar(grep { $_->{callback} eq 'MATTER_Heartbeat' } @timers), 1,
+   'completed handshake starts one ping timer');
+MATTER_Close($async);
+is(scalar(@timers), 0, 'closing an active connection cancels heartbeat');
+ok(!exists($selectlist{asyncIO}), 'closing removes the IO selectlist entry');
+ok(!exists($async->{directWriteFn}), 'closing removes writable callback');
+close($accepted);
+close($listener);
+
+# FHEM's AttrFn is invoked before the new disable value is stored.
+@timers = ();
+socketpair(my $disabled_socket, my $disabled_peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+    or die "socketpair: $!";
+my $disabled = {NAME => 'disableIO', TYPE => 'MATTER', READINGS => {},
+    helper => {}, CD => $disabled_socket, FD => fileno($disabled_socket),
+    websocket => 1, ws_status => 'connected', BUF => ''};
+$defs{disableIO} = $disabled;
+$selectlist{disableIO} = $disabled;
+InternalTimer(31, 'MATTER_Heartbeat', $disabled, 0);
+is(CommandAttr(undef, 'disableIO disable 1'), undef,
+   'disable=1 is accepted on a running MATTER IO');
+like(join("\n", @log), qr/\[disableIO\] Disabled: connection closed, pending timers cancelled/,
+     'disable transition and cleanup are logged');
+ok(!$disabled->{CD} && !exists($selectlist{disableIO}),
+   'disable=1 immediately closes its running connection');
+is(scalar(@timers), 0, 'disable=1 cancels all pending IO timers');
+is(CommandAttr(undef, 'disableIO disable 0'), undef,
+   'disable=0 is accepted after shutdown');
+like(join("\n", @log), qr/\[disableIO\] Enabled: connection attempt scheduled/,
+     'enable transition and recovery attempt are logged');
+is(scalar(@timers), 1, 're-enabling schedules one connection attempt');
+is($timers[0]{callback}, 'MATTER_Open', 're-enable defers reconnect until AttrVal is updated');
+is(CommandAttr(undef, 'disableIO disable 0'), undef, 'repeated enable is accepted');
+is(scalar(@timers), 1, 'repeated enable cannot duplicate a reconnect timer');
+MATTER_Undef($disabled, 'disableIO');
+is(scalar(@timers), 0, 'undefine cancels pending retry on a deleted IO');
+ok(!exists($disabled->{CD}), 'undefine leaves no socket');
+close($disabled_peer);
+
+@timers = ();
+$attr{disableIO}{disable} = 1;
+is(CommandDeleteAttr(undef, 'disableIO disable'), undef,
+   'deleting disable attribute is accepted');
+is(scalar(@timers), 1, 'removing disable schedules exactly one reconnect');
+MATTER_Undef($disabled, 'disableIO');
+is(scalar(@timers), 0, 'undefine cancels retry after del disable');
 
 
 # Regression coverage for the integrated legacy feature branches.
