@@ -408,9 +408,22 @@ sub MATTER_ProcessNode($$) {
             next unless ($device->{TYPE} // '') eq 'MATTERDevice';
             next unless defined($device->{node_id}) && $device->{node_id} eq $node_id;
             next unless ($device->{endpoint_id} // 0) == 0;
-            next unless $device->{IODev} && $device->{IODev}{NAME} eq $io_name;
+            my $configured_io = AttrVal($device->{NAME}, 'IODev', '');
+            next if $configured_io && $configured_io ne $io_name;
+            next unless ($device->{IODev} && $device->{IODev}{NAME} eq $io_name)
+                || $configured_io eq $io_name;
             $root = $device;
             last;
+        }
+    }
+
+    if ($root && (!$root->{IODev} || $root->{IODev}{NAME} ne $io_name)) {
+        # A configured IODev can survive rereadcfg while its runtime pointer is stale.
+        my $error = CommandAttr(undef, "$root->{NAME} IODev $io_name");
+        if ($error || !$root->{IODev} || $root->{IODev}{NAME} ne $io_name) {
+            Log3 $io_name, 2, "MATTER: Cannot restore IODev of $root->{NAME}: " .
+                ($error // 'wrong IODev after assignment');
+            return;
         }
     }
 
