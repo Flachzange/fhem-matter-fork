@@ -350,4 +350,10 @@ ok(!grep(/^rgb:/, MATTERDevice_GetSetList($child)),
    'explicit has_hue=0 suppresses the advertised hue command');
 delete $attr{$child->{NAME}}{has_hue};
 
+delete $child->{helper}{capabilities}{0x0300}{accepted_commands};
+$attr{$child->{NAME}}{has_color} = 1;
+ok(grep(/^rgb:/, MATTERDevice_GetSetList($child)),
+   'legacy has_color still exposes RGB before the server supplies metadata');
+delete $attr{$child->{NAME}}{has_color};
+
 done_testing();
