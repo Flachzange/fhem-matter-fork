@@ -109,7 +109,7 @@ A `node_removed` event sets the `matter_status` reading to `removed` on the affe
 
 Each existing root `MATTERDevice` (endpoint 0) and its endpoint devices appear under the same FHEMWEB `group`, for example `Node 35 (matterServer)`, provided they have no individually configured `group` attribute. Missing groups on previously created devices are added during node synchronization even if the current snapshot contains no endpoint attributes; manual groups are not replaced. The group label incorporates the IO device name to distinguish nodes with identical IDs on different Matter servers.
 
-In the root device's FHEMWEB detail page, **Matter endpoints** lists links to the associated endpoint devices. It resolves their current FHEM names, so individually renamed endpoints remain linked. The standard DeviceOverview remains visible, and no additional FHEM devices or readings are created.
+In the root device's FHEMWEB detail page, **Matter endpoints** shows a compact `EP | Type | FHEM device` table with links to all existing endpoint devices. It uses plain table cells for the headings (avoiding FHEMWEB's brightly colored `th` styling). The type is taken from the endpoint's Matter Descriptor `DeviceTypeList` (cluster `0x001D`, attribute `0x0000`) when available. `getConfig` requests this list explicitly. If no device type has been reported, the UI falls back to conservative descriptions of observed clusters, such as `Temperature measurement` or `On/Off`. An OnOff cluster alone is not assumed to be a plug, light or switch. Unrecognized DeviceType IDs are shown in hexadecimal. The standard DeviceOverview remains visible and no additional FHEM devices, readings or events are created.
 
 ### 4. Control Devices
 

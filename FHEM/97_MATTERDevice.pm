@@ -18,6 +18,39 @@ my %MATTER_GLOBAL_ATTRIBUTES = (
     0xFFFD => "cluster_revision",
 );
 
+# Device Type IDs from the Matter Device Library; values are used for UI only.
+# Descriptor.DeviceTypeList is authoritative when supplied by the server.
+my %MATTER_DEVICE_TYPE_LABELS = (
+    0x000A => "Door lock",
+    0x000E => "Aggregator",
+    0x000F => "Generic switch",
+    0x0013 => "Bridged node",
+    0x0015 => "Contact sensor",
+    0x0016 => "Root node",
+    0x002B => "Fan",
+    0x002C => "Air quality sensor",
+    0x0076 => "Smoke/CO alarm",
+    0x0100 => "On/Off light",
+    0x0101 => "Dimmable light",
+    0x0103 => "On/Off light switch",
+    0x0104 => "Dimmer switch",
+    0x0105 => "Color dimmer switch",
+    0x0106 => "Light sensor",
+    0x0107 => "Occupancy sensor",
+    0x010A => "On/Off plug-in unit",
+    0x010B => "Dimmable plug-in unit",
+    0x010C => "Color temperature light",
+    0x010D => "Extended color light",
+    0x0202 => "Window covering",
+    0x0301 => "Thermostat",
+    0x0302 => "Temperature sensor",
+    0x0305 => "Pressure sensor",
+    0x0306 => "Flow sensor",
+    0x0307 => "Humidity sensor",
+    0x0850 => "On/Off sensor",
+);
+my %MATTER_UTILITY_DEVICE_TYPES = map { $_ => 1 } (0x000E, 0x0013, 0x0016);
+
 # Zentrale Definition der vom FHEM-Modul fachlich unterstützten Cluster, Attribute und Commands
 my %MATTER_CLUSTERS = (
     0x0006 => {
@@ -913,6 +946,10 @@ sub MATTERDevice_Set($$@) {
             push @paths, "$endpoint_id/*/$attr_id";
         }
 
+        # Read the endpoint's advertised Matter device types, independently of
+        # whether the module supports that endpoint's functional clusters.
+        push @paths, "$endpoint_id/29/0";
+
         # Falls Root-Device (Endpoint 0), auch die PartsList abfragen.
         if ($endpoint_id == 0) {
             push @paths, "0/29/3";
@@ -1002,9 +1039,31 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
     my $cluster = $MATTER_CLUSTERS{$cluster_id};
 
-    # Globale Matter-Attribute gelten für jeden Cluster, auch für Cluster, die das
-    # FHEM-Modul noch nicht fachlich kennt.
+    # Remember cluster presence for conservative fallback labels in FHEMWEB,
+    # including measurement clusters this module does not yet expose as readings.
+    $hash->{helper}{seen_clusters}{$cluster_id} = 1 if defined($value);
+
+    # Globale Matter-Attribute gelten fuer jeden Cluster, auch wenn dessen
+    # Nutzdaten im FHEM-Modul noch nicht abgebildet sind.
     return if (MATTERDevice_ProcessGlobalAttribute($hash, $cluster_id, $attr_id, $value));
+
+    # Descriptor cluster (0x001D), DeviceTypeList (0x0000).
+    # Matter.js supplies an array of DeviceTypeStruct objects (deviceType, revision).
+    # Store validated IDs only in the endpoint's runtime helper; no new readings/events.
+    if ($cluster_id == 0x001D && $attr_id == 0x0000) {
+        if (ref($value) eq 'ARRAY') {
+            my (@types, %seen);
+            foreach my $entry (@{$value}) {
+                next unless ref($entry) eq 'HASH';
+                my $raw_id = $entry->{deviceType} // $entry->{device_type} // $entry->{'0'};
+                my $type_id = MATTERDevice_NormalizeMatterId($raw_id);
+                next unless defined($type_id) && $type_id <= 0xFFFFFFFF;
+                push @types, $type_id unless $seen{$type_id}++;
+            }
+            $hash->{helper}{device_types} = \@types if @types;
+        }
+        return;
+    }
     return if !$cluster;
 
     my $attr_info = $cluster->{attributes}{$attr_id};
@@ -1302,19 +1361,53 @@ sub MATTERDevice_NodeChildren($) {
     } values %defs;
 }
 
+# Prefer the Descriptor's actual Matter device types. When unavailable, label
+# only observed functions: an OnOff cluster alone cannot distinguish a plug
+# from a switch or a light.
+sub MATTERDevice_EndpointType($) {
+    my ($hash) = @_;
+    my @types = @{$hash->{helper}{device_types} // []};
+    if (@types) {
+        my @specific = grep { !$MATTER_UTILITY_DEVICE_TYPES{$_} } @types;
+        @types = @specific if @specific;
+        return join(", ", map {
+            $MATTER_DEVICE_TYPE_LABELS{$_} // sprintf("0x%04X", $_)
+        } @types);
+    }
+
+    my $clusters = $hash->{helper}{seen_clusters} // {};
+    return "Temperature / humidity measurement"
+        if $clusters->{0x0402} && $clusters->{0x0405};
+    return "Temperature measurement" if $clusters->{0x0402};
+    return "Humidity measurement" if $clusters->{0x0405};
+    return "Smoke/CO alarm" if $clusters->{0x005C};
+    return "Illuminance measurement" if $clusters->{0x0400};
+    return "Occupancy sensing" if $clusters->{0x0406};
+    return "Window covering" if $clusters->{0x0102};
+    return "Door lock" if $clusters->{0x0101};
+    return "Color control" if $clusters->{0x0300};
+    return "Level control" if $clusters->{0x0008};
+    return "On/Off" if $clusters->{0x0006};
+    return "Power measurement" if $clusters->{0x0090};
+    return "Unknown";
+}
+
 # Additional content for the existing root device (endpoint 0) in FHEMWEB.
-sub MATTERDevice_FWDetail($$) {
+sub MATTERDevice_FWDetail($) {
     my ($web, $name, $room) = @_;
     my @children = MATTERDevice_NodeChildren($defs{$name});
     return undef unless @children;
 
+    # FHEMWEB themes style <th> prominently (e.g. large red bold text).
+    # Use plain table cells for a quiet, compact heading row instead.
     my $html = '<div class="makeTable wide"><span class="mkTitle">Matter endpoints</span>'
-             . '<table class="block wide"><tr><th>Endpoint</th><th>FHEM device</th></tr>';
+             . '<table class="block wide"><tr><td>EP</td><td>Type</td><td>FHEM device</td></tr>';
     for my $child (@children) {
         my $endpoint = int($child->{endpoint_id});
+        my $type = FW_htmlEscape(MATTERDevice_EndpointType($child));
         my $label = FW_htmlEscape($child->{NAME});
         my $target = '?detail=' . urlEncode($child->{NAME});
-        $html .= qq(<tr><td>$endpoint</td><td><a href="$target">$label</a></td></tr>);
+        $html .= qq(<tr><td>$endpoint</td><td>$type</td><td><a href="$target">$label</a></td></tr>);
     }
     return $html . '</table></div>';
 }

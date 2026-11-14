@@ -483,4 +483,95 @@ ok(grep(/^rgb:/, MATTERDevice_GetSetList($child)),
    'legacy has_color still exposes RGB before the server supplies metadata');
 delete $attr{$child->{NAME}}{has_color};
 
+
+# FHEMWEB endpoint type display: real Descriptor DeviceTypeList takes priority;
+# cluster-only fallbacks intentionally describe functions, not assumed hardware.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 88, name => 'TypeDisplay',
+    attributes => {
+        '1/6/0'      => JSON::true,
+        '10/1026/0'  => 2100,  # TemperatureMeasurement (0x0402)
+        '11/1029/0'  => 4500,  # RelativeHumidityMeasurement (0x0405)
+        '12/6/0'     => JSON::false,
+        '12/8/0'     => 45,
+        '12/768/0'   => 128,
+    },
+});
+my $types_root = $defs{MATTER_TypeDisplay};
+my $type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
+like($type_html, qr/<tr><td>EP<\/td><td>Type<\/td><td>FHEM device<\/td><\/tr>/,
+     'compact column labels use regular table cells');
+unlike($type_html, qr/<th(?:\s|>)/i, 'endpoint overview does not use styled header cells');
+like($type_html, qr/<td>1<\/td><td>On\/Off<\/td>/,
+     'OnOff alone is not misidentified as a light or plug');
+like($type_html, qr/<td>10<\/td><td>Temperature measurement<\/td>/,
+     'unknown temperature cluster is described as a measurement');
+like($type_html, qr/<td>11<\/td><td>Humidity measurement<\/td>/,
+     'unknown humidity cluster is described as a measurement');
+like($type_html, qr/<td>12<\/td><td>Color control<\/td>/,
+     'color cluster fallback describes the observed function');
+
+# Snapshot: explicit Matter type distinguishes an actual plug from OnOff devices.
+MATTERDevice_Parse($types_root, encode_json({
+    node_id => 88, attributes => {
+        '1/29/0'  => [{deviceType => 0x010A, revision => 1}],
+        '10/29/0' => [{deviceType => 0x0302, revision => 1}],
+        '11/29/0' => [{deviceType => 0x0307, revision => 1}],
+    },
+}));
+$type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
+like($type_html, qr/<td>1<\/td><td>On\/Off plug-in unit<\/td>/,
+     'Descriptor DeviceTypeList identifies a plug-in unit exactly');
+like($type_html, qr/<td>10<\/td><td>Temperature sensor<\/td>/,
+     'Descriptor DeviceTypeList identifies the temperature sensor');
+like($type_html, qr/<td>11<\/td><td>Humidity sensor<\/td>/,
+     'Descriptor DeviceTypeList identifies the humidity sensor');
+
+# Per-endpoint getConfig reads DeviceTypeList explicitly.
+@sent_requests = ();
+is(MATTERDevice_Set($defs{MATTER_TypeDisplay_EP10}, 'MATTER_TypeDisplay_EP10', 'getConfig'),
+   undef, 'getConfig works on the additional endpoint');
+my $type_request = $sent_requests[-1];
+ok(grep($_ eq '10/29/0', @{$type_request->{args}{attribute_path}}),
+   'getConfig requests the endpoint DeviceTypeList');
+
+# Live updates and read_attribute responses use the same endpoint routing.
+MATTERDevice_Parse($types_root, encode_json({
+    event => 'attribute_updated',
+    data => [88, '11/29/0', [{deviceType => 0x0015, revision => 1}]],
+}));
+$type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
+like($type_html, qr/<td>11<\/td><td>Contact sensor<\/td>/,
+     'live Descriptor update refreshes the endpoint type');
+
+MATTERDevice_Parse($types_root, encode_json({
+    result => {'10/29/0' => [{deviceType => '0x0307', revision => 1}]},
+}));
+$type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
+like($type_html, qr/<td>10<\/td><td>Humidity sensor<\/td>/,
+     'getConfig response refreshes type with a valid hexadecimal ID');
+
+MATTERDevice_Parse($types_root, encode_json({
+    node_id => 88, attributes => {
+        '1/29/0' => [{deviceType => 0x0016, revision => 1},
+                      {deviceType => 0x0100, revision => 1}],
+        '10/29/0' => [{deviceType => 0xF123, revision => 1}],
+    },
+}));
+$type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
+like($type_html, qr/<td>1<\/td><td>On\/Off light<\/td>/,
+     'application type is preferred to the utility root type');
+like($type_html, qr/<td>10<\/td><td>0xF123<\/td>/,
+     'unknown type ID stays explicitly identifiable');
+
+MATTERDevice_Parse($types_root, encode_json({
+    node_id => 88, attributes => { '10/29/0' => [{deviceType => 'invalid'}] },
+}));
+$type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
+like($type_html, qr/<td>10<\/td><td>0xF123<\/td>/,
+     'malformed type metadata does not replace the last valid device type');
+
+ok(!exists($defs{MATTER_TypeDisplay_EP10}{READINGS}{device_type}),
+   'type presentation does not create additional readings');
+
 done_testing();
