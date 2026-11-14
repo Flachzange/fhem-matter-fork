@@ -59,6 +59,18 @@ sub CommandAttr {
     my (undef, $command) = @_;
     my ($name, $key, $value) = split /\s+/, $command, 3;
     return "Device missing" unless $defs{$name};
+    # Match fhem.pl CommandAttr -> getAllAttr: FHEM accepts global attrs and the
+    # module-declared AttrList, rejecting undeclared device attributes.
+    # The production failure was previously hidden by this permissive stub.
+    my $global_attrs = 'alias comment:textField-long eventMap:textField-long ' .
+                       'group room suppressReading userattr userReadings:textField-long ' .
+                       'verbose:0,1,2,3,4,5';
+    my $module_attrs = $modules{$defs{$name}{TYPE}}{AttrList} // '';
+    my $known_attr = grep {
+        my ($pattern) = split /:/, $_, 2;
+        $key =~ /^(?:$pattern)$/
+    } split /\s+/, "$global_attrs $module_attrs";
+    return "$name: unknown attribute $key" unless $known_attr;
     return "Simulated IODev failure" if $key eq 'IODev' && $name eq $fail_io_for;
     if ($key eq 'IODev') {
         return "Unknown IODev" unless $defs{$value} && $defs{$value}{TYPE} eq 'MATTER';
@@ -80,9 +92,16 @@ sub CommandDelete {
 require './FHEM/97_MATTERDevice.pm';
 require './FHEM/97_MATTER.pm';
 
+# FHEM calls Initialize before Define/CommandAttr; expose the real module AttrList.
+MATTERDevice_Initialize($modules{MATTERDevice} ||= {});
+like($modules{MATTERDevice}{AttrList}, qr/(?:^|\s)IODev(?:\s|$)/,
+     'MATTERDevice declares IODev for FHEM CommandAttr');
 for my $name (qw(ioA ioB)) {
     $defs{$name} = { NAME => $name, TYPE => 'MATTER', READINGS => {}, helper => {} };
 }
+my $unknown_attr_result = CommandAttr(undef, 'ioA unknown_attribute 1');
+like($unknown_attr_result // '', qr/unknown attribute/,
+     'CommandAttr stub rejects attributes absent from FHEM and module lists');
 
 sub node {
     my ($id, $name) = @_;
