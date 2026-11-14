@@ -265,6 +265,13 @@ is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present',
 MATTER_ProcessNode($defs{ioA}, { node_id => 42, name => 'Hall Light', available => JSON::true });
 is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
    'available flag is restored by a node snapshot');
+MATTER_ProcessNode($defs{ioA}, { node_id => 42, name => 'No availability field' });
+is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
+   'missing availability in a snapshot does not overwrite the previous report');
+MATTER_ProcessNode($defs{ioA}, { node_id => 42, name => 'Invalid availability',
+                                available => 'unknown' });
+is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
+   'malformed availability is ignored');
 ok(!defined(ReadingsVal('MATTER_Hall_Light_EP1', 'available', undef)),
    'node-level availability is not copied to endpoints');
 
@@ -285,6 +292,10 @@ is(ReadingsVal('MATTER_Hall_Light_EP1', 'power', ''), 2.15,
    'electrical power is converted to watts');
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'energy', ''), 1.25,
    'cumulative electrical energy is converted to kWh');
+my $old_state = ReadingsVal('MATTER_Hall_Light_EP1', 'state', '');
+MATTERDevice_Parse($root, encode_json({node_id => 42, attributes => {'1/6/0' => undef}}));
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'state', ''), $old_state,
+   'null OnOff state is not incorrectly published as off');
 
 my @sent_requests;
 $defs{ioA}{fhem}{helper}{sendWS} = sub {
@@ -323,6 +334,16 @@ is($sent_requests[0]{args}{command_name}, 'MoveToLevelWithOnOff',
    'RGB brightness is sent through LevelControl');
 is($sent_requests[1]{args}{command_name}, 'MoveToHueAndSaturation',
    'RGB hue and saturation are sent through ColorControl');
+$attr{$child->{NAME}}{max_brightness} = 200;
+ok(MATTERDevice_AttributeUsable($child, 8, 3),
+   'legacy min/max attributes remain usable without AttributeList');
+ok(grep(/^brightness:slider,0,1,200$/, MATTERDevice_GetSetList($child)),
+   'existing max_brightness remains in the brightness slider without metadata');
+MATTERDevice_Parse($root, encode_json({
+    node_id => 42, attributes => { '1/8/65531' => [0] }
+}));
+ok(!MATTERDevice_AttributeUsable($child, 8, 3),
+   'received AttributeList takes precedence over legacy max attribute');
 
 $attr{$child->{NAME}}{has_hue} = 0;
 ok(!grep(/^rgb:/, MATTERDevice_GetSetList($child)),
