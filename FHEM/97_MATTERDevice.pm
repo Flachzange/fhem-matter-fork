@@ -721,67 +721,78 @@ sub MATTERDevice_GetSetList($) {
 
 sub MATTERDevice_GetOrCreateChild($$) {
     my ($root_hash, $ep_id) = @_;
-    
-    # 1. SCHNELLTEST: Ist das Child bereits im Root-Hash gecached?
-    return $root_hash->{"endpoint_$ep_id"} if $root_hash->{"endpoint_$ep_id"};
-
-    my $node_id   = $root_hash->{node_id};
     my $root_name = $root_hash->{NAME};
-    my $target_io = $root_hash->{IODev} ? $root_hash->{IODev}{NAME} : undef;
-    my $child_hash = undef;
+    my $node_id = $root_hash->{node_id};
+    my $io_name = $root_hash->{IODev} ? $root_hash->{IODev}{NAME} : undef;
+    return unless defined($ep_id) && !ref($ep_id) && $ep_id =~ /^\d+$/ && $ep_id != 0;
+    unless ($io_name) {
+        Log3 $root_name, 2, "MATTERDevice: Cannot resolve endpoint $ep_id without an IODev";
+        return;
+    }
 
-    # 2. FALLBACK / START: Global in %defs suchen
-    foreach my $d (keys %defs) {
-        my $d_hash = $defs{$d};
-        if ($d_hash && $d_hash->{TYPE} eq 'MATTERDevice' && 
-            defined($d_hash->{node_id}) && $d_hash->{node_id} eq $node_id &&
-            defined($d_hash->{endpoint_id}) && $d_hash->{endpoint_id} == $ep_id) {
-            
-            # Prüfen, ob das Child auch zu diesem Root-Device gehört (über den Namen im Hash)
-            if ($d_hash->{device} && $d_hash->{device} eq $root_name) {
-                $child_hash = $d_hash;
-                last;
+    my $cache_key = "endpoint_$ep_id";
+    my $child = $root_hash->{$cache_key};
+    if ($child && (!$child->{NAME} || !$defs{$child->{NAME}} ||
+                  $defs{$child->{NAME}} ne $child ||
+                  ($child->{node_id} // '') ne $node_id ||
+                  ($child->{endpoint_id} // -1) != $ep_id ||
+                  !$child->{IODev} || $child->{IODev}{NAME} ne $io_name)) {
+        delete $root_hash->{$cache_key};
+        $child = undef;
+    }
+
+    unless ($child) {
+        foreach my $device (values %defs) {
+            next unless ($device->{TYPE} // '') eq 'MATTERDevice';
+            next unless ($device->{node_id} // '') eq $node_id;
+            next unless ($device->{endpoint_id} // -1) == $ep_id;
+            # A device without IODev can only be reattached to its recorded root.
+            if ($device->{IODev}) {
+                next unless $device->{IODev}{NAME} eq $io_name;
+            } else {
+                next unless ($device->{device} // '') eq $root_name;
             }
-            
-            # Fallback, falls {device} noch leer ist, aber das IODev übereinstimmt
-            my $d_io = $d_hash->{IODev} ? $d_hash->{IODev}{NAME} : undef;
-            if ((!$d_hash->{device}) && (!$target_io || !$d_io || $target_io eq $d_io)) {
-                $child_hash = $d_hash;
-                last;
-            }
+            $child = $device;
+            last;
         }
     }
 
-    # 3. NEU ANLEGEN: Wenn es wirklich gar nicht existiert
-    unless ($child_hash) {
-        my $child_name = "${root_name}_EP${ep_id}";
-        
-        Log3 $root_hash, 3, "MATTERDevice: Auto-creating sub-device $child_name for Node ID $node_id, Endpoint $ep_id";
-        
-        # WICHTIG: Hier übergeben wir jetzt exakt die Parameter, die deine neue Define-Funktion erwartet!
-        # Syntax: define <name> MATTERDevice <node_id> <endpoint_id> <root_device_name>
-        CommandDefine(undef, "$child_name MATTERDevice $node_id $ep_id $root_name");
-        
-        $child_hash = $defs{$child_name};
-    }
-
-    # 4. INITIALISIEREN & IM ROOT-HASH CACHEN
-    if ($child_hash) {
-        $child_hash->{node_id}     = $node_id;
-        $child_hash->{endpoint_id} = $ep_id;
-        $child_hash->{device}      = $root_name;
-        
-        if ($root_hash->{IODev} && !$child_hash->{IODev}) {
-            $child_hash->{IODev} = $root_hash->{IODev};
+    unless ($child) {
+        my $child_name = $root_name . "_EP" . $ep_id;
+        if ($defs{$child_name}) {
+            $child_name .= "_" . $node_id;
+            my $base = $child_name;
+            my $suffix = 2;
+            while ($defs{$child_name}) {
+                $child_name = $base . "_" . $suffix++;
+            }
         }
-        
-        # Ab in den Cache damit für die Zukunft!
-        $root_hash->{"endpoint_$ep_id"} = $child_hash;
-    } else {
-        Log3 $root_hash, 1, "MATTERDevice: ERROR - Could not get or create child device for Endpoint $ep_id!";
+
+        my $error = CommandDefine(undef, "$child_name MATTERDevice $node_id $ep_id $root_name");
+        $child = $defs{$child_name};
+        if ($error || !$child || ($child->{TYPE} // '') ne 'MATTERDevice' ||
+            ($child->{node_id} // '') ne $node_id || ($child->{endpoint_id} // -1) != $ep_id) {
+            Log3 $root_name, 2, "MATTERDevice: Cannot create endpoint $ep_id: " .
+                ($error // 'invalid child definition');
+            return;
+        }
+
+        my $io_error = CommandAttr(undef, "$child_name IODev $io_name");
+        if ($io_error || !$child->{IODev} || $child->{IODev}{NAME} ne $io_name) {
+            Log3 $root_name, 2, "MATTERDevice: IODev assignment failed for $child_name: " .
+                ($io_error // 'wrong IODev after assignment');
+            CommandDelete(undef, $child_name);
+            return;
+        }
+        my $room_error = CommandAttr(undef, "$child_name room Matter");
+        Log3 $root_name, 3, "MATTERDevice: Cannot set default room on $child_name: $room_error" if $room_error;
+        Log3 $root_name, 3, "MATTERDevice: Created endpoint $ep_id as $child_name";
     }
 
-    return $child_hash;
+    # User-assigned names and attributes are retained for existing endpoint devices.
+    $child->{device} = $root_name;
+    $root_hash->{$cache_key} = $child;
+    return $child;
 }
 
 1;
