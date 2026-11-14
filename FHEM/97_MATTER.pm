@@ -167,7 +167,7 @@ sub MATTER_Set {
         
         $payload->{args}{id} = int($id) if (defined($id) && $id ne '');
 
-        Log3 $name, 3, "MATTER: Set Wifi credentials for SSID: '$ssid' / Pass: '$credentials' (ID: " . ($id // 'none') . ")";
+        Log3 $name, 3, "MATTER: Sending Wi-Fi credentials (ID: " . ($id // 'default') . ")";
         MATTER_SendJsonCommand($hash, $payload);
         return undef;
     }
