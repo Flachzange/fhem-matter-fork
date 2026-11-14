@@ -277,7 +277,8 @@ sub MATTERDevice_Initialize($) {
     $hash->{SetFn}    = "MATTERDevice_Set";
     $hash->{GetFn}    = "MATTERDevice_Get";
     $hash->{ParseFn}  = "MATTERDevice_Parse";
-    $hash->{AttrList} = "has_onoff:0,1 " .
+    $hash->{AttrList} = "has_lighting:0,1 " .
+                        "has_onoff:0,1 " .
                         "has_level:0,1 " .
                         "has_ct:0,1 " .
                         "has_hue:0,1 " .
@@ -457,6 +458,10 @@ sub MATTERDevice_ClusterRevisionAtLeast($$$) {
 # aus der lokalen Matter-Abbildung geprüft.
 sub MATTERDevice_AttributeUsable($$$) {
     my ($hash, $cluster_id, $attr_id) = @_;
+    # The legacy module permitted user-supplied max/min attributes without
+    # an AttributeList. Keep that behavior until actual metadata is available.
+    my $list = $hash->{helper}{capabilities}{$cluster_id}{attribute_list};
+    return 1 if ref($list) ne 'HASH';
     return 0 if (!MATTERDevice_AttributeSupported($hash, $cluster_id, $attr_id));
 
     my $cluster = $MATTER_CLUSTERS{$cluster_id};
@@ -481,7 +486,8 @@ sub MATTERDevice_AttributeUsable($$$) {
 sub MATTERDevice_CommandSupported($$$) {
     my ($hash, $cluster_id, $command_id) = @_;
     my %legacy = (
-        0x0006 => { 0x00 => 'has_onoff', 0x01 => 'has_onoff', 0x02 => 'has_onoff' },
+        0x0006 => { 0x00 => 'has_onoff', 0x01 => 'has_onoff', 0x02 => 'has_onoff',
+                    0x40 => 'has_lighting', 0x41 => 'has_lighting', 0x42 => 'has_lighting' },
         0x0008 => { 0x00 => 'has_level', 0x04 => 'has_level', 0x08 => 'has_frequency' },
         0x0101 => { 0x00 => 'has_lock', 0x01 => 'has_lock' },
         0x0102 => { 0x00 => 'has_wc', 0x01 => 'has_wc', 0x02 => 'has_wc',
