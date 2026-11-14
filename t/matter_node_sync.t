@@ -192,6 +192,27 @@ ok($defs{MATTER_LargeResponse}, 'start_listening response is applied automatical
 is($defs{MATTER_LargeResponse}{IODev}{NAME}, 'ioWS', 'large-frame node uses the WS IODev');
 ok(!exists($ws->{helper}{pending_command}{fhem_init_1}), 'start_listening response correlation cleared');
 
+my $command_frame;
+sysread($server, $command_frame, 1024);
+ok(length($command_frame) > 2, 'start_listening was sent over WebSocket');
+my $ping_frame = pack('CC', 0x89, 3) . 'abc';
+syswrite($server, $ping_frame) == length($ping_frame) or die 'ping frame write failed';
+MATTER_Read($ws);
+my $pong_frame;
+sysread($server, $pong_frame, 1024);
+my ($pong_first, $pong_second) = unpack('CC', substr($pong_frame, 0, 2));
+is($pong_first, 0x8A, 'server ping answered by Pong');
+ok($pong_second & 0x80, 'client Pong is masked');
+my $pong_len = $pong_second & 0x7F;
+my $mask = substr($pong_frame, 2, 4);
+my $masked_body = substr($pong_frame, 6, $pong_len);
+my $unmasked_body = '';
+for my $i (0 .. $pong_len - 1) {
+    $unmasked_body .= chr(ord(substr($masked_body, $i, 1)) ^
+                          ord(substr($mask, $i % 4, 1)));
+}
+is($unmasked_body, 'abc', 'Pong echoes original ping payload');
+
 my $close_frame = pack('CC', 0x88, 0);
 syswrite($server, $close_frame) == length($close_frame) or die 'close frame write failed';
 MATTER_Read($ws);
@@ -200,5 +221,31 @@ ok(!exists($ws->{FD}), 'close clears stale FD');
 is(scalar(@timers), 1, 'server close schedules a single reconnect timer');
 is($timers[0]{callback}, 'MATTER_Open', 'reconnect calls MATTER_Open');
 close($server);
+
+# Invalid WebSocket upgrades and oversized frame headers must not be accepted.
+@timers = ();
+socketpair(my $bad_client, my $bad_server, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die "socketpair: $!";
+my $bad = { NAME => 'badWS', TYPE => 'MATTER', helper => {}, ws_status => 'handshake',
+            websocket => 0, BUF => '', CD => $bad_client, FD => fileno($bad_client), READINGS => {} };
+$defs{badWS} = $bad;
+my $invalid_upgrade = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+syswrite($bad_server, $invalid_upgrade) == length($invalid_upgrade) or die 'HTTP write failed';
+MATTER_Read($bad);
+is($bad->{ws_status}, 'disconnected', 'rejected HTTP upgrade does not become connected');
+is(scalar(@timers), 1, 'invalid upgrade schedules reconnect');
+close($bad_server);
+
+@timers = ();
+socketpair(my $huge_client, my $huge_server, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die "socketpair: $!";
+my $huge = { NAME => 'hugeWS', TYPE => 'MATTER', helper => {}, ws_status => 'connected',
+             websocket => 1, BUF => '', CD => $huge_client, FD => fileno($huge_client), READINGS => {} };
+$defs{hugeWS} = $huge;
+my $huge_header = pack('CCNN', 0x81, 127, 0, 32 * 1024 * 1024 + 1);
+syswrite($huge_server, $huge_header) == length($huge_header) or die 'large header write failed';
+MATTER_Read($huge);
+is($huge->{ws_status}, 'disconnected', 'oversized declared payload rejected immediately');
+is($huge->{BUF}, '', 'oversized payload does not accumulate');
+is(scalar(@timers), 1, 'oversized frame schedules reconnect');
+close($huge_server);
 
 done_testing();
