@@ -257,6 +257,7 @@ sub MATTER_Close($) {
         close($hash->{CD});
         delete $hash->{CD};
     }
+    delete $hash->{FD};
     
     $hash->{websocket} = 0;
     $hash->{ws_status} = "disconnected";
@@ -269,6 +270,13 @@ sub MATTER_Close($) {
     readingsSingleUpdate($hash, "state", "disconnected", 1);
 }
 
+sub MATTER_Reconnect($) {
+    my ($hash) = @_;
+    MATTER_Close($hash);
+    InternalTimer(gettimeofday() + 30, "MATTER_Open", $hash, 0)
+        unless AttrVal($hash->{NAME}, "disable", 0);
+}
+
 sub MATTER_Read {
     my ($hash) = @_;
     my $name = $hash->{NAME};
@@ -279,8 +287,7 @@ sub MATTER_Read {
 
     if (!defined($n) || $n == 0) {
         Log3 $name, 2, "[$name] Connection lost, retrying in 30s";
-        MATTER_Close($hash);
-        InternalTimer(gettimeofday() + 30, "MATTER_Open", $hash, 0); # Automatischer Reconnect
+        MATTER_Reconnect($hash);
         return;
     }
     $hash->{BUF} .= $buf;
@@ -329,7 +336,8 @@ sub MATTER_Read {
             my $pong = chr(0x8A) . chr(0x00);
             syswrite($socket, $pong);
         } elsif ($opcode == 0x8) { # Close Frame
-            MATTER_Close($hash);
+            Log3 $name, 3, "[$name] WebSocket close received, retrying in 30s";
+            MATTER_Reconnect($hash);
             return;
         }
     }
