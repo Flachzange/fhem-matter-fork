@@ -277,7 +277,8 @@ sub MATTERDevice_Initialize($) {
     $hash->{SetFn}    = "MATTERDevice_Set";
     $hash->{GetFn}    = "MATTERDevice_Get";
     $hash->{ParseFn}  = "MATTERDevice_Parse";
-    $hash->{AttrList} = "has_lighting:0,1 " .
+    $hash->{AttrList} = "IODev " .
+                        "has_lighting:0,1 " .
                         "has_color:0,1 " .
                         "has_onoff:0,1 " .
                         "has_level:0,1 " .
