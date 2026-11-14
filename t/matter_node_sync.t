@@ -253,4 +253,80 @@ MATTER_Set($ws, 'ioWS', 'setWifiCredentials', 'SyntheticSSID', 'SyntheticPasswor
 ok(!grep(/SyntheticSSID|SyntheticPassword/, @log),
    'credential command does not log Wi-Fi SSID or password');
 
+
+# Regression coverage for the integrated legacy feature branches.
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_updated', data => { node_id => 42, available => JSON::false }
+}));
+is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'false',
+   'node_updated records physical unavailability on the root');
+is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present',
+   'availability is independent of server membership');
+MATTER_ProcessNode($defs{ioA}, { node_id => 42, name => 'Hall Light', available => JSON::true });
+is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
+   'available flag is restored by a node snapshot');
+ok(!defined(ReadingsVal('MATTER_Hall_Light_EP1', 'available', undef)),
+   'node-level availability is not copied to endpoints');
+
+MATTERDevice_Parse($root, encode_json({
+    node_id => 42,
+    attributes => {
+        '1/47/12' => 154,                      # PowerSource battery percent half-units
+        '1/92/1'  => 2,                        # SmokeCO smoke state
+        '1/144/8' => 2150,                     # ElectricalPowerMeasurement mW
+        '1/145/1' => { energy => 1_250_000 }, # ElectricalEnergyMeasurement mWh
+    },
+}));
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'battery_percent', ''), 77,
+   'PowerSource percentage is converted from half-units');
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'smoke_state', ''), 2,
+   'SmokeCO cluster is mapped to a reading');
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'power', ''), 2.15,
+   'electrical power is converted to watts');
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'energy', ''), 1.25,
+   'cumulative electrical energy is converted to kWh');
+
+my @sent_requests;
+$defs{ioA}{fhem}{helper}{sendWS} = sub {
+    push @sent_requests, JSON::decode_json($_[0]);
+};
+is(MATTERDevice_Set($child, $child->{NAME}, 'getConfig'), undef,
+   'getConfig can be sent via current IODev');
+my $read_request = $sent_requests[-1];
+is($read_request->{command}, 'read_attribute', 'getConfig uses read_attribute');
+ok(exists $defs{ioA}{helper}{pending_config}{$read_request->{message_id}},
+   'getConfig pending request is recorded where MATTER_ParseMessage reads it');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $read_request->{message_id},
+    result => { '1/47/12' => 110 },
+}));
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'battery_percent', ''), 55,
+   'read_attribute response is routed to the original endpoint');
+ok(!exists $defs{ioA}{helper}{pending_config}{$read_request->{message_id}},
+   'matched getConfig pending request is cleared');
+
+MATTERDevice_Parse($root, encode_json({
+    node_id => 42,
+    attributes => {
+        '1/768/65529' => [6], # ColorControl AcceptedCommandList: Hue/Saturation
+        '1/768/65532' => 1,   # ColorControl FeatureMap: Hue/Saturation
+        '1/8/65529' => [4],   # LevelControl: MoveToLevelWithOnOff
+    },
+}));
+ok(grep(/^rgb:/, MATTERDevice_GetSetList($child)),
+   'RGB command appears when supported by Matter command metadata');
+@sent_requests = ();
+is(MATTERDevice_Set($child, $child->{NAME}, 'rgb', '800000'), undef,
+   'RGB hue/saturation command accepted');
+is(scalar(@sent_requests), 2, 'RGB sends brightness and color commands separately');
+is($sent_requests[0]{args}{command_name}, 'MoveToLevelWithOnOff',
+   'RGB brightness is sent through LevelControl');
+is($sent_requests[1]{args}{command_name}, 'MoveToHueAndSaturation',
+   'RGB hue and saturation are sent through ColorControl');
+
+$attr{$child->{NAME}}{has_hue} = 0;
+ok(!grep(/^rgb:/, MATTERDevice_GetSetList($child)),
+   'explicit has_hue=0 suppresses the advertised hue command');
+delete $attr{$child->{NAME}}{has_hue};
+
 done_testing();
