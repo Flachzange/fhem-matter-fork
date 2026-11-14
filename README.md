@@ -40,7 +40,7 @@ Make sure your Matter server is up and running and reachable via IP and port (de
 
 ## Features
 
-* **WebSocket Communication:** Native raw-socket handling with automatic handshake and JSON payload exchange.
+* **WebSocket Communication:** Native raw-socket handling with HTTP upgrade validation, masked client Pong responses, and JSON payload exchange. Incoming frames exceeding 32 MiB are rejected to limit memory use.
 * **Automatic node synchronization:** Processes the full node list returned by `start_listening` after every successful connection/reconnect. No manual discovery is required.
 * **Live device lifecycle:** `node_added` and `node_updated` synchronize devices and endpoints. `node_removed` marks existing FHEM devices as removed without deleting their configuration.
 * **Manual discovery:** `set matterServer discover` still requests a complete `get_nodes` snapshot for diagnostics or manual resynchronization.
