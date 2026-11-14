@@ -207,11 +207,13 @@ sub MATTER_Attr {
     # so MATTER_Open sees the updated AttrVal rather than the previous value.
     if ($cmd eq 'set' && defined($attr_value) && $attr_value eq '1') {
         MATTER_Close($hash);
+        Log3 $name, 3, "[$name] Disabled: connection closed, pending timers cancelled";
     } elsif (($cmd eq 'set' && defined($attr_value) && $attr_value eq '0')
              || $cmd eq 'del') {
         unless ($hash->{CD}) {
             RemoveInternalTimer($hash);
             InternalTimer(gettimeofday() + 0.01, 'MATTER_Open', $hash, 0);
+            Log3 $name, 3, "[$name] Enabled: connection attempt scheduled";
         }
     }
     return undef;
@@ -226,7 +228,8 @@ sub MATTER_Open($) {
     MATTER_Close($hash);
     return if AttrVal($name, 'disable', 0);
 
-    Log3 $name, 3, "[$name] Connecting to $host:$port via nonblocking TCP...";
+    my $attempt = ++$hash->{helper}{connect_attempts};
+    Log3 $name, 3, "[$name] TCP connect attempt $attempt to $host:$port";
     # Blocking=>0 returns during EINPROGRESS instead of waiting for TCP.
     # FHEM uses directWriteFn to finish the asynchronous connection.
     # A numeric IP avoids a potentially blocking DNS lookup.
@@ -261,11 +264,20 @@ sub MATTER_ConnectWritable($) {
 
     # A writable socket may mean a failed connect; inspect SO_ERROR.
     my $error = getsockopt($socket, SOL_SOCKET, SO_ERROR);
-    if (!defined($error) || unpack('i', $error) != 0 || !getpeername($socket)) {
-        Log3 $hash->{NAME}, 2, "[$hash->{NAME}] Nonblocking TCP connect failed";
+    my $code = defined($error) ? unpack('i', $error) : undef;
+    if (!defined($code) || $code || !getpeername($socket)) {
+        my $reason = 'socket has no connected peer';
+        if (!defined($code)) {
+            $reason = "SO_ERROR failed: $!";
+        } elsif ($code) {
+            local $! = $code;
+            $reason = "$! (errno $code)";
+        }
+        Log3 $hash->{NAME}, 2, "[$hash->{NAME}] TCP connect failed: $reason";
         MATTER_Reconnect($hash);
         return;
     }
+    Log3 $hash->{NAME}, 4, "[$hash->{NAME}] TCP connected; starting WebSocket upgrade";
 
     delete $hash->{directWriteFn};
     $hash->{ws_status} = 'handshake';
@@ -279,7 +291,7 @@ sub MATTER_ConnectWritable($) {
                   "Sec-WebSocket-Key: $key\r\n" .
                   "Sec-WebSocket-Version: 13\r\n" .
                   "Origin: http://$host:$port\r\n\r\n";
-    Log3 $hash->{NAME}, 3, "[$hash->{NAME}] WebSocket handshake sent";
+    Log3 $hash->{NAME}, 4, "[$hash->{NAME}] WebSocket upgrade request queued";
     MATTER_QueueBytes($hash, $request);
 }
 
@@ -287,13 +299,16 @@ sub MATTER_ConnectTimeout($) {
     my ($hash) = @_;
     return unless $hash->{CD} &&
         ($hash->{ws_status} // '') =~ /^(?:tcp_connecting|handshake)$/;
-    Log3 $hash->{NAME}, 2, "[$hash->{NAME}] TCP/WebSocket handshake timed out after $MATTER_connect_timeout seconds";
+    my $phase = $hash->{ws_status} eq 'tcp_connecting'
+        ? 'TCP connect' : 'WebSocket upgrade';
+    Log3 $hash->{NAME}, 2, "[$hash->{NAME}] $phase timed out after $MATTER_connect_timeout seconds";
     MATTER_Reconnect($hash);
 }
 
 sub MATTER_Close($) {
     my ($hash) = @_;
     my $name = $hash->{NAME};
+    my $previous = $hash->{CD} ? ($hash->{ws_status} // 'unknown') : undef;
 
     # No retry/heartbeat/handshake timer survives closing or undefining a device.
     RemoveInternalTimer($hash);
@@ -313,7 +328,7 @@ sub MATTER_Close($) {
     delete $hash->{helper}{pending_command};
     delete $hash->{helper}{pending_config};
     delete $hash->{fhem}{helper}{pending_config};
-    Log3 $name, 3, "[$name] Connection closed.";
+    Log3 $name, 4, "[$name] Connection closed (was $previous)" if defined($previous);
     readingsSingleUpdate($hash, 'state', 'disconnected', 1)
         if ReadingsVal($name, 'state', '') ne 'disconnected';
 }
@@ -321,8 +336,11 @@ sub MATTER_Close($) {
 sub MATTER_Reconnect($) {
     my ($hash) = @_;
     MATTER_Close($hash);
-    InternalTimer(gettimeofday() + $MATTER_reconnect_delay, 'MATTER_Open', $hash, 0)
-        unless AttrVal($hash->{NAME}, 'disable', 0);
+    unless (AttrVal($hash->{NAME}, 'disable', 0)) {
+        InternalTimer(gettimeofday() + $MATTER_reconnect_delay, 'MATTER_Open', $hash, 0);
+        Log3 $hash->{NAME}, 3,
+             "[$hash->{NAME}] Reconnect scheduled in $MATTER_reconnect_delay seconds";
+    }
 }
 
 sub MATTER_Heartbeat($) {
@@ -419,6 +437,8 @@ sub MATTER_Read {
         $hash->{websocket} = 1;
         $hash->{BUF} =~ s/(.*?)\x0d\x0a\x0d\x0a//s;
         readingsSingleUpdate($hash, 'state', 'connected', 1);
+        my $attempts = delete($hash->{helper}{connect_attempts}) // 1;
+        Log3 $name, 3, "[$name] WebSocket connected (attempt $attempts); restarting node listening";
         InternalTimer(gettimeofday() + $MATTER_ping_interval,
                       'MATTER_Heartbeat', $hash, 0);
         $hash->{helper}{pending_command}{fhem_init_1} = 'start_listening';
