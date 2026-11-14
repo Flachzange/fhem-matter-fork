@@ -901,7 +901,8 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
       Default <code>network</code> preserves IP-only commissioning; <code>auto</code> also allows
       BLE discovery (including a connected BLE proxy) when enabled on the Matter server.
       The server selects the transport and uses its stored Thread/Wi-Fi credentials.
-      The setup code is not written to module logs.</li>
+      The setup code is not written to module logs; the synthetic FHEM
+      set event is suppressed. Command input/history remains sensitive.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Configure or inspect available
       network credentials (do not expose secrets in logs).</li>
   <li><b>Attribute disable:</b> Disable or enable the IO connection. Setting
@@ -945,7 +946,9 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
       Standard <code>network</code> nutzt nur IP. <code>auto</code> erlaubt zusätzlich
       BLE-Discovery (auch über einen verbundenen BLE-Proxy), wenn BLE am Matter-Server
       aktiviert ist. Der Server wählt den Transport und verwendet seine gespeicherten
-      Thread-/WLAN-Zugangsdaten. Der Setup-Code wird nicht im Modul-Log ausgegeben.</li>
+      Thread-/WLAN-Zugangsdaten. Der Setup-Code wird nicht im Modul-Log
+      ausgegeben; das automatische FHEM-set-Event wird unterdrückt.
+      Kommandoeingabe und -verlauf bleiben vertraulich zu behandeln.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Netzwerkzugangsdaten
       konfigurieren bzw. auslesen.</li>
   <li><b>Attribut disable:</b> IO-Verbindung deaktivieren oder aktivieren.

@@ -106,7 +106,7 @@ To allow Matter-over-Thread devices that still require BLE commissioning, select
 set matterServer commissionCode 35325335079 auto
 ```
 
-You can also pass a Matter QR payload starting with `MT:`. `auto` permits **both BLE and IP discovery**; it does not force BLE. The matterjs-server must have Bluetooth enabled and a working local adapter or connected BLE proxy for BLE to be usable. Thread/Wi-Fi credentials must already be configured on the server. The FHEM module does not receive or store Thread operational datasets. Its logs record the chosen mode, not the setup code; the FHEM command history itself should still be treated as sensitive.
+You can also pass a Matter QR payload starting with `MT:`. `auto` permits **both BLE and IP discovery**; it does not force BLE. The matterjs-server must have Bluetooth enabled and a working local adapter or connected BLE proxy for BLE to be usable. Thread/Wi-Fi credentials must already be configured on the server. The FHEM module does not receive or store Thread operational datasets. Its logs record the chosen mode, not the setup code, and suppress the normal synthetic FHEM `set` event which would otherwise reveal the code to event consumers and DbLog. FHEM command input/history itself should still be treated as sensitive.
 
 ### 3. Node Synchronization
 

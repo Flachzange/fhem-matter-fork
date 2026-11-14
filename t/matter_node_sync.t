@@ -1042,9 +1042,10 @@ ok($explicit_network->{args}{network_only},
    'explicit network mode also sends network_only=true');
 
 @log = ();
-is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode',
-              $manual_code, 'auto'), undef,
-   'auto mode is accepted for manual setup codes');
+my ($auto_return, $auto_skip_event) = MATTER_Set(
+    $commission_io, 'commissionIO', 'commissionCode', $manual_code, 'auto');
+is($auto_return, undef, 'auto mode is accepted for manual setup codes');
+is($auto_skip_event, 1, 'commissionCode suppresses the synthetic FHEM set event carrying the code');
 my $auto_request = $read_ws_json->($commission_server);
 ok(!$auto_request->{args}{network_only},
    'auto mode sends network_only=false (BLE and IP discovery enabled)');
