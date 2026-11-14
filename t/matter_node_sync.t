@@ -334,6 +334,10 @@ is($sent_requests[0]{args}{command_name}, 'MoveToLevelWithOnOff',
    'RGB brightness is sent through LevelControl');
 is($sent_requests[1]{args}{command_name}, 'MoveToHueAndSaturation',
    'RGB hue and saturation are sent through ColorControl');
+@sent_requests = ();
+like(MATTERDevice_Set($child, $child->{NAME}, 'rgb', 'GG0000'),
+     qr/^Usage: set /, 'malformed RGB color is rejected');
+is(scalar(@sent_requests), 0, 'invalid RGB sends no device command');
 $attr{$child->{NAME}}{max_brightness} = 200;
 ok(MATTERDevice_AttributeUsable($child, 8, 3),
    'legacy min/max attributes remain usable without AttributeList');
