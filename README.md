@@ -45,6 +45,7 @@ Make sure your Matter server is up and running and reachable via IP and port (de
 * **Live device lifecycle:** `node_added` and `node_updated` synchronize devices and endpoints. `node_removed` marks existing FHEM devices as removed without deleting their configuration.
 * **Manual discovery:** `set matterServer discover` still requests a complete `get_nodes` snapshot for diagnostics or manual resynchronization.
 * **Collision-safe FHEM devices:** Node identity is scoped to IODev and node ID; endpoint identity additionally includes endpoint ID. Newly created devices default to room `Matter`; existing names, rooms and attributes remain unchanged.
+* **Node groups and navigation:** Root nodes and endpoints without a custom `group` attribute are grouped as `Node <node_id> (<IODev>)`. In FHEMWEB, the existing root device (endpoint 0) shows direct links to its endpoint devices.
 * **Device Commissioning:** Add new network-connected devices directly via manual pairing codes from FHEM.
 * **Dynamic Set-Lists:** Automatically detects device capabilities (OnOff, LevelControl, ColorControl/CT/RGB) and adjusts FHEM's `set` options and sliders accordingly.
 * **Auto-Reconnect:** Built-in resilient connection recovery with safe interval timers.
@@ -100,6 +101,10 @@ set matterServer discover
 ```
 
 A `node_removed` event sets the `matter_status` reading to `removed` on the affected FHEM node and endpoints, **without deleting** their configuration. A subsequent `node_added`/`node_updated` restores `matter_status` to `present`. This reading describes server membership, **not** whether a physical device is currently reachable.
+
+Each existing root `MATTERDevice` (endpoint 0) and its endpoint devices appear under the same FHEMWEB `group`, for example `Node 35 (matterServer)`, provided they have no individually configured `group` attribute. Missing groups on previously created devices are added during node synchronization; manual groups are not replaced. The group label incorporates the IO device name to distinguish nodes with identical IDs on different Matter servers.
+
+In the root device's FHEMWEB detail page, **Matter endpoints** lists links to the associated endpoint devices. It resolves their current FHEM names, so individually renamed endpoints remain linked. The standard DeviceOverview remains visible, and no additional FHEM devices or readings are created.
 
 ### 4. Control Devices
 
