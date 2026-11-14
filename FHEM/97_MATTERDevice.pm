@@ -6,142 +6,265 @@ use warnings;
 use JSON;
 use Scalar::Util qw(blessed);
 
-# Zentrale Definition: Ein Cluster enthält Name, Attribute (mit ID & Feature-Zuordnung)
+# Globale Matter-Metadaten-IDs. Sie werden unabhängig von der clusterspezifischen
+# Attributdefinition verarbeitet. EventList (0xFFFA) wird für ältere
+# Matter-Versionen weiterhin unterstützt.
+my %MATTER_GLOBAL_ATTRIBUTES = (
+    0xFFF8 => "generated_commands",
+    0xFFF9 => "accepted_commands",
+    0xFFFA => "event_list",
+    0xFFFB => "attribute_list",
+    0xFFFC => "feature_map",
+    0xFFFD => "cluster_revision",
+);
+
+# Zentrale Definition der vom FHEM-Modul fachlich unterstützten Cluster, Attribute und Commands
 my %MATTER_CLUSTERS = (
     0x0006 => {
         name       => "OnOff",
+        features   => {
+            lighting            => 0,
+            dead_front_behavior => 1,
+            off_only            => 2,
+        },
         attributes => {
-            0x0000 => { name => "state", feature => "has_onoff", is_reading => 0, is_attribute => 0},
-            0xFFF9 => { name => "onoff_cmds_accepted", feature => undef, is_reading => 0, is_attribute => 0 }
+            0x0000 => { name => "state", is_reading => 0, is_attribute => 0},
         },
         commands   => {
-            0x00   => { name => "Off",    set_list => "off:noArg", feature => "has_onoff" },
-            0x01   => { name => "On",     set_list => "on:noArg", feature => "has_onoff" },
-            0x02   => { name => "Toggle", set_list => "toggle:noArg", feature => "has_onoff" },
-            0x40   => { name => "OffWithEffect", set_list => "off_with_effect:DelayedAllOff,DyingLight slider,0,1,8", feature => "has_lighting" },
-            0x41   => { name => "OnWithRecallGlobalScene", set_list => "on_with_recall_global_scene:noArg", feature => "has_lighting" },
-            0x42   => { name => "OnWithTimedOff", set_list => "on_with_timed_off:onOffControlBitmap textField textField", feature => "has_lighting" },
+            0x00   => { name => "Off",    set_list => "off:noArg" },
+            0x01   => { name => "On",     set_list => "on:noArg", forbidden_features => ["off_only"] },
+            0x02   => { name => "Toggle", set_list => "toggle:noArg", forbidden_features => ["off_only"] },
+            0x40   => { name => "OffWithEffect", set_list => "off_with_effect:textField", required_features => ["lighting"] },
+            0x41   => { name => "OnWithRecallGlobalScene", set_list => "on_with_recall_global_scene:noArg", required_features => ["lighting"] },
+            0x42   => { name => "OnWithTimedOff", set_list => "on_with_timed_off:textField", required_features => ["lighting"] },
         },
     },
     0x0008 => {
         name       => "LevelControl",
+        features   => {
+            on_off    => 0,
+            lighting  => 1,
+            frequency => 2,
+        },
         attributes => {
-            0x0000 => { name => "brightness", feature => "has_level", is_reading => 1, is_attribute => 0 },
-            0x0002 => { name => "min_brightness", feature => "has_level", is_reading => 0, is_attribute => 1 },
-            0x0003 => { name => "max_brightness", feature => "has_level", is_reading => 0, is_attribute => 1 },
-            0x0004 => { name => "frequency", feature => "has_frequency", is_reading => 1, is_attribute => 0 },
-            0x0005 => { name => "min_frequency", feature => "has_frequency", is_reading => 0, is_attribute => 1 },
-            0x0006 => { name => "max_frequency", feature => "has_frequency", is_reading => 0, is_attribute => 1 },
-            0x4000 => { name => "max_level",  feature => "has_level", is_reading => 1, is_attribute => 0 },
-            0xFFF9 => { name => "level_control_cmds_accepted", feature => undef, is_reading => 0, is_attribute => 0 }
+            0x0000 => { name => "brightness", is_reading => 1, is_attribute => 0 },
+            0x0002 => { name => "min_brightness", is_reading => 0, is_attribute => 1 },
+            0x0003 => { name => "max_brightness", is_reading => 0, is_attribute => 1 },
+            0x0004 => { name => "frequency", is_reading => 1, is_attribute => 0, required_features => ["frequency"] },
+            0x0005 => { name => "min_frequency", is_reading => 0, is_attribute => 1, required_features => ["frequency"] },
+            0x0006 => { name => "max_frequency", is_reading => 0, is_attribute => 1, required_features => ["frequency"] },
+            0x4000 => { name => "startup_current_level", is_reading => 1, is_attribute => 0, required_features => ["lighting"] },
         },
         commands   => {
-            0x00   => { name => "MoveToLevel", set_list => "move_to_level:slider,0,1,254 textField", feature => "has_level" },
-            0x01   => { name => "Move", set_list => "move:up,down slider,0,1,254 textField", feature => undef },
-            0x02   => { name => "Step", set_list => "step:up, down slider,0,1,254 textField", feature => undef },
-            0x03   => { name => "Stop", set_list => "stop:textField", feature => undef },
-            0x04   => { name => "MoveToLevelWithOnOff", set_list => "move_to_level:slider,0,1,254 textField", feature => "has_level" },
-            0x05   => { name => "MoveWithOnOff", set_list => "move:up,down slider,0,1,254 textField", feature => undef },
-            0x06   => { name => "StepWithOnOff", set_list => "step:up, down slider,0,1,254 textField", feature => undef },
-            0x07   => { name => "StopWithOnOff", set_list => "stop:textField", feature => undef },
-            0x08   => { name => "MoveToClosestFrequency", set_list => "move_to_frequency:textField", feature => "has_frequency" },
+            0x00   => { name => "MoveToLevel", set_list => "move_to_level:slider,0,1,254 textField" },
+            0x01   => { name => "Move", set_list => "move:up,down slider,0,1,254 textField" },
+            0x02   => { name => "Step", set_list => "step:up, down slider,0,1,254 textField" },
+            0x03   => { name => "Stop", set_list => "stop:textField" },
+            0x04   => { name => "MoveToLevelWithOnOff", set_list => "move_to_level:slider,0,1,254 textField" },
+            0x05   => { name => "MoveWithOnOff", set_list => "move:up,down slider,0,1,254 textField" },
+            0x06   => { name => "StepWithOnOff", set_list => "step:up, down slider,0,1,254 textField" },
+            0x07   => { name => "StopWithOnOff", set_list => "stop:textField" },
+            0x08   => { name => "MoveToClosestFrequency", set_list => "move_to_frequency:textField", required_features => ["frequency"] },
         }
     },
     0x0028 => {
         name       => "BasicInformation",
         attributes => {
-            0x0001 => { name => "producer",         feature => undef, is_reading => 1, is_attribute => 0 },
-            0x0003 => { name => "model",            feature => undef, is_reading => 1, is_attribute => 0 },
-            0x0004 => { name => "vendor_id",        feature => undef, is_reading => 1, is_attribute => 0 },
-            0x0008 => { name => "hardware_version", feature => undef, is_reading => 1, is_attribute => 0 },
-            0x000A => { name => "firmware_version", feature => undef, is_reading => 1, is_attribute => 0 },
-            0x0012 => { name => "serial_number",    feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0001 => { name => "producer", is_reading => 1, is_attribute => 0 },
+            0x0002 => { name => "vendor_id", is_reading => 1, is_attribute => 0 },
+            0x0003 => { name => "model", is_reading => 1, is_attribute => 0 },
+            0x0008 => { name => "hardware_version", is_reading => 1, is_attribute => 0 },
+            0x000A => { name => "firmware_version", is_reading => 1, is_attribute => 0 },
+            0x000F => { name => "serial_number", is_reading => 1, is_attribute => 0 },
+        },
+    },
+    0x002F => {
+        name       => "PowerSource",
+        attributes => {
+            0x0000 => { name => "power_source_status", is_reading => 1, is_attribute => 0 },
+            0x0002 => { name => "power_source_description", is_reading => 1, is_attribute => 0 },
+            0x000B => { name => "battery_voltage_mV", is_reading => 1, is_attribute => 0 },
+            0x000C => { name => "battery_percent", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 2 : undef } },
+            0x000D => { name => "battery_time_remaining_s", is_reading => 1, is_attribute => 0 },
+            0x000E => { name => "battery_charge_level", is_reading => 1, is_attribute => 0 },
+            0x000F => { name => "battery_replacement_needed", is_reading => 1, is_attribute => 0 },
+            0x0010 => { name => "battery_replaceability", is_reading => 1, is_attribute => 0 },
+            0x0013 => { name => "battery_replacement_description", is_reading => 1, is_attribute => 0 },
+            0x0014 => { name => "battery_common_designation", is_reading => 1, is_attribute => 0 },
+            0x0018 => { name => "battery_capacity_mAh", is_reading => 1, is_attribute => 0 },
+            0x0019 => { name => "battery_quantity", is_reading => 1, is_attribute => 0 },
         },
     },
     0x005B => {
         name       => "Air Quality",
         attributes => {
-            0x0000 => { name => "air_quality",   feature => undef, is_reading => 1, is_attribute => 0 },
+            0x0000 => { name => "air_quality", is_reading => 1, is_attribute => 0 },
+        },
+    },
+    0x005C => {
+        name       => "SmokeCoAlarm",
+        attributes => {
+            0x0000 => { name => "alarm_expressed_state", is_reading => 1, is_attribute => 0 },
+            0x0001 => { name => "smoke_state", is_reading => 1, is_attribute => 0 },
+            0x0002 => { name => "co_state", is_reading => 1, is_attribute => 0 },
+            0x0003 => { name => "alarm_battery", is_reading => 1, is_attribute => 0 },
+            0x0004 => { name => "device_muted", is_reading => 1, is_attribute => 0 },
+            0x0005 => { name => "test_in_progress", is_reading => 1, is_attribute => 0 },
+            0x0006 => { name => "hardware_fault", is_reading => 1, is_attribute => 0 },
+            0x0007 => { name => "end_of_service", is_reading => 1, is_attribute => 0 },
+            0x0008 => { name => "interconnect_smoke_alarm", is_reading => 1, is_attribute => 0 },
+            0x0009 => { name => "interconnect_co_alarm", is_reading => 1, is_attribute => 0 },
+        },
+    },
+    0x0090 => {
+        name       => "ElectricalPowerMeasurement",
+        attributes => {
+            0x0000 => { name => "power_mode", is_reading => 1, is_attribute => 0 },
+            0x0001 => { name => "number_of_measurement_types", is_reading => 1, is_attribute => 0 },
+            0x0004 => { name => "voltage", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x0005 => { name => "current", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x0006 => { name => "reactive_current", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x0007 => { name => "apparent_current", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x0008 => { name => "power", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x0009 => { name => "reactive_power", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x000A => { name => "apparent_power", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x000B => { name => "rms_voltage", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x000C => { name => "rms_current", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x000D => { name => "rms_power", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+            0x000E => { name => "frequency", is_reading => 1, is_attribute => 0 },
+            0x0011 => { name => "power_factor", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 10000 : undef } },
+            0x0012 => { name => "neutral_current", is_reading => 1, is_attribute => 0,
+                        transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
+        },
+    },
+    0x0091 => {
+        name       => "ElectricalEnergyMeasurement",
+        attributes => {
+            0x0001 => { name => "energy", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my ($v) = @_;
+                            return undef if !defined($v) || ref($v) ne 'HASH';
+                            my $energy_mWh = exists($v->{"0"}) ? $v->{"0"} : $v->{energy};
+                            return defined($energy_mWh) ? $energy_mWh / 1_000_000 : undef;
+                        } },
+        },
+    },
+    0x040C => {
+        name       => "CarbonMonoxideConcentrationMeasurement",
+        attributes => {
+            0x0000 => { name => "co_concentration", is_reading => 1, is_attribute => 0 },
+            0x0001 => { name => "co_minimum", is_reading => 1, is_attribute => 0 },
+            0x0002 => { name => "co_maximum", is_reading => 1, is_attribute => 0 },
+            0x0008 => { name => "co_unit", is_reading => 1, is_attribute => 0 },
+            0x0009 => { name => "co_medium", is_reading => 1, is_attribute => 0 },
         },
     },
     0x0101 => {
         name       => "Door Lock",
         attributes => {
-            0x0000 => { name => "lock_state", feature => "has_lock", is_reading => 1, is_attribute => 0 },
-            0x0001 => { name => "lock_type", feature => "has_lock", is_reading => 1, is_attribute => 0 },
-            0x0002 => { name => "actuator_enabled", feature => "has_lock", is_reading => 1, is_attribute => 0},
-            0x0003 => { name => "door_state", feature => "has_lock", is_reading => 1, is_attribute => 0 },
-            0x0004 => { name => "door_open_events", feature => "has_lock", is_reading => 1, is_attribute => 0 },
-            0x0005 => { name => "door_close_events", feature => "has_lock", is_reading => 1, is_attribute => 0 },
-            0x0006 => { name => "open_period", feature => "has_lock", is_reading => 1, is_attribute => 0 },
-            0x0011 => { name => "num_total_users_supported", feature => "has_user", is_reading => 1, is_attribute => 0 },
-            0x0012 => { name => "num_pin_users_supported", feature => "has_pin", is_reading => 1, is_attribute => 0 },
-            0x0013 => { name => "num_rfid_users_supported", feature => "has_rfid", is_reading => 1, is_attribute => 0 },
-            0x0014 => { name => "num_week_day_schedule_per_user", feature => "has_lock", is_reading => 1, is_attribute => 0 },
-            0x0015 => { name => "num_year_day_schedule_per_user", feature => "has_lock", is_reading => 1, is_attribute => 0 },
-            0x0016 => { name => "num_holiday_schedules", feature => "has_lock", is_reading => 1, is_attribute => 0 },
-            0x0017 => { name => "max_pin_code_length", feature => "has_pin", is_reading => 0, is_attribute => 1 },
-            0x0018 => { name => "min_pin_code_length", feature => "has_pin", is_reading => 0, is_attribute => 1 },
-            0x0019 => { name => "max_rfid_code_length", feature => "has_rfid", is_reading => 0, is_attribute => 1 },
-            0x001A => { name => "min_rfid_code_length", feature => "has_rfid", is_reading => 0, is_attribute => 1 },
-            0x001B => { name => "credential_rules_support", feature => "has_lock", is_reading => 1, is_attribute => 0 },
-            0x001C => { name => "num_credentials_per_user", feature => "has_lock", is_reading => 1, is_attribute => 0 },
-            0x0021 => { name => "language", feature => "has_lock", is_reading => 1, is_attribute => 0 },
+            0x0000 => { name => "lock_state", is_reading => 1, is_attribute => 0 },
+            0x0001 => { name => "lock_type", is_reading => 1, is_attribute => 0 },
+            0x0002 => { name => "actuator_enabled", is_reading => 1, is_attribute => 0},
+            0x0003 => { name => "door_state", is_reading => 1, is_attribute => 0 },
+            0x0004 => { name => "door_open_events", is_reading => 1, is_attribute => 0 },
+            0x0005 => { name => "door_close_events", is_reading => 1, is_attribute => 0 },
+            0x0006 => { name => "open_period", is_reading => 1, is_attribute => 0 },
+            0x0011 => { name => "num_total_users_supported", is_reading => 1, is_attribute => 0 },
+            0x0012 => { name => "num_pin_users_supported", is_reading => 1, is_attribute => 0 },
+            0x0013 => { name => "num_rfid_users_supported", is_reading => 1, is_attribute => 0 },
+            0x0014 => { name => "num_week_day_schedule_per_user", is_reading => 1, is_attribute => 0 },
+            0x0015 => { name => "num_year_day_schedule_per_user", is_reading => 1, is_attribute => 0 },
+            0x0016 => { name => "num_holiday_schedules", is_reading => 1, is_attribute => 0 },
+            0x0017 => { name => "max_pin_code_length", is_reading => 0, is_attribute => 1 },
+            0x0018 => { name => "min_pin_code_length", is_reading => 0, is_attribute => 1 },
+            0x0019 => { name => "max_rfid_code_length", is_reading => 0, is_attribute => 1 },
+            0x001A => { name => "min_rfid_code_length", is_reading => 0, is_attribute => 1 },
+            0x001B => { name => "credential_rules_support", is_reading => 1, is_attribute => 0 },
+            0x001C => { name => "num_credentials_per_user", is_reading => 1, is_attribute => 0 },
+            0x0021 => { name => "language", is_reading => 1, is_attribute => 0 },
         },
         commands   => {
-            0x00   => { name => "LockDoor",   set_list => "lock:noArg", feature => "has_lock" },
-            0x01   => { name => "UnlockDoor", set_list => "unlock:noArg", feature => "has_lock" },
+            0x00   => { name => "LockDoor",   set_list => "lock:noArg" },
+            0x01   => { name => "UnlockDoor", set_list => "unlock:noArg" },
         },
     },
     0x0102 => {
         name       => "WindowCovering",
+        features   => {
+            lift                => 0,
+            tilt                => 1,
+            position_aware_lift => 2,
+            absolute_position   => 3,
+            position_aware_tilt => 4,
+        },
         attributes => {
-            0x0000 => { name => "wc_type", feature => "has_wc", is_reading => 1, is_attribute => 0 },
-            0x0001 => { name => "physical_closed_limit_lift", feature => undef, is_reading => 0, is_attribute => 1 },
-            0x0002 => { name => "physical_closed_limit_tilt", feature => undef, is_reading => 0, is_attribute => 1 },
-            0x0003 => { name => "current_position_lift", feature => "has_position_lift", is_reading => 1, is_attribute => 0},
-            0x0004 => { name => "current_position_tilt", feature => "has_position_tilt", is_reading => 1, is_attribute => 0},
-            0x0005 => { name => "number_of_actuations_lift", feature => undef, is_reading => 1, is_attribute => 0 },
-            0x0006 => { name => "number_of_actuations_tilt", feature => undef, is_reading => 1, is_attribute => 0},
-            0x0007 => { name => "ws_config_status", feature => undef, is_reading => 1, is_attribute => 0},
-            0x0008 => { name => "current_position_lift_percentage", feature => "has_position_lift", is_reading => 1, is_attribute => 0 },
-            0x0009 => { name => "current_position_tilt_percentage", feature => "has_position_tilt", is_reading => 1, is_attribute => 0 },
-            0x000A => { name => "wc_operational_status", feature => undef, is_reading => 1, is_attribute => 0 },
-            0x000B => { name => "target_position_lift_percent_100_ths", feature => undef, is_reading => 1, is_attribute => 0 },
-            0x000C => { name => "target_position_tilt_percent_100_ths", feature => undef, is_reading => 1, is_attribute => 0 },
-            0x000D => { name => "wc_end_product_type", feature => undef, is_reading => 1, is_attribute => 0},
-            0x000E => { name => "current_position_lift_percent_100_ths", feature => "has_position_lift", is_reading => 1, is_attribute => 0 },
-            0x000F => { name => "current_position_tilt_percent_100_ths", feature => "has_position_tilt", is_reading => 1, is_attribute => 0 },
-            0x0010 => { name => "installed_open_limit_lift", feature => undef, is_reading => 1, is_attribute => 0 },
-            0x0011 => { name => "installed_closed_limit_lift", feature => undef, is_reading => 1, is_attribute => 0 },
-            0x0012 => { name => "installed_open_limit_tilt", feature => undef, is_reading => 1, is_attribute => 0 },
-            0x0013 => { name => "installed_closed_limit_tilt", feature => undef, is_reading => 1, is_attribute => 0 },
-            0x0017 => { name => "wc_mode", feature => undef, is_reading => 1, is_attribute => 0 },
-            0x001A => { name => "wc_safety_status", feature => undef, is_reading => 1, is_attribute => 0 },
-            0xFFF9 => { name => "wc_cmds_accepted", feature => undef, is_reading => 0, is_attribute => 0 }
+            0x0000 => { name => "wc_type", is_reading => 1, is_attribute => 0 },
+            0x0001 => { name => "physical_closed_limit_lift", is_reading => 0, is_attribute => 1, required_features => ["lift", "position_aware_lift", "absolute_position"] },
+            0x0002 => { name => "physical_closed_limit_tilt", is_reading => 0, is_attribute => 1, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
+            0x0003 => { name => "current_position_lift", is_reading => 1, is_attribute => 0, required_features => ["lift", "position_aware_lift", "absolute_position"] },
+            0x0004 => { name => "current_position_tilt", is_reading => 1, is_attribute => 0, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
+            0x0005 => { name => "number_of_actuations_lift", is_reading => 1, is_attribute => 0 },
+            0x0006 => { name => "number_of_actuations_tilt", is_reading => 1, is_attribute => 0},
+            0x0007 => { name => "ws_config_status", is_reading => 1, is_attribute => 0},
+            0x0008 => { name => "current_position_lift_percentage", is_reading => 1, is_attribute => 0 },
+            0x0009 => { name => "current_position_tilt_percentage", is_reading => 1, is_attribute => 0 },
+            0x000A => { name => "wc_operational_status", is_reading => 1, is_attribute => 0 },
+            0x000B => { name => "target_position_lift_percent_100_ths", is_reading => 1, is_attribute => 0 },
+            0x000C => { name => "target_position_tilt_percent_100_ths", is_reading => 1, is_attribute => 0 },
+            0x000D => { name => "wc_end_product_type", is_reading => 1, is_attribute => 0},
+            0x000E => { name => "current_position_lift_percent_100_ths", is_reading => 1, is_attribute => 0 },
+            0x000F => { name => "current_position_tilt_percent_100_ths", is_reading => 1, is_attribute => 0 },
+            0x0010 => { name => "installed_open_limit_lift", is_reading => 1, is_attribute => 0, required_features => ["lift", "position_aware_lift", "absolute_position"] },
+            0x0011 => { name => "installed_closed_limit_lift", is_reading => 1, is_attribute => 0, required_features => ["lift", "position_aware_lift", "absolute_position"] },
+            0x0012 => { name => "installed_open_limit_tilt", is_reading => 1, is_attribute => 0, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
+            0x0013 => { name => "installed_closed_limit_tilt", is_reading => 1, is_attribute => 0, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
+            0x0017 => { name => "wc_mode", is_reading => 1, is_attribute => 0 },
+            0x001A => { name => "wc_safety_status", is_reading => 1, is_attribute => 0 },
 
         },
         commands => {
-            0x00   => { name => "UpOrOpen", set_list => "on:noArg", feature => "has_wc" },
-            0x01   => { name => "DownOrClose", set_list => "off:noArg", feature => "has_wc" },
-            0x02   => { name => "StopMotion", set_list => "stop:noArg", feature => "has_wc" },
-            0x04   => { name => "GoToLiftValue", set_list => "lift_value:textField", feature => "has_position_lift" },
-            0x05   => { name => "GoToLiftPercentage", set_list => "prc:slieder,0,1,100", feature => "has_position_lift" },
-            0x07   => { name => "TiltValue", set_list => "tilt:textField", feature => "has_position_tilt" },
-            0x08   => { name => "GoToTiltPercentage", set_list => "prc:slieder,0,1,100", feature => "has_position_tilt" },
+            0x00   => { name => "UpOrOpen", set_list => "on:noArg" },
+            0x01   => { name => "DownOrClose", set_list => "off:noArg" },
+            0x02   => { name => "StopMotion", set_list => "stop:noArg" },
+            0x05   => { name => "GoToLiftPercentage", set_list => "pct:slider,0,1,100", required_features => ["lift"] },
+            0x08   => { name => "GoToTiltPercentage", set_list => "tilt:slider,0,1,100", required_features => ["tilt"] },
         },
     },
     0x0300 => {
         name       => "ColorControl",
+        features   => {
+            hue_saturation    => 0,
+            enhanced_hue      => 1,
+            color_loop        => 2,
+            xy                => 3,
+            color_temperature => 4,
+        },
         attributes => {
-            0x0000 => { name => "current_hue",        feature => "has_hue", is_reading => 1, is_attribute => 0 },
-            0x0001 => { name => "current_saturation", feature => "has_saturation", is_reading => 1, is_attribute => 0 },
-            0x0003 => { name => "current_x",          feature => "has_xy", is_reading => 1, is_attribute => 0 },
-            0x0004 => { name => "current_y",          feature => "has_xy", is_reading => 1, is_attribute => 0 },
-            0x0007 => { name => "color_temperature_mireds", feature => "has_ct", is_reading => 1, is_attribute => 0 },
-            0x0010 => { name => "color_modes",        feature => undef, is_reading => 1, is_attribute => 0 },
-            0x400B => { name => "color_temp_min",     feature => "has_ct", is_reading => 0, is_attribute => 1 },
-            0x400C => { name => "color_temp_max",     feature => "has_ct", is_reading => 0, is_attribute => 1 },
+            0x0000 => { name => "current_hue", is_reading => 1, is_attribute => 0, required_features => ["hue_saturation"] },
+            0x0001 => { name => "current_saturation", is_reading => 1, is_attribute => 0, required_features => ["hue_saturation"] },
+            0x0003 => { name => "current_x", is_reading => 1, is_attribute => 0, required_features => ["xy"] },
+            0x0004 => { name => "current_y", is_reading => 1, is_attribute => 0, required_features => ["xy"] },
+            0x0007 => { name => "color_temperature_mireds", is_reading => 1, is_attribute => 0, required_features => ["color_temperature"] },
+            0x0008 => { name => "color_mode", is_reading => 1, is_attribute => 0 },
+            0x400B => { name => "color_temp_min", is_reading => 0, is_attribute => 1, required_features => ["color_temperature"] },
+            0x400C => { name => "color_temp_max", is_reading => 0, is_attribute => 1, required_features => ["color_temperature"] },
+        },
+        commands => {
+            0x06 => { name => "MoveToHueAndSaturation", required_features => ["hue_saturation"] },
+            0x07 => { name => "MoveToColor", required_features => ["xy"] },
+            0x0A => { name => "MoveToColorTemperature", required_features => ["color_temperature"] },
         },
     },
 );
@@ -155,6 +278,8 @@ sub MATTERDevice_Initialize($) {
     $hash->{GetFn}    = "MATTERDevice_Get";
     $hash->{ParseFn}  = "MATTERDevice_Parse";
     $hash->{AttrList} = "IODev " .
+                        "has_lighting:0,1 " .
+                        "has_color:0,1 " .
                         "has_onoff:0,1 " .
                         "has_level:0,1 " .
                         "has_ct:0,1 " .
@@ -228,6 +353,185 @@ sub MATTERDevice_SetAttributeIfNotExists($$$) {
     }
 }
 
+sub MATTERDevice_NormalizeMatterId($) {
+    my ($value) = @_;
+    return undef if (!defined($value) || ref($value));
+    return hex($value) if ($value =~ /^0x[0-9a-f]+$/i);
+    return int($value) if ($value =~ /^\d+$/);
+    return undef;
+}
+
+# Verarbeitet die globalen Matter-Attribute clusterunabhängig und speichert sie
+# pro Endpoint-Device und Cluster. Rückgabe 1 bedeutet: globales Attribut wurde behandelt.
+sub MATTERDevice_ProcessGlobalAttribute($$$$) {
+    my ($hash, $cluster_id, $attr_id, $value) = @_;
+    return 0 if (!exists($MATTER_GLOBAL_ATTRIBUTES{$attr_id}));
+
+    my $key = $MATTER_GLOBAL_ATTRIBUTES{$attr_id};
+    my $cap = ($hash->{helper}{capabilities}{$cluster_id} //= {});
+    $cap->{present} = 1;
+
+    # Die vier globalen Listen werden einheitlich als Sets gespeichert. Damit
+    # sind AcceptedCommandList, GeneratedCommandList, EventList und AttributeList
+    # über dieselbe generische Abfrage auswertbar.
+    if ($attr_id >= 0xFFF8 && $attr_id <= 0xFFFB) {
+        if (ref($value) eq 'ARRAY') {
+            my %ids;
+            foreach my $raw_id (@{$value}) {
+                my $id = MATTERDevice_NormalizeMatterId($raw_id);
+                $ids{$id} = 1 if (defined($id));
+            }
+            $cap->{$key} = \%ids;
+        }
+    }
+    elsif ($attr_id == 0xFFFC) {
+        my $feature_map = MATTERDevice_NormalizeMatterId($value);
+        $cap->{$key} = $feature_map if (defined($feature_map));
+    }
+    elsif ($attr_id == 0xFFFD) {
+        my $revision = MATTERDevice_NormalizeMatterId($value);
+        $cap->{$key} = $revision if (defined($revision));
+    }
+
+    return 1;
+}
+
+sub MATTERDevice_CapabilityContains($$$$) {
+    my ($hash, $cluster_id, $list_name, $id) = @_;
+    my $list = $hash->{helper}{capabilities}{$cluster_id}{$list_name};
+    return 0 if (ref($list) ne 'HASH');
+    return exists($list->{$id}) ? 1 : 0;
+}
+
+sub MATTERDevice_CommandGenerated($$$) {
+    my ($hash, $cluster_id, $command_id) = @_;
+    return MATTERDevice_CapabilityContains($hash, $cluster_id, "generated_commands", $command_id);
+}
+
+sub MATTERDevice_CommandAccepted($$$) {
+    my ($hash, $cluster_id, $command_id) = @_;
+    return MATTERDevice_CapabilityContains($hash, $cluster_id, "accepted_commands", $command_id);
+}
+
+sub MATTERDevice_EventSupported($$$) {
+    my ($hash, $cluster_id, $event_id) = @_;
+    return MATTERDevice_CapabilityContains($hash, $cluster_id, "event_list", $event_id);
+}
+
+sub MATTERDevice_AttributeSupported($$$) {
+    my ($hash, $cluster_id, $attr_id) = @_;
+    return MATTERDevice_CapabilityContains($hash, $cluster_id, "attribute_list", $attr_id);
+}
+
+sub MATTERDevice_FeatureSupported($$$) {
+    my ($hash, $cluster_id, $feature) = @_;
+    my $feature_map = $hash->{helper}{capabilities}{$cluster_id}{feature_map};
+    return 0 if (!defined($feature_map) || ref($feature_map));
+
+    my $bit;
+    if (defined($feature) && !ref($feature) && $feature =~ /^\d+$/) {
+        $bit = int($feature);
+    } else {
+        my $cluster = $MATTER_CLUSTERS{$cluster_id};
+        return 0 if (!$cluster || ref($cluster->{features}) ne 'HASH');
+        return 0 if (!defined($feature) || !exists($cluster->{features}{$feature}));
+        $bit = $cluster->{features}{$feature};
+    }
+
+    return (($feature_map & (1 << $bit)) != 0) ? 1 : 0;
+}
+
+sub MATTERDevice_ClusterRevision($$) {
+    my ($hash, $cluster_id) = @_;
+    my $revision = $hash->{helper}{capabilities}{$cluster_id}{cluster_revision};
+    return undef if (!defined($revision) || ref($revision));
+    return int($revision);
+}
+
+sub MATTERDevice_ClusterRevisionAtLeast($$$) {
+    my ($hash, $cluster_id, $minimum) = @_;
+    my $revision = MATTERDevice_ClusterRevision($hash, $cluster_id);
+    return 0 if (!defined($revision));
+    return $revision >= $minimum ? 1 : 0;
+}
+
+# AttributeList ist die Quelle für die tatsächliche Präsenz. Für bekannte
+# Attribute werden zusätzlich FeatureMap- und ClusterRevision-Bedingungen
+# aus der lokalen Matter-Abbildung geprüft.
+sub MATTERDevice_AttributeUsable($$$) {
+    my ($hash, $cluster_id, $attr_id) = @_;
+    # The legacy module permitted user-supplied max/min attributes without
+    # an AttributeList. Keep that behavior until actual metadata is available.
+    my $list = $hash->{helper}{capabilities}{$cluster_id}{attribute_list};
+    return 1 if ref($list) ne 'HASH';
+    return 0 if (!MATTERDevice_AttributeSupported($hash, $cluster_id, $attr_id));
+
+    my $cluster = $MATTER_CLUSTERS{$cluster_id};
+    return 1 if (!$cluster || ref($cluster->{attributes}) ne 'HASH');
+
+    my $attribute = $cluster->{attributes}{$attr_id};
+    return 1 if (!$attribute);
+
+    if (defined($attribute->{min_revision})) {
+        return 0 if (!MATTERDevice_ClusterRevisionAtLeast($hash, $cluster_id, $attribute->{min_revision}));
+    }
+    foreach my $feature (@{$attribute->{required_features} // []}) {
+        return 0 if (!MATTERDevice_FeatureSupported($hash, $cluster_id, $feature));
+    }
+
+    return 1;
+}
+
+# Ein FHEM-Command gilt nur dann als verfügbar, wenn der Matter-Server ihn
+# tatsächlich in AcceptedCommandList meldet und die für diesen Command
+# hinterlegten FeatureMap-Bedingungen erfüllt sind.
+sub MATTERDevice_CommandSupported($$$) {
+    my ($hash, $cluster_id, $command_id) = @_;
+    my %legacy = (
+        0x0006 => { 0x00 => 'has_onoff', 0x01 => 'has_onoff', 0x02 => 'has_onoff',
+                    0x40 => 'has_lighting', 0x41 => 'has_lighting', 0x42 => 'has_lighting' },
+        0x0008 => { 0x00 => 'has_level', 0x04 => 'has_level', 0x08 => 'has_frequency' },
+        0x0101 => { 0x00 => 'has_lock', 0x01 => 'has_lock' },
+        0x0102 => { 0x00 => 'has_wc', 0x01 => 'has_wc', 0x02 => 'has_wc',
+                    0x05 => 'has_position_lift', 0x08 => 'has_position_tilt' },
+        0x0300 => { 0x06 => 'has_hue', 0x07 => 'has_xy', 0x0A => 'has_ct' },
+    );
+    my $flag = $legacy{$cluster_id}{$command_id};
+    my $override = $flag ? AttrVal($hash->{NAME}, $flag, undef) : undef;
+    # Explicit has_*=0 remains authoritative even when the server advertises
+    # a command. An explicit 1 alone never invents a missing advertised command.
+    return 0 if defined($override) && $override eq '0';
+
+    my $accepted = $hash->{helper}{capabilities}{$cluster_id}{accepted_commands};
+    if (ref($accepted) ne 'HASH') {
+        # Prior releases also allowed an explicit has_color flag for RGB.
+        # Without hue/XY metadata, that flag selected hue/saturation unless XY
+        # was explicitly enabled.
+        if ($cluster_id == 0x0300 && $command_id == 0x06 &&
+            !defined($override) && AttrVal($hash->{NAME}, 'has_color', 0) &&
+            !AttrVal($hash->{NAME}, 'has_xy', 0)) {
+            return 1;
+        }
+        return defined($override) && $override ? 1 : 0;
+    }
+    return 0 if (!MATTERDevice_CommandAccepted($hash, $cluster_id, $command_id));
+
+    my $cluster = $MATTER_CLUSTERS{$cluster_id};
+    return 1 if (!$cluster || ref($cluster->{commands}) ne 'HASH');
+
+    my $command = $cluster->{commands}{$command_id};
+    return 1 if (!$command);
+
+    foreach my $feature (@{$command->{required_features} // []}) {
+        return 0 if (!MATTERDevice_FeatureSupported($hash, $cluster_id, $feature));
+    }
+    foreach my $feature (@{$command->{forbidden_features} // []}) {
+        return 0 if (MATTERDevice_FeatureSupported($hash, $cluster_id, $feature));
+    }
+
+    return 1;
+}
+
 sub MATTERDevice_Set($$@) {
     my ($hash, $name, $cmd, @args) = @_;
 
@@ -253,44 +557,38 @@ sub MATTERDevice_Set($$@) {
         return "Unknown argument $cmd, choose one of $list_str";
     }
     
-    my $payload     = undef;
+    my $payload       = undef;
+    my $level_payload = undef;
     my $node_id     = $hash->{node_id};
     my $endpoint_id = $hash->{endpoint_id} // 1;
 
     if ($cmd eq "on" || $cmd eq "off") {
-        if (AttrVal($name, "has_wt", 0)) {
-            if ($cmd eq "on") {
-                $payload = {
-                    message_id => int(rand(100000) + 1),
-                    command    => "device_command",
-                    args       => {
-                        node_id      => $node_id,
-                        endpoint_id  => int($endpoint_id),
-                        cluster_id   => 0x0102,
-                        command_name => "UpOrOpen"
-                    }
-                };
-            } else {
-                $payload = {
-                    message_id => int(rand(100000) + 1),
-                    command    => "device_command",
-                    args       => {
-                        node_id      => $node_id,
-                        endpoint_id  => int($endpoint_id),
-                        cluster_id   => 0x0102,
-                        command_name => "DownOrClose"
-                    }
-                };
-            }
-        } else {
+        my $onoff_command_id = ($cmd eq "on") ? 0x01 : 0x00;
+        my $wc_command_id    = ($cmd eq "on") ? 0x00 : 0x01;
+        my $can_onoff = MATTERDevice_CommandSupported($hash, 0x0006, $onoff_command_id);
+        my $can_wc    = MATTERDevice_CommandSupported($hash, 0x0102, $wc_command_id);
+
+        if ($can_onoff) {
             $payload = {
                 message_id => int(rand(100000) + 1),
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
                     endpoint_id  => int($endpoint_id),
-                    cluster_id   => 6,
-                    command_name => $cmd
+                    cluster_id   => 0x0006,
+                    command_name => ($cmd eq "on" ? "On" : "Off")
+                }
+            };
+        }
+        elsif ($can_wc) {
+            $payload = {
+                message_id => int(rand(100000) + 1),
+                command    => "device_command",
+                args       => {
+                    node_id      => $node_id,
+                    endpoint_id  => int($endpoint_id),
+                    cluster_id   => 0x0102,
+                    command_name => ($cmd eq "on" ? "UpOrOpen" : "DownOrClose")
                 }
             };
         }
@@ -307,6 +605,88 @@ sub MATTERDevice_Set($$@) {
             }
         };
     }
+    elsif ($cmd eq "off_with_effect") {
+        my $usage = "Usage: set $name off_with_effect <EffectIdentifier>,<EffectVariant> " .
+                    "(DelayedAllOff: DelayedOffFastFade|NoFade|DelayedOffSlowFade; DyingLight: DyingLightFadeOff)";
+        return $usage if (@args != 1);
+
+        my ($effect_name, $variant_name, $extra) = split(/,/, $args[0], 3);
+        return $usage if (!defined($effect_name) || !defined($variant_name) || defined($extra));
+
+        my %effect_identifier = (
+            DelayedAllOff => 0,
+            DyingLight    => 1,
+        );
+        my %effect_variant = (
+            DelayedAllOff => {
+                DelayedOffFastFade => 0,
+                NoFade             => 1,
+                DelayedOffSlowFade => 2,
+            },
+            DyingLight => {
+                DyingLightFadeOff => 0,
+            },
+        );
+
+        return "Unknown EffectIdentifier '$effect_name'" if (!exists($effect_identifier{$effect_name}));
+        return "Unknown EffectVariant '$variant_name' for $effect_name" if (!exists($effect_variant{$effect_name}{$variant_name}));
+
+        $payload = {
+            message_id => int(rand(100000) + 1),
+            command    => "device_command",
+            args       => {
+                node_id      => $node_id,
+                endpoint_id  => int($endpoint_id),
+                cluster_id   => 0x0006,
+                command_name => "OffWithEffect",
+                payload      => {
+                    effectIdentifier => $effect_identifier{$effect_name},
+                    effectVariant    => $effect_variant{$effect_name}{$variant_name}
+                }
+            }
+        };
+    }
+    elsif ($cmd eq "on_with_recall_global_scene") {
+        $payload = {
+            message_id => int(rand(100000) + 1),
+            command    => "device_command",
+            args       => {
+                node_id      => $node_id,
+                endpoint_id  => int($endpoint_id),
+                cluster_id   => 6,
+                command_name => "OnWithRecallGlobalScene"
+            }
+        };
+    }
+    elsif ($cmd eq "on_with_timed_off") {
+        my $usage = "Usage: set $name on_with_timed_off <acceptOnlyWhenOn>,<onTime>,<offWaitTime> (times in 0.1 s)";
+        return $usage if (@args != 1);
+
+        my @timed_args = split(/,/, $args[0], -1);
+        return $usage if (@timed_args != 3);
+        return $usage if (grep { !defined($_) || $_ !~ /^\d+$/ } @timed_args);
+
+        my ($accept_only_when_on, $on_time, $off_wait_time) = map { int($_) } @timed_args;
+        return "acceptOnlyWhenOn must be 0 or 1" if ($accept_only_when_on > 1);
+        return "onTime must be between 0 and 65534 (0.1 s units)" if ($on_time > 65534);
+        return "offWaitTime must be between 0 and 65534 (0.1 s units)" if ($off_wait_time > 65534);
+
+        $payload = {
+            message_id => int(rand(100000) + 1),
+            command    => "device_command",
+            args       => {
+                node_id      => $node_id,
+                endpoint_id  => int($endpoint_id),
+                cluster_id   => 6,
+                command_name => "OnWithTimedOff",
+                payload      => {
+                    onOffControl => $accept_only_when_on,
+                    onTime       => $on_time,
+                    offWaitTime  => $off_wait_time
+                }
+            }
+        };
+    }
     elsif ($cmd eq "stop") {
         $payload = {
             message_id => int(rand(100000) + 1),
@@ -320,20 +700,22 @@ sub MATTERDevice_Set($$@) {
         };
     }
     elsif ($cmd eq "brightness") {
+        my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
         $payload = {
             message_id => int(rand(100000) + 1),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
                 endpoint_id  => int($endpoint_id),
-                cluster_id   => 8,
-                command_name => "MoveToLevelWithOnOff",
+                cluster_id   => 0x0008,
+                command_name => ($use_with_onoff ? "MoveToLevelWithOnOff" : "MoveToLevel"),
                 payload      => { level => int($args[0]), transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
             }
         };
     }
     elsif ($cmd eq "pct") {
-        if (AttrVal($name, "has_position_lift", 0)) {
+        my $can_wc_pct = MATTERDevice_CommandSupported($hash, 0x0102, 0x05);
+        if ($can_wc_pct) {
             my $position = $args[0] * 100;
             $payload = {
                 message_id => int(rand(100000) + 1),
@@ -347,15 +729,18 @@ sub MATTERDevice_Set($$@) {
                 }
             };
         } else {
-            my $max_level = AttrVal($name, "max_brightness", 254);
+            my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
+            ? AttrVal($name, "max_brightness", 254)
+            : 254;
+            my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
             $payload = {
                 message_id => int(rand(100000) + 1),
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
                     endpoint_id  => int($endpoint_id),
-                    cluster_id   => 8,
-                    command_name => "MoveToLevelWithOnOff",
+                    cluster_id   => 0x0008,
+                    command_name => ($use_with_onoff ? "MoveToLevelWithOnOff" : "MoveToLevel"),
                     payload      => { level => int($args[0]) * $max_level / 100, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
                 }
             };
@@ -376,33 +761,73 @@ sub MATTERDevice_Set($$@) {
         };
     }
     elsif ($cmd eq "rgb") {
+        return "Usage: set $name rgb RRGGBB"
+            unless @args == 1 && defined($args[0]) && $args[0] =~ /^#?[0-9a-fA-F]{6}$/;
         my $hex = $args[0];
         $hex =~ s/^#//;
         my ($r, $g, $b) = map { hex($_) } ($hex =~ /(..)(..)(..)/);
 
-        if (AttrVal($name, "has_xy", 0) && !AttrVal($name, "has_hue", 0)) {
-            my $red   = ($r > 0.04045) ? (($r / 255 + 0.055) / 1.055) ** 2.4 : ($r / 255) / 12.92;
-            my $green = ($g > 0.04045) ? (($g / 255 + 0.055) / 1.055) ** 2.4 : ($g / 255) / 12.92;
-            my $blue  = ($b > 0.04045) ? (($b / 255 + 0.055) / 1.055) ** 2.4 : ($b / 255) / 12.92;
+        my $can_xy = MATTERDevice_CommandSupported($hash, 0x0300, 0x07);
+        my $can_hs = MATTERDevice_CommandSupported($hash, 0x0300, 0x06);
 
-            my $X = $red * 0.664511 + $green * 0.154324 + $blue * 0.162028;
-            my $Y = $red * 0.283881 + $green * 0.668433 + $blue * 0.047685;
-            my $Z = $red * 0.000088 + $green * 0.072310 + $blue * 0.986039;
+        if ($can_xy && !$can_hs) {
+            # Convert sRGB to linear RGB. The transfer-function threshold applies
+            # to normalized components in the 0..1 range.
+            my $sr = $r / 255;
+            my $sg = $g / 255;
+            my $sb = $b / 255;
+            my $red   = ($sr > 0.04045) ? (($sr + 0.055) / 1.055) ** 2.4 : $sr / 12.92;
+            my $green = ($sg > 0.04045) ? (($sg + 0.055) / 1.055) ** 2.4 : $sg / 12.92;
+            my $blue  = ($sb > 0.04045) ? (($sb + 0.055) / 1.055) ** 2.4 : $sb / 12.92;
 
-            my $x = ($X + $Y + $Z) > 0 ? int(($X / ($X + $Y + $Z)) * 65535) : 0;
-            my $y = ($X + $Y + $Z) > 0 ? int(($Y / ($X + $Y + $Z)) * 65535) : 0;
+            # Standard sRGB / BT.709 primaries with D65 white point.
+            my $X = $red * 0.4124564 + $green * 0.3575761 + $blue * 0.1804375;
+            my $Y = $red * 0.2126729 + $green * 0.7151522 + $blue * 0.0721750;
+            my $Z = $red * 0.0193339 + $green * 0.1191920 + $blue * 0.9503041;
+            my $sum = $X + $Y + $Z;
 
-            $payload = {
-                message_id => int(rand(100000) + 1),
-                command    => "device_command",
-                args       => {
-                    node_id      => $node_id,
-                    endpoint_id  => int($endpoint_id),
-                    cluster_id   => 768,
-                    command_name => "MoveToColor",
-                    payload      => { colorX => int($x), colorY => int($y), transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
-                }
-            };
+            # Chromaticity is undefined for black. RGB 000000 is represented
+            # through LevelControl only.
+            if ($sum > 0) {
+                my $x = int(($X / $sum) * 65536 + 0.5);
+                my $y = int(($Y / $sum) * 65536 + 0.5);
+                $x = 65279 if $x > 65279;
+                $y = 65279 if $y > 65279;
+
+                $payload = {
+                    message_id => int(rand(100000) + 1),
+                    command    => "device_command",
+                    args       => {
+                        node_id      => $node_id,
+                        endpoint_id  => int($endpoint_id),
+                        cluster_id   => 768,
+                        command_name => "MoveToColor",
+                        payload      => { colorX => $x, colorY => $y, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
+                    }
+                };
+            }
+
+            # Preserve the intensity component of RGB via LevelControl.
+            my $rgb_max = ($r > $g && $r > $b) ? $r : ($g > $b ? $g : $b);
+            my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
+            my $can_level = $use_with_onoff || MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
+            if ($can_level) {
+                my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
+                    ? AttrVal($name, "max_brightness", 254)
+                    : 254;
+                my $level = int(($rgb_max / 255) * $max_level + 0.5);
+                $level_payload = {
+                    message_id => int(rand(100000) + 1),
+                    command    => "device_command",
+                    args       => {
+                        node_id      => $node_id,
+                        endpoint_id  => int($endpoint_id),
+                        cluster_id   => 0x0008,
+                        command_name => ($use_with_onoff ? "MoveToLevelWithOnOff" : "MoveToLevel"),
+                        payload      => { level => $level, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
+                    }
+                };
+            }
         } else {
             $r /= 255; $g /= 255; $b /= 255;
             my $max = ($r > $g && $r > $b) ? $r : ($g > $b ? $g : $b);
@@ -417,6 +842,29 @@ sub MATTERDevice_Set($$@) {
                 else { $h = 60 * (($r - $g) / $diff + 4); }
             }
             $h += 360 if $h < 0;
+
+            # RGB contains a value/brightness component in addition to hue and
+            # saturation. ColorControl does not carry that component, so map it
+            # to LevelControl when the endpoint supports a suitable command.
+            my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
+            my $can_level = $use_with_onoff || MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
+            if ($can_level) {
+                my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
+                    ? AttrVal($name, "max_brightness", 254)
+                    : 254;
+                my $level = int($max * $max_level + 0.5);
+                $level_payload = {
+                    message_id => int(rand(100000) + 1),
+                    command    => "device_command",
+                    args       => {
+                        node_id      => $node_id,
+                        endpoint_id  => int($endpoint_id),
+                        cluster_id   => 0x0008,
+                        command_name => ($use_with_onoff ? "MoveToLevelWithOnOff" : "MoveToLevel"),
+                        payload      => { level => $level, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
+                    }
+                };
+            }
 
             $payload = {
                 message_id => int(rand(100000) + 1),
@@ -450,21 +898,28 @@ sub MATTERDevice_Set($$@) {
 
         my @paths;
 
-        # 1. Für jeden definierten Cluster einfach ein Wildcard (*) setzen
+        # Fachlich unterstützte Cluster vollständig lesen.
         foreach my $cluster_key (keys %MATTER_CLUSTERS) {
-            my $cluster_id = 0 + $cluster_key; 
+            my $cluster_id = 0 + $cluster_key;
             push @paths, "$endpoint_id/$cluster_id/*";
         }
-        
-        # 2. Falls Root-Device (Endpoint 0), auch die PartsList abfragen
+
+        # Globale Matter-Metadaten zusätzlich clusterübergreifend lesen. matter.js-server
+        # unterstützt Wildcards für Cluster- und Attribut-IDs. Dadurch werden auch die
+        # Capabilities bislang unbekannter Cluster erfasst, ohne deren Nutzdaten zu lesen.
+        foreach my $attr_id (keys %MATTER_GLOBAL_ATTRIBUTES) {
+            push @paths, "$endpoint_id/*/$attr_id";
+        }
+
+        # Falls Root-Device (Endpoint 0), auch die PartsList abfragen.
         if ($endpoint_id == 0) {
             push @paths, "0/29/3";
         }
 
-        # 3. Als Bulk-Array an den Server schicken
+        # Als Bulk-Array an den Server schicken.
         if (@paths) {
             my $msg_id = int(rand(100000) + 1);
-            $ioHash->{fhem}{helper}{pending_config}{$msg_id} = $node_id;
+            $ioHash->{helper}{pending_config}{$msg_id} = $node_id;
 
             my $config_payload = {
                 message_id   => $msg_id,
@@ -476,7 +931,7 @@ sub MATTERDevice_Set($$@) {
             };
             
             $ioHash->{fhem}{helper}{sendWS}->(encode_json($config_payload));
-            Log3 $name, 3, "MATTERDevice: Wildcard getConfig triggered for node $node_id, endpoint $endpoint_id (" . scalar(@paths) . " clusters queried).";
+            Log3 $name, 3, "MATTERDevice: Wildcard getConfig triggered for node $node_id, endpoint $endpoint_id (" . scalar(@paths) . " paths queried).";
         }
 
         return undef;
@@ -488,7 +943,7 @@ sub MATTERDevice_Set($$@) {
             args       => {
                 node_id      => $node_id,
                 endpoint_id  => int($endpoint_id),
-                cluster_id   => 768,
+                cluster_id   => 0x0008,
                 command_name => "MoveToClosestFrequency",
                 payload      => { frequency => int($args[0]) }
             }
@@ -519,10 +974,12 @@ sub MATTERDevice_Set($$@) {
         };
     }
 
-    return "No payload generated" if (!$payload);
+    return "No payload generated" if (!$payload && !$level_payload);
 
     if ($hash->{IODev} && $hash->{IODev}{fhem}{helper}{sendWS}) {
-        $hash->{IODev}{fhem}{helper}{sendWS}->(encode_json($payload));
+        my $sendWS = $hash->{IODev}{fhem}{helper}{sendWS};
+        $sendWS->(encode_json($level_payload)) if ($level_payload);
+        $sendWS->(encode_json($payload)) if ($payload);
     } else {
         return "No send function found in IODev for $name";
     }
@@ -542,20 +999,45 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     $attr_id    = hex($attr_id)    if $attr_id =~ /^0x/i;
 
     my $cluster = $MATTER_CLUSTERS{$cluster_id};
+
+    # Globale Matter-Attribute gelten für jeden Cluster, auch für Cluster, die das
+    # FHEM-Modul noch nicht fachlich kennt.
+    return if (MATTERDevice_ProcessGlobalAttribute($hash, $cluster_id, $attr_id, $value));
     return if !$cluster;
 
     my $attr_info = $cluster->{attributes}{$attr_id};
     return if !$attr_info;
 
     my $attr_name = $attr_info->{name};
-    my $feature   = $attr_info->{feature};
     my $is_reading = $attr_info->{is_reading} // 0;
     my $is_attribute = $attr_info->{is_attribute} // 0;
+    my $transform = $attr_info->{transform};
 
     # Bool-Handling für JSON (nur prüfen, wenn es überhaupt ein Objekt/Blessing ist)
     if (ref($value) && blessed($value) && $value->isa('JSON::PP::Boolean')) {
         $value = $value ? 1 : 0;
     }
+
+    return if !defined($value);
+    if ($transform && ref($transform) eq 'CODE') {
+        # Numeric transformations must not turn malformed values into zero.
+        if ($cluster_id != 0x0091) {
+            return if ref($value) || $value !~ /^-?(?:\d+(?:\.\d+)?|\.\d+)$/;
+        }
+        $value = $transform->($value);
+        return if !defined($value);
+    }
+
+    # Existing installations may depend on manually managed has_* attributes.
+    my %legacy_features = (
+        '6/0'   => 'has_onoff', '8/0'   => 'has_level', '8/4'   => 'has_frequency',
+        '258/0' => 'has_wc',    '258/3' => 'has_position_lift',
+        '258/4' => 'has_position_tilt', '257/0' => 'has_lock',
+        '768/0' => 'has_hue',   '768/1' => 'has_saturation',
+        '768/3' => 'has_xy',    '768/4' => 'has_xy', '768/7' => 'has_ct',
+    );
+    my $legacy_flag = $legacy_features{"$cluster_id/$attr_id"};
+    MATTERDevice_SetAttributeIfNotExists($name, $legacy_flag, 1) if $legacy_flag;
 
     readingsBeginUpdate($hash);
 
@@ -563,18 +1045,6 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     if ($cluster_id == 6 && $attr_id == 0) {
         my $state_val = $value ? "on" : "off";
         readingsBulkUpdate($hash, "state", $state_val);
-    }
-    # Spezieller Fall: Commands Accepted (global für alle Cluster mit 0xFFF9)
-    elsif ($attr_id == 0xFFF9 && ref($value) eq 'ARRAY') {
-        for my $cmd_id (@{$value}) {
-            my $cmd_info = $cluster->{commands}{$cmd_id};
-            if ($cmd_info) {
-                my $feature = $cmd_info->{feature};
-                if (defined($feature)) {
-                    MATTERDevice_SetAttributeIfNotExists($name, $feature, 1);
-                }
-            }
-        }
     }
     # Alle anderen Werte direkt als Reading speichern
     elsif (defined($attr_name)) {
@@ -585,16 +1055,19 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
             MATTERDevice_SetAttributeIfNotExists($name, $attr_name, $value);
         }
         if ($attr_name eq "brightness") {
-            my $max_level = AttrVal($name, "max_brightness", 254);
+            # Während getConfig wird der Capability-Cache vor dem Neuaufbau geleert.
+            # Attribute aus dem Result-Hash haben keine garantierte Reihenfolge. Solange
+            # AttributeList noch nicht verarbeitet wurde, den bereits bekannten Wert nutzen.
+            my $attribute_list = $hash->{helper}{capabilities}{0x0008}{attribute_list};
+            my $max_level = (
+                ref($attribute_list) ne 'HASH' ||
+                MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
+            ) ? AttrVal($name, "max_brightness", 254) : 254;
             my $pct_value = int(int($value) * 100 / $max_level);
             readingsBulkUpdate($hash, "pct", $pct_value);
         }
     }
 
-    # Wenn ein Feature mit diesem Attribut verknüpft ist -> Attribut setzen
-    if (defined($feature)) {
-        MATTERDevice_SetAttributeIfNotExists($name, $feature, 1);
-    }
 
     readingsEndUpdate($hash, 1);
 }
@@ -610,6 +1083,14 @@ sub MATTERDevice_Parse($$) {
     }
 
     my $my_endpoint = $hash->{endpoint_id} // 0;
+
+    # Availability gehört zum Matter-Node und wird daher nur am Root-Device geführt.
+    my $update_available = sub {
+        my ($available) = @_;
+        return if $my_endpoint != 0;
+        my $available_value = $available ? "true" : "false";
+        readingsSingleUpdate($hash, "available", $available_value, 1);
+    };
     
     # Hilfs-Subroutine zur internen Weiterleitung an Root oder Child
     my $route_attribute = sub {
@@ -637,6 +1118,18 @@ sub MATTERDevice_Parse($$) {
 
     # 1. ANTWORT AUF GETCONFIG (enthält "result")
     if (exists $decoded->{result} && ref($decoded->{result}) eq 'HASH') {
+        # getConfig synchronisiert die Capability-Metadaten der in der Antwort
+        # enthaltenen Endpoints vollständig. Alte Cluster-/Command-Daten dürfen
+        # nicht erhalten bleiben, wenn sie im aktuellen Datenmodell verschwunden sind.
+        my %result_endpoints;
+        foreach my $path (keys %{$decoded->{result}}) {
+            $result_endpoints{$1} = 1 if ($path =~ m{^(\d+)/(\d+)/(\d+)$});
+        }
+        foreach my $ep (keys %result_endpoints) {
+            my $target_hash = ($ep == $my_endpoint) ? $hash : MATTERDevice_GetOrCreateChild($hash, $ep);
+            delete $target_hash->{helper}{capabilities} if ($target_hash);
+        }
+
         while (my ($path, $value) = each %{$decoded->{result}}) {
             if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
                 $route_attribute->($1, $2, $3, $value);
@@ -645,7 +1138,18 @@ sub MATTERDevice_Parse($$) {
         return;
     }
 
-    # 2. LIVE UPDATES (event == 'attribute_updated')
+    # 2. NODE UPDATES (u.a. Availability)
+    if (exists $decoded->{event} && $decoded->{event} eq 'node_updated' && ref($decoded->{data}) eq 'HASH') {
+        my $node = $decoded->{data};
+        my $node_id = $node->{node_id};
+        if (defined($node_id) && $hash->{node_id} eq $node_id && exists($node->{available})) {
+            $update_available->($node->{available});
+            Log3 $name, 4, "MATTERDevice: Node $node_id availability = " . ($node->{available} ? "true" : "false");
+        }
+        return;
+    }
+
+    # 3. LIVE UPDATES (event == 'attribute_updated')
     if (exists $decoded->{event} && $decoded->{event} eq 'attribute_updated' && ref($decoded->{data}) eq 'ARRAY') {
         my ($node_id, $attribute_path, $value) = @{$decoded->{data}};
         if ($attribute_path =~ m{^(\d+)/(\d+)/(\d+)$}) {
@@ -655,14 +1159,18 @@ sub MATTERDevice_Parse($$) {
         return;
     }
 
-    # 3. INITIAL DISCOVER (node_id + attributes map)
+    # 4. INITIAL DISCOVER / START_LISTENING (node_id + attributes/availability)
     my $node_id    = $decoded->{node_id};
     my $attributes = $decoded->{attributes};
     
-    if ($node_id && $attributes && $hash->{node_id} eq $node_id) {
-        while (my ($path, $value) = each %{$attributes}) {
-            if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
-                $route_attribute->($1, $2, $3, $value);
+    if (defined($node_id) && $hash->{node_id} eq $node_id) {
+        $update_available->($decoded->{available}) if exists($decoded->{available});
+
+        if ($attributes && ref($attributes) eq 'HASH') {
+            while (my ($path, $value) = each %{$attributes}) {
+                if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
+                    $route_attribute->($1, $2, $3, $value);
+                }
             }
         }
     }
@@ -672,51 +1180,85 @@ sub MATTERDevice_GetSetList($) {
     my ($hash) = @_;
     my $name = $hash->{NAME};
     my @list;
-    
-    push(@list, "on:noArg", "off:noArg", "toggle:noArg") if (AttrVal($name, "has_onoff", 0));
-    
-    if (AttrVal($name, "has_level", 0)) {
-        my $max_level = AttrVal($name, "max_brightness", 254);
-        push(@list, "brightness:slider,0,1,$max_level");
-        push(@list, "pct:slider,0,1,100");
-    }
-    
-    if (AttrVal($name, "has_ct", 0)) {
-        my $min_mired = AttrVal($name, "color_temp_min", 153);
-        my $max_mired = AttrVal($name, "color_temp_max", 500);
-        push(@list, "ct:colorpicker,CT,$min_mired,1,$max_mired");
+    my %seen;
+
+    # Mehrere Matter-Cluster können dieselbe FHEM-Semantik anbieten (z.B. on/off).
+    # Im Set-Dialog soll jeder FHEM-Befehl trotzdem nur einmal erscheinen.
+    my $add = sub {
+        my ($entry) = @_;
+        my ($cmd_name) = split(':', $entry, 2);
+        return if ($seen{$cmd_name}++);
+        push @list, $entry;
+    };
+
+    $add->("on:noArg") if (
+        MATTERDevice_CommandSupported($hash, 0x0006, 0x01) ||
+        MATTERDevice_CommandSupported($hash, 0x0102, 0x00)
+    );
+    $add->("off:noArg") if (
+        MATTERDevice_CommandSupported($hash, 0x0006, 0x00) ||
+        MATTERDevice_CommandSupported($hash, 0x0102, 0x01)
+    );
+    $add->("toggle:noArg") if (MATTERDevice_CommandSupported($hash, 0x0006, 0x02));
+
+    my $can_level =
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x04) ||
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
+    if ($can_level) {
+        my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
+            ? AttrVal($name, "max_brightness", 254)
+            : 254;
+        $add->("brightness:slider,0,1,$max_level");
+        $add->("pct:slider,0,1,100");
     }
 
-    if (AttrVal($name, "has_frequency", 0)) {
-        my $min_freq = AttrVal($name, "min_frequency", 50);
-        my $max_freq = AttrVal($name, "max_frequency", 60);
-        push(@list, "frequency:slider,$min_freq,1,$max_freq");
+    if (MATTERDevice_CommandSupported($hash, 0x0300, 0x0A)) {
+        my $min_mired = MATTERDevice_AttributeUsable($hash, 0x0300, 0x400B)
+            ? AttrVal($name, "color_temp_min", 153)
+            : 153;
+        my $max_mired = MATTERDevice_AttributeUsable($hash, 0x0300, 0x400C)
+            ? AttrVal($name, "color_temp_max", 500)
+            : 500;
+        $add->("ct:colorpicker,CT,$min_mired,1,$max_mired");
     }
 
-    if (AttrVal($name, "has_lighting",0)) {
-        push(@list, $MATTER_CLUSTERS{0x0006}{commands}{0x40}{set_list});
-        push(@list, $MATTER_CLUSTERS{0x0006}{commands}{0x41}{set_list});
-        push(@list, $MATTER_CLUSTERS{0x0006}{commands}{0x42}{set_list});
-    }
-    
-    if (AttrVal($name, "has_wt", 0)) {
-        push(@list, "on:noArg", "off:noArg", "stop:noArg");
-    }
-
-    if (AttrVal($name, "has_position_lift", 0)) {
-        push(@list, "pct:slider,0,1,100");
-    }
-    if (AttrVal($name, "has_position_tilt", 0)) {
-        push(@list, "tilt:slider,0,1,100");
+    if (MATTERDevice_CommandSupported($hash, 0x0008, 0x08)) {
+        my $min_freq = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0005)
+            ? AttrVal($name, "min_frequency", 50)
+            : 50;
+        my $max_freq = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0006)
+            ? AttrVal($name, "max_frequency", 60)
+            : 60;
+        $add->("frequency:slider,$min_freq,1,$max_freq");
     }
 
-    if (AttrVal($name, "has_lock", 0)) {
-        push(@list, "lock:noArg", "unlock:noArg");
+    $add->($MATTER_CLUSTERS{0x0006}{commands}{0x40}{set_list})
+        if (MATTERDevice_CommandSupported($hash, 0x0006, 0x40));
+    $add->($MATTER_CLUSTERS{0x0006}{commands}{0x41}{set_list})
+        if (MATTERDevice_CommandSupported($hash, 0x0006, 0x41));
+    $add->($MATTER_CLUSTERS{0x0006}{commands}{0x42}{set_list})
+        if (MATTERDevice_CommandSupported($hash, 0x0006, 0x42));
+
+    $add->("stop:noArg")
+        if (MATTERDevice_CommandSupported($hash, 0x0102, 0x02));
+    $add->("pct:slider,0,1,100")
+        if (MATTERDevice_CommandSupported($hash, 0x0102, 0x05));
+    $add->("tilt:slider,0,1,100")
+        if (MATTERDevice_CommandSupported($hash, 0x0102, 0x08));
+
+    $add->("lock:noArg")
+        if (MATTERDevice_CommandSupported($hash, 0x0101, 0x00));
+    $add->("unlock:noArg")
+        if (MATTERDevice_CommandSupported($hash, 0x0101, 0x01));
+
+    if (
+        MATTERDevice_CommandSupported($hash, 0x0300, 0x06) ||
+        MATTERDevice_CommandSupported($hash, 0x0300, 0x07)
+    ) {
+        $add->("rgb:colorpicker,RGB");
     }
 
-    push(@list, "rgb:colorpicker,RGB") if (AttrVal($name, "has_color", 0) || AttrVal($name, "has_xy", 0) || AttrVal($name, "has_hue", 0));
-    push(@list, "getConfig:noArg");
-    
+    $add->("getConfig:noArg");
     return @list;
 }
 
@@ -834,6 +1376,16 @@ rooms and attributes during node synchronization.</p>
       the Matter server; <code>removed</code> means it was decommissioned or is
       missing from a complete server snapshot. Neither value is a reachability
       or availability indication.</li>
+  <li><b>Reading available (root only):</b> <code>true</code>/<code>false</code>
+      reflects availability explicitly reported by the Matter server. Unlike
+      <code>matter_status</code>, it describes reachability rather than membership.</li>
+  <li><b>Capabilities:</b> Supported set commands use the Matter
+      <code>AcceptedCommandList</code>, <code>FeatureMap</code> and other cluster
+      metadata when available. Existing <code>has_*</code> values remain a fallback;
+      manually setting a feature flag to <code>0</code> disables that control.</li>
+  <li><b>New readings:</b> PowerSource, SmokeCO alarm, CO concentration, electrical
+      power and cumulative energy clusters, where the server supplies the
+      corresponding attributes.</li>
 </ul>
 <p>Only newly autocreated nodes/endpoints are assigned to room <code>Matter</code>.
 Decommissioned devices are retained in FHEM rather than automatically deleted.</p>
@@ -861,6 +1413,17 @@ bleiben bestehende Namen, Räume und Benutzerattribute erhalten.</p>
       auf dem Matter-Server vorhanden ist; <code>removed</code> bedeutet, dass er
       dort entfernt wurde oder in einer vollständigen Node-Liste fehlt. Das Reading
       zeigt nicht die physische Erreichbarkeit oder Verfügbarkeit an.</li>
+  <li><b>Reading available (nur Root):</b> <code>true</code>/<code>false</code>
+      zeigt die vom Matter-Server gemeldete Erreichbarkeit des Knotens an,
+      unabhängig von der Mitgliedschaft (<code>matter_status</code>).</li>
+  <li><b>Capabilities:</b> Unterstützte Set-Befehle werden nach Möglichkeit
+      anhand der Matter-Metadaten wie <code>AcceptedCommandList</code> und
+      <code>FeatureMap</code> bestimmt. Vorhandene <code>has_*</code>-Attribute
+      bleiben als Fallback erhalten; ein manuelles <code>0</code> deaktiviert
+      die jeweilige Funktion.</li>
+  <li><b>Weitere Readings:</b> PowerSource, SmokeCO-Alarm,
+      Kohlenmonoxidkonzentration, elektrische Leistung und kumulierte Energie,
+      soweit die Geräte die jeweiligen Attribute liefern.</li>
 </ul>
 <p>Nur neu automatisch erzeugte Geräte werden dem Raum <code>Matter</code>
 zugeordnet. Entfernte Geräte bleiben in FHEM erhalten.</p>

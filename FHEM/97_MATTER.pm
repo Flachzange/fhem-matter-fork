@@ -523,6 +523,19 @@ sub MATTER_ProcessNode($$) {
     if (ref($node->{attributes}) eq 'HASH') {
         MATTERDevice_Parse($root, encode_json({ node_id => $node_id, attributes => $node->{attributes} }));
     }
+    # Physical availability is node-wide, unlike matter_status (server membership).
+    # Only update it when the server actually supplies a boolean value.
+    if (exists $node->{available}) {
+        my $available = $node->{available};
+        my $valid_boolean = defined($available) &&
+            ((!ref($available) && $available =~ /^(?:0|1)$/) ||
+             ref($available) =~ /Boolean$/);
+        if ($valid_boolean) {
+            my $value = $available ? 'true' : 'false';
+            readingsSingleUpdate($root, 'available', $value, 1)
+                if ReadingsVal($root->{NAME}, 'available', '') ne $value;
+        }
+    }
     MATTER_SetNodeStatus($hash, $node_id, 'present');
     return 1;
 }
@@ -730,7 +743,9 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
 <p>Newly created logical devices default to room <code>Matter</code>; existing FHEM
 names, rooms and user attributes are retained. A removed node is marked with
 <code>matter_status=removed</code> rather than deleted. This status describes node
-membership on the server, not physical device availability. Incoming WebSocket frames
+membership on the server, not physical device availability. The root-only
+<code>available</code> reading reflects a boolean availability report from the
+server, without polling. Incoming WebSocket frames
 larger than 32 MiB are rejected and trigger a reconnect.</p>
 
 =end html
@@ -758,7 +773,9 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
 Vorhandene Namen, Räume und Benutzerattribute bleiben unverändert. Entfernte
 Nodes werden mit <code>matter_status=removed</code> markiert und nicht automatisch
 gelöscht. Dieses Reading beschreibt die Mitgliedschaft auf dem Matter-Server,
-nicht die physische Erreichbarkeit des Geräts. Eingehende WebSocket-Frames
+nicht die physische Erreichbarkeit des Geräts. Das nur am Root geführte Reading
+<code>available</code> bildet die vom Server ausdrücklich gemeldete Erreichbarkeit ab;
+es erfolgt kein Polling. Eingehende WebSocket-Frames
 über 32 MiB werden abgewiesen; anschließend wird die Verbindung neu aufgebaut.</p>
 
 =end html
