@@ -30,6 +30,22 @@ sub RemoveInternalTimer { return; }
 sub InternalTimer { push @timers, { at => $_[0], callback => $_[1], owner => $_[2] }; }
 sub gettimeofday { return 1; }
 
+# FHEMWEB URL and HTML helpers as used by FW_detailFn.
+sub urlEncode {
+    my ($value) = @_;
+    $value =~ s/([^A-Za-z0-9_.~-])/sprintf('%%%02X', ord($1))/eg;
+    return $value;
+}
+sub FW_htmlEscape {
+    my ($value) = @_;
+    $value =~ s/&/&amp;/g;
+    $value =~ s/</&lt;/g;
+    $value =~ s/>/&gt;/g;
+    $value =~ s/"/&quot;/g;
+    $value =~ s/'/&#39;/g;
+    return $value;
+}
+
 # Model the relevant FHEM Define/Attr side effects, not just successful return values.
 sub AssignIoPort {
     my ($device) = @_;
@@ -79,6 +95,9 @@ sub CommandDelete {
 
 require './FHEM/97_MATTERDevice.pm';
 require './FHEM/97_MATTER.pm';
+MATTERDevice_Initialize($modules{MATTERDevice} ||= {});
+is($modules{MATTERDevice}{FW_detailFn}, 'MATTERDevice_FWDetail', 'FHEMWEB detail hook is registered');
+ok($modules{MATTERDevice}{FW_deviceOverview}, 'FHEMWEB standard DeviceOverview remains visible');
 
 for my $name (qw(ioA ioB)) {
     $defs{$name} = { NAME => $name, TYPE => 'MATTER', READINGS => {}, helper => {} };
@@ -101,14 +120,30 @@ is($root->{IODev}{NAME}, 'ioA', 'root IODev is correct');
 is($child->{IODev}{NAME}, 'ioA', 'endpoint IODev is correct');
 is($attr{MATTER_Hall_Light}{room}, 'Matter', 'new root gets default room');
 is($attr{MATTER_Hall_Light_EP1}{room}, 'Matter', 'new endpoint gets default room');
+is($attr{MATTER_Hall_Light}{group}, 'Node 42 (ioA)', 'root gets automatic node group');
+is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)', 'endpoint shares node group');
+my $initial_html = MATTERDevice_FWDetail('WEB', 'MATTER_Hall_Light', 'Matter');
+like($initial_html, qr/href="\?detail=MATTER_Hall_Light_EP1"/,
+    'root detail links to existing endpoint');
+ok(!defined(MATTERDevice_FWDetail('WEB', 'MATTER_Hall_Light_EP1', 'Matter')),
+    'endpoint detail does not show another endpoint overview');
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'state', ''), 'on', 'actual attribute path reaches endpoint');
 is($modules{MATTERDevice}{defptr}{'ioA:42'}, $root, 'root registered for owning IO');
 
 $attr{MATTER_Hall_Light}{room} = 'LivingRoom';
+$attr{MATTER_Hall_Light}{group} = 'My custom group';
+$attr{MATTER_Hall_Light_EP1}{group} = 'My custom endpoint group';
 my $count = count_devices();
 MATTER_ProcessNodeList($defs{ioA}, [node(42, 'Different server label')], 'get_nodes');
 is(count_devices(), $count, 'repeated snapshot does not duplicate devices');
 is($attr{MATTER_Hall_Light}{room}, 'LivingRoom', 'existing room is preserved');
+is($attr{MATTER_Hall_Light}{group}, 'My custom group', 'custom root group is not overwritten');
+is($attr{MATTER_Hall_Light_EP1}{group}, 'My custom endpoint group',
+    'custom endpoint group is not overwritten');
+delete $attr{MATTER_Hall_Light_EP1}{group};
+MATTER_ProcessNode($defs{ioA}, node(42, 'Still same node'));
+is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)',
+    'discovery backfills missing group on existing endpoint');
 
 delete $defs{MATTER_Hall_Light};
 $root->{NAME} = 'ManuallyRenamedRoot';
@@ -133,6 +168,13 @@ ok($other_root, 'same numeric node ID may exist on another IODev');
 is($modules{MATTERDevice}{defptr}{'ioA:42'}, $root, 'other IO root registry restored after temporary AssignIoPort');
 is($modules{MATTERDevice}{defptr}{'ioB:42'}, $other_root, 'new IO root registry assigned');
 is($defs{MATTER_Other_IO_light_EP1}{IODev}{NAME}, 'ioB', 'new endpoint binds to matching IO');
+is($attr{MATTER_Other_IO_light}{group}, 'Node 42 (ioB)',
+    'same node ID under another IO gets a different group');
+is($attr{MATTER_Other_IO_light_EP1}{group}, 'Node 42 (ioB)',
+    'other IO endpoint shares only its own group');
+my $io_a_html = MATTERDevice_FWDetail('WEB', 'ManuallyRenamedRoot', 'Matter');
+unlike($io_a_html, qr/MATTER_Other_IO_light_EP1/,
+    'root details exclude endpoints belonging to another IO');
 
 MATTER_ProcessNodeList($defs{ioA}, [], 'get_nodes');
 is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'removed', 'missing node marked removed');
@@ -164,6 +206,32 @@ MATTER_ProcessNode($defs{ioB}, node(77, 'IOFailure'));
 ok(!exists($defs{MATTER_IOFailure}), 'failed root IODev assignment rolls back new device');
 ok(!exists($modules{MATTERDevice}{defptr}{'ioB:77'}), 'failed assignment does not claim target IO');
 $fail_io_for = '';
+
+# Multiple endpoints are sorted numerically; links use current names after rename.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 42, name => 'Multi Outlet',
+    attributes => { '3/6/0' => JSON::true, '1/6/0' => JSON::true,
+                    '2/6/0' => JSON::false },
+});
+my $multiple_html = MATTERDevice_FWDetail('WEB', 'ManuallyRenamedRoot', 'Matter');
+like($multiple_html, qr/MATTER_Hall_Light_EP1.*MATTER_Hall_Light_EP2.*MATTER_Hall_Light_EP3/s,
+    'endpoint links are ordered by numeric endpoint ID');
+is($attr{MATTER_Hall_Light_EP2}{group}, 'Node 42 (ioA)',
+    'new additional endpoint automatically joins node group');
+
+my $old_child_name = $child->{NAME};
+delete $defs{$old_child_name};
+my $new_child_name = 'Renamed&Endpoint';
+$child->{NAME} = $new_child_name;
+$defs{$new_child_name} = $child;
+$attr{$new_child_name} = delete $attr{$old_child_name};
+my $renamed_html = MATTERDevice_FWDetail('WEB', 'ManuallyRenamedRoot', 'Matter');
+like($renamed_html, qr/Renamed&amp;Endpoint/, 'endpoint link label is HTML-escaped');
+like($renamed_html, qr/\?detail=Renamed%26Endpoint/, 'endpoint link target is URL-encoded');
+unlike($renamed_html, qr/\?detail=MATTER_Hall_Light_EP1/,
+    'stale endpoint name is not linked');
+MATTER_ProcessNode($defs{ioA}, node(42, 'Multi Outlet'));
+is($defs{$new_child_name}, $child, 'renamed endpoint stays attached after discovery');
 
 # Real TCP byte-stream behavior: HTTP upgrade followed by a split >64 KiB WS frame.
 my ($client, $server);
