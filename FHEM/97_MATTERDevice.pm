@@ -1136,7 +1136,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         if $cluster_id == 0x0028 && $attr_id == 0x0003 && ($hash->{endpoint_id} // 0) == 0;
 }
 
-sub MATTERDevice_Parse($) {
+sub MATTERDevice_Parse($ $) {
     my ($hash, $data) = @_;
     my $name = $hash->{NAME};
 
