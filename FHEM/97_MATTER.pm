@@ -519,6 +519,7 @@ sub MATTER_ProcessNode($$) {
         Log3 $io_name, 3, "MATTER: Created root device $device_name for node $node_id";
     }
     $modules{MATTERDevice}{defptr}{$root_key} = $root;
+    MATTERDevice_EnsureNodeGroup($root);
 
     if (ref($node->{attributes}) eq 'HASH') {
         MATTERDevice_Parse($root, encode_json({ node_id => $node_id, attributes => $node->{attributes} }));
