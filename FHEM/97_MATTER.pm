@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.15 15.11.2026";
+my $MATTER_version = "V0.16 15.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -489,6 +489,16 @@ sub MATTER_Close($) {
     Log3 $name, 4, "[$name] Connection closed (was $previous)" if defined($previous);
     readingsSingleUpdate($hash, 'state', 'disconnected', 1)
         if ReadingsVal($name, 'state', '') ne 'disconnected';
+    # A lost IO connection invalidates current reachability, but not the last
+    # server-reported 'available' reading or any endpoint's device state.
+    foreach my $device (values %defs) {
+        next unless ($device->{TYPE} // '') eq 'MATTERDevice' &&
+                    ($device->{endpoint_id} // 0) == 0;
+        my $owner = $device->{IODev};
+        next unless $owner ? $owner eq $hash
+                           : AttrVal($device->{NAME}, 'IODev', '') eq $name;
+        MATTERDevice_SetRootState($device, 'unknown');
+    }
     if ($active) {
         MATTER_CommissioningReadings($hash, 'interrupted', $active->{mode}, '',
             MATTER_CommissioningDuration($active->{started_at}),
@@ -753,8 +763,16 @@ sub MATTER_SetNodeStatus($$$) {
         next unless ($device->{TYPE} // '') eq 'MATTERDevice';
         next unless defined($device->{node_id}) && $device->{node_id} eq $node_id;
         next unless $device->{IODev} && $device->{IODev}{NAME} eq $io_name;
-        next if ReadingsVal($device->{NAME}, 'matter_status', '') eq $status;
-        readingsSingleUpdate($device, 'matter_status', $status, 1);
+        readingsSingleUpdate($device, 'matter_status', $status, 1)
+            if ReadingsVal($device->{NAME}, 'matter_status', '') ne $status;
+        next unless ($device->{endpoint_id} // 0) == 0;
+        if ($status eq 'removed') {
+            MATTERDevice_SetRootState($device, 'removed');
+        } elsif ($status eq 'present' &&
+                 ReadingsVal($device->{NAME}, 'state', '') eq 'removed') {
+            # Reappearance alone does not prove physical reachability.
+            MATTERDevice_SetRootState($device, 'unknown');
+        }
     }
 }
 
@@ -869,21 +887,12 @@ sub MATTER_ProcessNode($$) {
         Log3 $io_name, 3, "MATTER: Created root device $device_name for node $node_id";
     }
     $modules{MATTERDevice}{defptr}{$root_key} = $root;
-    # Reconcile roots already defined before this module was updated/reloaded.
-    MATTERDevice_EnsureRootStateFormat($root);
     MATTERDevice_EnsureTypeGroup($root);
 
-    # Apply the reported node availability before endpoint creation to avoid
-    # briefly inheriting an outdated value during discovery.
-    if (exists $node->{available}) {
-        my $available = $node->{available};
-        my $boolean = MATTERDevice_NormalizeBoolean($available);
-        if (defined $boolean) {
-            my $value = $boolean ? 'true' : 'false';
-            readingsSingleUpdate($root, 'available', $value, 1)
-                if ReadingsVal($root->{NAME}, 'available', '') ne $value;
-        }
-    }
+    # Apply only a fresh valid server report. An absent field must not revive
+    # persisted availability after IO reconnect.
+    MATTERDevice_UpdateAvailability($root, $node->{available})
+        if exists $node->{available};
     if (ref($node->{attributes}) eq 'HASH') {
         MATTERDevice_Parse($root, encode_json({ node_id => $node_id, attributes => $node->{attributes} }));
     }
