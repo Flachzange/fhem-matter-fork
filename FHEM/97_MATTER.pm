@@ -889,12 +889,14 @@ sub MATTER_ProcessNode($$) {
     $modules{MATTERDevice}{defptr}{$root_key} = $root;
     MATTERDevice_EnsureTypeGroup($root);
 
-    # Apply only a fresh valid server report. An absent field must not revive
-    # persisted availability after IO reconnect.
-    MATTERDevice_UpdateAvailability($root, $node->{available})
-        if exists $node->{available};
-    if (ref($node->{attributes}) eq 'HASH') {
-        MATTERDevice_Parse($root, encode_json({ node_id => $node_id, attributes => $node->{attributes} }));
+    # Parse node-wide availability and endpoint attributes through the same
+    # device path. Missing availability never revives stale persisted values.
+    if (exists($node->{available}) || ref($node->{attributes}) eq 'HASH') {
+        my %payload = (node_id => $node_id);
+        $payload{available} = $node->{available} if exists($node->{available});
+        $payload{attributes} = $node->{attributes}
+            if ref($node->{attributes}) eq 'HASH';
+        MATTERDevice_Parse($root, encode_json(\%payload));
     }
     # Synchronize already defined endpoints even without endpoint attributes.
     foreach my $child (MATTERDevice_NodeChildren($root)) {
