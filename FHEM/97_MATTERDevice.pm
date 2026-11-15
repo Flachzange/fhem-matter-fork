@@ -346,6 +346,17 @@ sub MATTERDevice_Initialize($) {
     $hash->{MatchList} = { "1" => ".*" };
 }
 
+# A root is an administrative node, so its default display is reachability,
+# not the endpoint-specific state. Explicit FHEM user formatting takes priority.
+sub MATTERDevice_EnsureRootStateFormat($) {
+    my ($hash) = @_;
+    return unless ($hash->{endpoint_id} // 0) == 0;
+    my $name = $hash->{NAME};
+    return if defined AttrVal($name, 'stateFormat', undef);
+    my $error = CommandAttr(undef, "$name stateFormat available");
+    Log3 $name, 3, "MATTERDevice: Cannot set root stateFormat on $name: $error" if $error;
+}
+
 sub MATTERDevice_Define($$) {
     my ($hash, $def) = @_;
     my @a = split("[ \t]+", $def);
@@ -383,6 +394,7 @@ sub MATTERDevice_Define($$) {
         AssignIoPort($hash);
         my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
         $modules{MATTERDevice}{defptr}{"$io_name:$node_id"} = $hash;
+        MATTERDevice_EnsureRootStateFormat($hash);
     }
     Log3 $name, 3, "MATTERDevice: Defined node_id $node_id for $name";
     return undef;
@@ -1682,6 +1694,11 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
   <li><b>Attributes:</b> <code>has_onoff</code>, <code>has_level</code>,
       <code>has_ct</code>, <code>has_xy</code> and other capability flags;
       existing user overrides are respected.</li>
+  <li><b>Root display:</b> Root nodes default to
+      <code>stateFormat available</code>, including existing roots without a
+      custom <code>stateFormat</code>. Endpoints retain their own state display;
+      user-defined formatting is never replaced. The displayed availability is
+      the last server report, not proof of a live connection to the Matter server.</li>
   <li><b>Reading matter_status:</b> <code>present</code> means the node exists on
       the Matter server; <code>removed</code> means it was decommissioned or is
       missing from a complete server snapshot. Neither value is a reachability
@@ -1750,6 +1767,11 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
   <li><b>Attribute:</b> <code>has_onoff</code>, <code>has_level</code>,
       <code>has_ct</code>, <code>has_xy</code> und weitere Fähigkeitsattribute;
       vorhandene Benutzervorgaben werden nicht überschrieben.</li>
+  <li><b>Root-Anzeige:</b> Root-Knoten erhalten standardmäßig
+      <code>stateFormat available</code>, auch bereits vorhandene Roots ohne
+      eigenes <code>stateFormat</code>. Endpunkte behalten ihre eigene Statusanzeige;
+      manuell gesetzte Formatierungen werden nicht überschrieben. Der Wert ist
+      die letzte Servermeldung, kein Beleg für eine aktuell bestehende Verbindung.</li>
   <li><b>Reading matter_status:</b> <code>present</code> bedeutet, dass der Knoten
       auf dem Matter-Server vorhanden ist; <code>removed</code> bedeutet, dass er
       dort entfernt wurde oder in einer vollständigen Node-Liste fehlt. Das Reading

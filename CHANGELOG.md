@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-15  MATTER IO/Device V0.15: show node-wide availability as the default FHEM Root status on newly defined and existing roots, preserve custom stateFormat and endpoint display, without inventing reachability when the Matter IO is disconnected.
+
 - 2026-11-15  MATTER IO/Device V0.14: preserve root/endpoint ownership on IO rename; suppress Wi-Fi password set events; reject invalid telemetry and disconnected commands; correlate requests; reconcile delayed reads and partial discovery events per attribute/node without discarding unrelated data; preserve credential readings on malformed replies; bound brightness percentages; validate WebSocket upgrade/fragmentation; simplify unused metadata and add focused regression tests.
 
 - 2026-11-15  MATTERDevice: show each endpoint's root through FHEM's native 'Probably associated with' links using persistent associatedWith readings; preserve user links and FHEM rename behavior.
