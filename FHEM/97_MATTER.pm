@@ -13,7 +13,7 @@ use Data::Dumper;
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.5 15.11.2026";
+my $MATTER_version = "V0.6 15.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -710,7 +710,7 @@ sub MATTER_ProcessNode($$) {
         Log3 $io_name, 3, "MATTER: Created root device $device_name for node $node_id";
     }
     $modules{MATTERDevice}{defptr}{$root_key} = $root;
-    MATTERDevice_EnsureNodeGroup($root);
+    MATTERDevice_EnsureTypeGroup($root);
 
     # Apply the reported node availability before endpoint creation to avoid
     # briefly inheriting an outdated value during discovery.
@@ -730,7 +730,7 @@ sub MATTER_ProcessNode($$) {
     }
     # Synchronize already defined endpoints even without endpoint attributes.
     foreach my $child (MATTERDevice_NodeChildren($root)) {
-        MATTERDevice_EnsureNodeGroup($child);
+        MATTERDevice_EnsureTypeGroup($child);
     }
     MATTERDevice_SyncNodeReadings($root);
     MATTER_SetNodeStatus($hash, $node_id, 'present');
