@@ -166,6 +166,7 @@ sub MATTER_Set {
         unless (MATTER_SendJsonCommand($hash, $payload)) {
             delete $hash->{helper}{pending_command}{$msg_id};
             delete $hash->{helper}{pending_snapshot_generation}{$msg_id};
+            delete $hash->{helper}{pending_snapshot_touched}{$msg_id};
             return "MATTER: Cannot send discovery request on $name";
         }
         return undef;
@@ -467,6 +468,7 @@ sub MATTER_Close($) {
     delete $hash->{helper}{pending_command};
     delete $hash->{helper}{pending_config};
     delete $hash->{helper}{pending_snapshot_generation};
+    delete $hash->{helper}{pending_snapshot_touched};
     delete $hash->{fhem}{helper}{pending_config};
     Log3 $name, 4, "[$name] Connection closed (was $previous)" if defined($previous);
     readingsSingleUpdate($hash, 'state', 'disconnected', 1)
@@ -596,6 +598,7 @@ sub MATTER_Read {
         $hash->{ws_status} = 'connected';
         $hash->{websocket} = 1;
         readingsSingleUpdate($hash, 'state', 'connected', 1);
+        return unless $hash->{CD} && ($hash->{ws_status} // '') eq 'connected';
         my $attempts = delete($hash->{helper}{connect_attempts}) // 1;
         Log3 $name, 3, "[$name] WebSocket connected (attempt $attempts); restarting node listening";
         InternalTimer(gettimeofday() + $MATTER_ping_interval,
@@ -858,11 +861,9 @@ sub MATTER_ProcessNode($$) {
     # briefly inheriting an outdated value during discovery.
     if (exists $node->{available}) {
         my $available = $node->{available};
-        my $valid_boolean = defined($available) &&
-            ((!ref($available) && $available =~ /^(?:0|1)$/) ||
-             ref($available) =~ /Boolean$/);
-        if ($valid_boolean) {
-            my $value = $available ? 'true' : 'false';
+        my $boolean = MATTERDevice_NormalizeBoolean($available);
+        if (defined $boolean) {
+            my $value = $boolean ? 'true' : 'false';
             readingsSingleUpdate($root, 'available', $value, 1)
                 if ReadingsVal($root->{NAME}, 'available', '') ne $value;
         }
@@ -882,7 +883,7 @@ sub MATTER_ProcessNode($$) {
 }
 
 sub MATTER_ProcessNodeList($$;$) {
-    my ($hash, $nodes, $source, $suppress_missing) = @_;
+    my ($hash, $nodes, $source, $suppress_missing, $skip_nodes) = @_;
     my $io_name = $hash->{NAME};
     my %present;
     # Validate the whole snapshot before performing any mutation.
@@ -895,6 +896,7 @@ sub MATTER_ProcessNodeList($$;$) {
     }
     foreach my $node (@$nodes) {
         $present{$node->{node_id}} = 1;
+        next if $skip_nodes && $skip_nodes->{$node->{node_id}};
         MATTER_ProcessNode($hash, $node);
     }
     return if $suppress_missing;
@@ -937,13 +939,22 @@ sub MATTER_ParseMessage($$) {
     if (exists $decoded->{event}) {
         my $event = $decoded->{event};
         if (($event eq 'node_added' || $event eq 'node_updated') && ref($decoded->{data}) eq 'HASH') {
-            ++$hash->{helper}{node_event_generation};
+            my $node_id = $decoded->{data}{node_id};
+            if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
+                ++$hash->{helper}{node_event_generation};
+                for my $pending_id (keys %{$hash->{helper}{pending_snapshot_generation} // {}}) {
+                    $hash->{helper}{pending_snapshot_touched}{$pending_id}{$node_id} = 1;
+                }
+            }
             MATTER_ProcessNode($hash, $decoded->{data});
             return;
         }
         if ($event eq 'node_removed') {
             if (defined($decoded->{data}) && !ref($decoded->{data}) && $decoded->{data} =~ /^\d+$/) {
                 ++$hash->{helper}{node_event_generation};
+                for my $pending_id (keys %{$hash->{helper}{pending_snapshot_generation} // {}}) {
+                    $hash->{helper}{pending_snapshot_touched}{$pending_id}{$decoded->{data}} = 1;
+                }
                 MATTER_SetNodeStatus($hash, $decoded->{data}, 'removed');
                 Log3 $name, 3, "MATTER: Node $decoded->{data} removed from server; FHEM devices retained";
             }
@@ -1007,10 +1018,12 @@ sub MATTER_ParseMessage($$) {
         my $cmd_type = delete $hash->{helper}{pending_command}{$msg_id};
         if ($cmd_type && ($cmd_type eq "get_nodes" || $cmd_type eq "start_listening")) {
             my $started = delete $hash->{helper}{pending_snapshot_generation}{$msg_id};
+            my $touched = delete $hash->{helper}{pending_snapshot_touched}{$msg_id};
             if (ref($decoded->{result}) eq 'ARRAY') {
                 my $suppress_missing = defined($started) &&
                     $started != ($hash->{helper}{node_event_generation} // 0);
-                MATTER_ProcessNodeList($hash, $decoded->{result}, $cmd_type, $suppress_missing);
+                MATTER_ProcessNodeList($hash, $decoded->{result}, $cmd_type,
+                    $suppress_missing, $touched);
             } else {
                 my $details = ref($decoded->{error}) eq 'HASH' ? $decoded->{error}{message} : undef;
                 $details //= $decoded->{details} // 'missing or invalid node list';
