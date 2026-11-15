@@ -67,9 +67,9 @@ my %MATTER_CLUSTERS = (
             0x0000 => { name => "state", is_reading => 0, is_attribute => 0},
         },
         commands   => {
-            0x00   => { name => "Off",    set_list => "off:noArg" },
-            0x01   => { name => "On",     set_list => "on:noArg", forbidden_features => ["off_only"] },
-            0x02   => { name => "Toggle", set_list => "toggle:noArg", forbidden_features => ["off_only"] },
+            0x00   => { name => "Off" },
+            0x01   => { name => "On", forbidden_features => ["off_only"] },
+            0x02   => { name => "Toggle", forbidden_features => ["off_only"] },
             0x40   => { name => "OffWithEffect", set_list => "off_with_effect:textField", required_features => ["lighting"] },
             0x41   => { name => "OnWithRecallGlobalScene", set_list => "on_with_recall_global_scene:noArg", required_features => ["lighting"] },
             0x42   => { name => "OnWithTimedOff", set_list => "on_with_timed_off:textField", required_features => ["lighting"] },
@@ -92,15 +92,15 @@ my %MATTER_CLUSTERS = (
             0x4000 => { name => "startup_current_level", is_reading => 1, is_attribute => 0, required_features => ["lighting"] },
         },
         commands   => {
-            0x00   => { name => "MoveToLevel", set_list => "move_to_level:slider,0,1,254 textField" },
-            0x01   => { name => "Move", set_list => "move:up,down slider,0,1,254 textField" },
-            0x02   => { name => "Step", set_list => "step:up, down slider,0,1,254 textField" },
-            0x03   => { name => "Stop", set_list => "stop:textField" },
-            0x04   => { name => "MoveToLevelWithOnOff", set_list => "move_to_level:slider,0,1,254 textField" },
-            0x05   => { name => "MoveWithOnOff", set_list => "move:up,down slider,0,1,254 textField" },
-            0x06   => { name => "StepWithOnOff", set_list => "step:up, down slider,0,1,254 textField" },
-            0x07   => { name => "StopWithOnOff", set_list => "stop:textField" },
-            0x08   => { name => "MoveToClosestFrequency", set_list => "move_to_frequency:textField", required_features => ["frequency"] },
+            0x00   => { name => "MoveToLevel" },
+            0x01   => { name => "Move" },
+            0x02   => { name => "Step" },
+            0x03   => { name => "Stop" },
+            0x04   => { name => "MoveToLevelWithOnOff" },
+            0x05   => { name => "MoveWithOnOff" },
+            0x06   => { name => "StepWithOnOff" },
+            0x07   => { name => "StopWithOnOff" },
+            0x08   => { name => "MoveToClosestFrequency", required_features => ["frequency"] },
         }
     },
     0x0028 => {
@@ -232,8 +232,8 @@ my %MATTER_CLUSTERS = (
             0x0021 => { name => "language", is_reading => 1, is_attribute => 0 },
         },
         commands   => {
-            0x00   => { name => "LockDoor",   set_list => "lock:noArg" },
-            0x01   => { name => "UnlockDoor", set_list => "unlock:noArg" },
+            0x00   => { name => "LockDoor" },
+            0x01   => { name => "UnlockDoor" },
         },
     },
     0x0102 => {
@@ -271,11 +271,11 @@ my %MATTER_CLUSTERS = (
 
         },
         commands => {
-            0x00   => { name => "UpOrOpen", set_list => "on:noArg" },
-            0x01   => { name => "DownOrClose", set_list => "off:noArg" },
-            0x02   => { name => "StopMotion", set_list => "stop:noArg" },
-            0x05   => { name => "GoToLiftPercentage", set_list => "pct:slider,0,1,100", required_features => ["lift"] },
-            0x08   => { name => "GoToTiltPercentage", set_list => "tilt:slider,0,1,100", required_features => ["tilt"] },
+            0x00   => { name => "UpOrOpen" },
+            0x01   => { name => "DownOrClose" },
+            0x02   => { name => "StopMotion" },
+            0x05   => { name => "GoToLiftPercentage", required_features => ["lift"] },
+            0x08   => { name => "GoToTiltPercentage", required_features => ["tilt"] },
         },
     },
     0x0300 => {
@@ -469,19 +469,9 @@ sub MATTERDevice_CapabilityContains($$$$) {
     return exists($list->{$id}) ? 1 : 0;
 }
 
-sub MATTERDevice_CommandGenerated($$$) {
-    my ($hash, $cluster_id, $command_id) = @_;
-    return MATTERDevice_CapabilityContains($hash, $cluster_id, "generated_commands", $command_id);
-}
-
 sub MATTERDevice_CommandAccepted($$$) {
     my ($hash, $cluster_id, $command_id) = @_;
     return MATTERDevice_CapabilityContains($hash, $cluster_id, "accepted_commands", $command_id);
-}
-
-sub MATTERDevice_EventSupported($$$) {
-    my ($hash, $cluster_id, $event_id) = @_;
-    return MATTERDevice_CapabilityContains($hash, $cluster_id, "event_list", $event_id);
 }
 
 sub MATTERDevice_AttributeSupported($$$) {
@@ -1008,9 +998,17 @@ sub MATTERDevice_Set($$@) {
             my $pending_reads = ($ioHash->{helper}{pending_config} //= {});
             foreach my $id (keys %$pending_reads) {
                 my $entry = $pending_reads->{$id};
-                delete $pending_reads->{$id}
+                if (ref($entry) eq 'HASH' &&
+                    gettimeofday() - ($entry->{created_at} // 0) > 120) {
+                    delete $pending_reads->{$id};
+                    next;
+                }
+                # Do not allow a second request for this endpoint to return
+                # an older configuration after a newer response was applied.
+                return "MATTER: getConfig already in progress for $name"
                     if ref($entry) eq 'HASH' &&
-                       gettimeofday() - ($entry->{created_at} // 0) > 120;
+                       $entry->{node_id} eq $node_id &&
+                       $entry->{endpoint_id} == $endpoint_id;
             }
             return "MATTER: Too many pending read requests"
                 if scalar(keys %$pending_reads) >= 128;
@@ -1195,6 +1193,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
             # the set slider and outgoing LevelControl commands.
             my $max_level = MATTERDevice_MaxBrightness($hash);
             my $pct_value = int($value * 100 / $max_level);
+            $pct_value = 100 if $pct_value > 100;
             readingsBulkUpdate($hash, "pct", $pct_value);
         }
     }
