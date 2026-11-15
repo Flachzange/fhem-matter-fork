@@ -13,7 +13,7 @@ use Data::Dumper;
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.9 15.11.2026";
+my $MATTER_version = "V0.10 15.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -730,6 +730,8 @@ sub MATTER_ProcessNode($$) {
     }
     # Synchronize already defined endpoints even without endpoint attributes.
     foreach my $child (MATTERDevice_NodeChildren($root)) {
+        # Display-only parent name: always derive it from the current root.
+        $child->{device} = $root->{NAME};
         MATTERDevice_EnsureTypeGroup($child);
     }
     MATTERDevice_SyncNodeReadings($root);
