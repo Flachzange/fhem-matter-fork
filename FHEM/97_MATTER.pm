@@ -896,6 +896,24 @@ sub MATTER_ProcessNode($$) {
     return 1;
 }
 
+# Only valid live attributes can supersede a valid earlier snapshot.
+# This is shared by node_updated and attribute_updated ordering checks.
+sub MATTER_ValidLiveAttribute {
+    my ($path, $value) = @_;
+    return 0 unless defined($path) && !ref($path) &&
+        $path =~ m{^\d+/(\d+)/(\d+)$} && defined($value);
+    my ($cluster, $attribute) = ($1, $2);
+    return defined(MATTERDevice_NormalizeBoolean($value))
+        if $cluster == 6 && $attribute == 0;
+    return !ref($value) && $value =~ /^\d+$/ && $value <= 254
+        if $cluster == 8 && $attribute == 0;
+    return ref($value) eq 'ARRAY'
+        if $attribute >= 0xFFF8 && $attribute <= 0xFFFB;
+    return !ref($value) && $value =~ /^\d+$/
+        if $attribute == 0xFFFC || $attribute == 0xFFFD;
+    return 1;
+}
+
 # Record only fields changed after a discovery request. Partial node_updated
 # events (for example availability-only) must not suppress unrelated endpoint
 # attributes from the older but otherwise useful full snapshot.
@@ -916,9 +934,8 @@ sub MATTER_RecordSnapshotEvent {
                defined(MATTERDevice_NormalizeBoolean($data->{available}));
         if (ref($data->{attributes}) eq 'HASH') {
             foreach my $path (keys %{$data->{attributes}}) {
-                next unless $path =~ m{^\d+/\d+/\d+$} &&
-                    defined($data->{attributes}{$path});
-                $changed->{attributes}{$path} = 1;
+                $changed->{attributes}{$path} = 1
+                    if MATTER_ValidLiveAttribute($path, $data->{attributes}{$path});
             }
         }
     }
@@ -1017,26 +1034,13 @@ sub MATTER_ParseMessage($$) {
         my ($node_id, undef, undef) = @{$decoded->{data}};
         if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
             my $path = $decoded->{data}[1];
-            if (defined($path) && !ref($path) && $path =~ m{^(\d+)/(\d+)/(\d+)$}) {
-                my ($endpoint, $cluster, $attribute) = ($1, $2, $3);
-                my $value = $decoded->{data}[2];
-                # Invalid live payloads cannot invalidate a valid read.
-                my $valid = defined($value);
-                $valid &&= defined(MATTERDevice_NormalizeBoolean($value))
-                    if $cluster == 6 && $attribute == 0;
-                $valid &&= !ref($value) && $value =~ /^\d+$/ && $value <= 254
-                    if $cluster == 8 && $attribute == 0;
-                $valid &&= ref($value) eq 'ARRAY'
-                    if $attribute >= 0xFFF8 && $attribute <= 0xFFFB;
-                $valid &&= !ref($value) && $value =~ /^\d+$/
-                    if $attribute == 0xFFFC || $attribute == 0xFFFD;
-                if ($valid) {
-                    foreach my $pending (values %{$hash->{helper}{pending_config} // {}}) {
-                        next unless ref($pending) eq 'HASH' &&
-                            $pending->{node_id} eq $node_id &&
-                            $pending->{endpoint_id} == $endpoint;
-                        $pending->{live_values}{$path} = $value;
-                    }
+            if (MATTER_ValidLiveAttribute($path, $decoded->{data}[2])) {
+                my ($endpoint) = split('/', $path);
+                foreach my $pending (values %{$hash->{helper}{pending_config} // {}}) {
+                    next unless ref($pending) eq 'HASH' &&
+                        $pending->{node_id} eq $node_id &&
+                        $pending->{endpoint_id} == $endpoint;
+                    $pending->{live_values}{$path} = $decoded->{data}[2];
                 }
             }
             # Wir suchen das Root-Device (Endpoint 0) exakt passend zu DIESEM IO und DIESER Node!
@@ -1067,8 +1071,9 @@ sub MATTER_ParseMessage($$) {
                         # Merge exactly the paths updated by a newer event.
                         # Parsing one complete result also rebuilds the current
                         # capability cache without losing the live metadata.
-                        @fresh{keys %{$pending->{live_values}}} =
-                            values %{$pending->{live_values}};
+                        for my $path (keys %{$pending->{live_values}}) {
+                            $fresh{$path} = $pending->{live_values}{$path};
+                        }
                     }
                     MATTERDevice_Parse($root_hash, encode_json({
                         message_id => $msg_id, result => \%fresh
