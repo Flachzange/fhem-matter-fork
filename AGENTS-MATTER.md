@@ -35,46 +35,34 @@
 - Treat pending reads, live updates, discovery snapshots, and node availability as separate sources of evidence. Reconcile event order and freshness deliberately rather than overwriting newer readings with late responses.
 - Do not silently add mandatory support for device classes or clusters merely because the Matter specification defines them. Extend mappings with focused tests and verified device/server evidence.
 
-## Regression checklist: historical failure modes
+## Matter-specific regression reminders
 
-Before approving **any Matter IO or device change**, inspect the actual current source
-and include focused negative-control coverage for the affected item. These are
-concrete regression cases, not a mandate for new generic frameworks or polling:
+These are recurring Matter integration failures. General security, lifecycle,
+validation and test-fidelity rules are already in `AGENTS.md`; do not duplicate
+them here. For relevant changes, test both the intended protection **and** that
+unrelated valid data is still processed.
 
-- **IO identity/lifecycle:** Test FHEM's actual `RenameFn` invocation and its
-  `IODev` attribute, root `defptr`, `%selectlist`, and pending timer effects.
-  A renamed IO must not duplicate a root during later discovery. Test reentrant
-  event notifications during `disable`/close: internal ownership must be set
-  before any reading/event publishes, and reconnect cannot defeat disable.
-- **Command acceptance:** A missing or failed WebSocket send must return a FHEM
-  error, not success. An accepted send is not a device acknowledgment. Ensure
-  shared `message_id` allocation avoids collisions across commands and
-  `pending_config`; check late, unsolicited, failed and disconnect responses.
-- **Asynchronous freshness:** A live `attribute_updated` event must not be
-  overwritten by a delayed `read_attribute` response. A late full-node
-  snapshot must not reverse a newer `node_added`/`node_removed` event.
-  Do not mutate partially through a malformed snapshot.
-- **Input validity:** Invalid JSON top-level values, objects where scalars are
-  expected, strings like `"false"`, null, malformed numbers, zero divisors
-  and invalid endpoint/attribute paths must not become valid device readings,
-  trigger commands, or crash FHEM. Preserve a prior known value if an update
-  is invalid; never manufacture a physical `off` or zero reading.
-- **WebSocket framing:** Distinguish split TCP data from actual WebSocket
-  continuation frames. Cover HTTP upgrade header and accept-key verification,
-  FIN/fragment sequencing, control frames, masking, sizes, partial writes,
-  timeout/FD cleanup and invalid opcodes.
-- **Secrets:** Check both logs **and FHEM's synthetic set events** for any
-  command accepting setup codes or network credentials. Verify the SetFn
-  `skipTrigger` return in FHEM list context. The command history and
-  unencrypted WebSocket remain a separate exposure to document accurately.
-- **Framework fidelity:** Verify FHEM core `CommandRename`,
-  `CommandAttr`, `DoSet` and reading-trigger order rather than trusting
-  simplified stubs. A stub lacking synchronous notify dispatch cannot
-  establish the absence of reentrant bugs.
-- **Documentation:** Reconcile `README.md`, both German/English commandrefs,
-  current changelog, version and updater manifest with actual source behavior.
-  Avoid stale feature proposals or describing mirrored endpoint readings as
-  root-only.
+- **IO identity and reentrancy:** An IO rename must preserve existing root and
+  endpoint identities, `IODev`, `defptr` and `%selectlist`, including after
+  discovery. Synchronous FHEM reading events cannot reopen a disabled IO.
+- **Request acceptance and secrets:** Distinguish socket queue acceptance from
+  server/device success. Reject disconnected/failed sends and correlate
+  message IDs. Prevent pairing codes and Wi-Fi passwords from entering FHEM's
+  synthetic `set` events as well as logs.
+- **Snapshot freshness without lost updates:** A delayed `getConfig` reply
+  must not overwrite a newer live attribute, but must retain unrelated
+  attributes and updated capability metadata. A partial `node_updated`
+  (such as `available` only) must not suppress the rest of a complete
+  discovery snapshot or removal of an *unrelated* missing node. Repeated
+  discovery requests must not grow unbounded pending state.
+- **Matter data integrity:** Reject invalid/null OnOff, level, metadata and
+  JSON shapes without manufacturing state changes; keep `pct` within 0–100
+  even when a device reports a level exceeding a configured maximum.
+  Malformed or rejected credential-list responses must preserve prior
+  credential readings.
+- **WebSocket correctness:** Distinguish split TCP reads from continuation
+  frames; check the HTTP accept key, FIN/control-frame rules, size limits
+  and cleanup on close. Verify these with independent protocol fixtures.
 
 ## Tests, review, and deployment
 
