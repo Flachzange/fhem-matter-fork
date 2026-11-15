@@ -357,7 +357,7 @@ sub MATTERDevice_EnsureRootStateFormat($) {
     Log3 $name, 3, "MATTERDevice: Cannot set root stateFormat on $name: $error" if $error;
 }
 
-sub MATTERDevice_Define($) {
+sub MATTERDevice_Define($$) {
     my ($hash, $def) = @_;
     my @a = split("[ \t]+", $def);
 
