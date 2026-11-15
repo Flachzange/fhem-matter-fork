@@ -148,6 +148,26 @@ sub CommandDelete {
     return undef;
 }
 
+# Model the relevant fhem.pl CommandRename side effect: existing
+# associatedWith readings automatically follow a renamed device.
+sub CommandRename {
+    my (undef, $command) = @_;
+    my ($old, $new) = split /\s+/, $command;
+    return 'Device missing' unless $defs{$old};
+    return 'Name exists' if $defs{$new};
+    $defs{$new} = delete $defs{$old};
+    $defs{$new}{NAME} = $new;
+    $attr{$new} = delete $attr{$old} if exists $attr{$old};
+    for my $device (values %defs) {
+        my $links = ReadingsVal($device->{NAME}, 'associatedWith', '');
+        next unless $links =~ /\b\Q$old\E\b/;
+        $links =~ s/\b\Q$old\E\b/$new/;
+        # FHEM uses setReadingsVal here, which does not publish an event.
+        $device->{READINGS}{associatedWith}{VAL} = $links;
+    }
+    return undef;
+}
+
 require './FHEM/97_MATTERDevice.pm';
 require './FHEM/97_MATTER.pm';
 
@@ -202,6 +222,13 @@ is($root->{STATE}, '???', 'root Define leaves default STATE for statefile restor
 is($child->{STATE}, '???', 'endpoint Define leaves default STATE for statefile restore');
 is($root->{IODev}{NAME}, 'ioA', 'root IODev is correct');
 is($child->{IODev}{NAME}, 'ioA', 'endpoint IODev is correct');
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'associatedWith', ''), 'MATTER_Hall_Light',
+   'new endpoint links to its root with FHEM native associatedWith reading');
+ok(!exists($root->{READINGS}{associatedWith}),
+   'root is not given an artificial self-association');
+my $initial_association_writes = $bulk_writes{MATTER_Hall_Light_EP1}{associatedWith};
+is($initial_association_writes, 1,
+   'endpoint association is written once during its initial synchronization');
 is($attr{MATTER_Hall_Light}{room}, 'Matter', 'new root gets default room');
 is($attr{MATTER_Hall_Light_EP1}{room}, 'Matter', 'new endpoint gets default room');
 is($attr{MATTER_Hall_Light}{group}, 'Matter Nodes', 'root gets shared administrative group');
@@ -219,6 +246,9 @@ $attr{MATTER_Hall_Light}{group} = 'Node 42 (ioA)';
 $attr{MATTER_Hall_Light_EP1}{group} = 'Node 42 (ioA)';
 $attr{MATTER_Hall_Light_EP1}{room} = 'EG Wohnzimmer';
 MATTER_ProcessNode($defs{ioA}, node(42, 'Hall Light'));
+is($bulk_writes{MATTER_Hall_Light_EP1}{associatedWith},
+   $initial_association_writes,
+   'repeated snapshots do not emit duplicate root association events');
 is($attr{MATTER_Hall_Light}{group}, 'Matter Nodes', 'legacy root group is migrated');
 is($attr{MATTER_Hall_Light_EP1}{group}, 'On/Off light', 'legacy endpoint group is migrated');
 is($attr{MATTER_Hall_Light_EP1}{room}, 'EG Wohnzimmer', 'type grouping does not move a device');
@@ -305,11 +335,24 @@ MATTER_ProcessNode($defs{ioA}, node(42, 'Still same node'));
 is($attr{MATTER_Hall_Light_EP1}{group}, 'On/Off light',
     'discovery restores a missing type group on an existing endpoint');
 
-delete $defs{MATTER_Hall_Light};
-$root->{NAME} = 'ManuallyRenamedRoot';
-$defs{ManuallyRenamedRoot} = $root;
-$attr{ManuallyRenamedRoot} = delete $attr{MATTER_Hall_Light}; # FHEM CommandRename moves attributes too.
+# User-managed associations remain intact when the module links the root.
+$child->{READINGS}{associatedWith}{VAL} = 'ExtraDevice,AnotherDevice';
+MATTER_ProcessNode($defs{ioA}, node(42, 'Same node with user links'));
+is(ReadingsVal($child->{NAME}, 'associatedWith', ''),
+   'ExtraDevice,AnotherDevice MATTER_Hall_Light',
+   'adding root association preserves existing comma-separated user references');
+my $association_writes = $bulk_writes{$child->{NAME}}{associatedWith};
+MATTER_ProcessNode($defs{ioA}, node(42, 'Repeated with user links'));
+is($bulk_writes{$child->{NAME}}{associatedWith}, $association_writes,
+   'multiple existing associatedWith entries do not trigger repeated events');
+is(CommandRename(undef, 'MATTER_Hall_Light ManuallyRenamedRoot'), undef,
+   'FHEM root rename succeeds without changing Matter IDs');
+is(ReadingsVal($child->{NAME}, 'associatedWith', ''),
+   'ExtraDevice,AnotherDevice ManuallyRenamedRoot',
+   'FHEM automatically rewrites associatedWith when the root is renamed');
 MATTER_ProcessNode($defs{ioA}, node(42, 'Yet another label'));
+is($bulk_writes{$child->{NAME}}{associatedWith}, $association_writes,
+   'discovery after rename does not re-add a stale root or duplicate the new one');
 is($defs{ManuallyRenamedRoot}, $root, 'renamed root reused by identity');
 is($defs{MATTER_Hall_Light_EP1}, $child, 'renamed root reuses existing endpoint');
 is($child->{device}, 'ManuallyRenamedRoot', 'endpoint parent internal updated after rename');
@@ -336,6 +379,9 @@ is($child->{DEF}, $child_before_modify, 'invalid modify rolls back the DEF');
 MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'Metadata only'});
 is($child->{device}, 'ManuallyRenamedRoot',
    'metadata-only discovery recovers display parent from node identity');
+is(ReadingsVal($child->{NAME}, 'associatedWith', ''),
+   'ExtraDevice,AnotherDevice ManuallyRenamedRoot',
+   'metadata-only discovery retains native root association after endpoint modify');
 is($defs{$child->{NAME}}, $child, 'reconfirmed endpoint does not get recreated');
 
 # Migration must work without any fresh endpoint attributes.
@@ -368,6 +414,11 @@ $preferred_io = 'ioA';
 MATTER_ProcessNode($defs{ioB}, node(42, 'Other IO light'));
 my $other_root = $defs{MATTER_Other_IO_light};
 ok($other_root, 'same numeric node ID may exist on another IODev');
+is(ReadingsVal('MATTER_Other_IO_light_EP1', 'associatedWith', ''),
+   'MATTER_Other_IO_light', 'second IO endpoint links only to its own root');
+is(ReadingsVal($child->{NAME}, 'associatedWith', ''),
+   'ExtraDevice,AnotherDevice ManuallyRenamedRoot',
+   'node with the same ID on another IO does not change existing root links');
 is($modules{MATTERDevice}{defptr}{'ioA:42'}, $root, 'other IO root registry restored after temporary AssignIoPort');
 is($modules{MATTERDevice}{defptr}{'ioB:42'}, $other_root, 'new IO root registry assigned');
 # The endpoint has the same node ID as an endpoint on ioB. After losing
