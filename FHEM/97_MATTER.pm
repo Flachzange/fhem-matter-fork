@@ -882,7 +882,7 @@ sub MATTER_ProcessNode($$) {
     return 1;
 }
 
-sub MATTER_ProcessNodeList($$;$) {
+sub MATTER_ProcessNodeList($$$;$$) {
     my ($hash, $nodes, $source, $suppress_missing, $skip_nodes) = @_;
     my $io_name = $hash->{NAME};
     my %present;
