@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.15 15.11.2026";
+my $MATTER_version = "V0.16 15.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -489,6 +489,16 @@ sub MATTER_Close($) {
     Log3 $name, 4, "[$name] Connection closed (was $previous)" if defined($previous);
     readingsSingleUpdate($hash, 'state', 'disconnected', 1)
         if ReadingsVal($name, 'state', '') ne 'disconnected';
+    # A lost IO connection invalidates current reachability, but not the last
+    # server-reported 'available' reading or any endpoint's device state.
+    foreach my $device (values %defs) {
+        next unless ($device->{TYPE} // '') eq 'MATTERDevice' &&
+                    ($device->{endpoint_id} // 0) == 0;
+        my $owner = $device->{IODev};
+        next unless $owner ? $owner eq $hash
+                           : AttrVal($device->{NAME}, 'IODev', '') eq $name;
+        MATTERDevice_SetRootState($device, 'unknown');
+    }
     if ($active) {
         MATTER_CommissioningReadings($hash, 'interrupted', $active->{mode}, '',
             MATTER_CommissioningDuration($active->{started_at}),
@@ -753,8 +763,16 @@ sub MATTER_SetNodeStatus($$$) {
         next unless ($device->{TYPE} // '') eq 'MATTERDevice';
         next unless defined($device->{node_id}) && $device->{node_id} eq $node_id;
         next unless $device->{IODev} && $device->{IODev}{NAME} eq $io_name;
-        next if ReadingsVal($device->{NAME}, 'matter_status', '') eq $status;
-        readingsSingleUpdate($device, 'matter_status', $status, 1);
+        readingsSingleUpdate($device, 'matter_status', $status, 1)
+            if ReadingsVal($device->{NAME}, 'matter_status', '') ne $status;
+        next unless ($device->{endpoint_id} // 0) == 0;
+        if ($status eq 'removed') {
+            MATTERDevice_SetRootState($device, 'removed');
+        } elsif ($status eq 'present' &&
+                 ReadingsVal($device->{NAME}, 'state', '') eq 'removed') {
+            # Reappearance alone does not prove physical reachability.
+            MATTERDevice_SetRootState($device, 'unknown');
+        }
     }
 }
 
@@ -869,23 +887,16 @@ sub MATTER_ProcessNode($$) {
         Log3 $io_name, 3, "MATTER: Created root device $device_name for node $node_id";
     }
     $modules{MATTERDevice}{defptr}{$root_key} = $root;
-    # Reconcile roots already defined before this module was updated/reloaded.
-    MATTERDevice_EnsureRootStateFormat($root);
     MATTERDevice_EnsureTypeGroup($root);
 
-    # Apply the reported node availability before endpoint creation to avoid
-    # briefly inheriting an outdated value during discovery.
-    if (exists $node->{available}) {
-        my $available = $node->{available};
-        my $boolean = MATTERDevice_NormalizeBoolean($available);
-        if (defined $boolean) {
-            my $value = $boolean ? 'true' : 'false';
-            readingsSingleUpdate($root, 'available', $value, 1)
-                if ReadingsVal($root->{NAME}, 'available', '') ne $value;
-        }
-    }
-    if (ref($node->{attributes}) eq 'HASH') {
-        MATTERDevice_Parse($root, encode_json({ node_id => $node_id, attributes => $node->{attributes} }));
+    # Parse node-wide availability and endpoint attributes through the same
+    # device path. Missing availability never revives stale persisted values.
+    if (exists($node->{available}) || ref($node->{attributes}) eq 'HASH') {
+        my %payload = (node_id => $node_id);
+        $payload{available} = $node->{available} if exists($node->{available});
+        $payload{attributes} = $node->{attributes}
+            if ref($node->{attributes}) eq 'HASH';
+        MATTERDevice_Parse($root, encode_json(\%payload));
     }
     # Synchronize already defined endpoints even without endpoint attributes.
     foreach my $child (MATTERDevice_NodeChildren($root)) {
@@ -1266,8 +1277,12 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
 names, rooms and user attributes are retained. A removed node is marked with
 <code>matter_status=removed</code> rather than deleted. This status describes node
 membership on the server, not physical device availability. The root and its endpoints mirror
-<code>available</code> when the server reports a valid node-wide boolean,
-without polling. The TCP/WebSocket handshake has a 10-second deadline;
+<code>available</code> when the server reports a valid node-wide boolean.
+The root <code>state</code> displays <code>online/offline</code> for confirmed
+availability, <code>removed</code> for absent server membership, and
+<code>unknown</code> after IO disconnect until a new server report arrives;
+endpoint states and last reported <code>available</code> values are preserved.
+There is no polling. The TCP/WebSocket handshake has a 10-second deadline;
 while connected, WebSocket Ping/Pong checks run every 30 seconds with a 15-second
 Pong deadline. Any connection failure triggers a new attempt after 30 seconds,
 without manual intervention. Numeric IPv4 addresses avoid blocking DNS lookup.
@@ -1329,8 +1344,12 @@ Vorhandene Namen, Räume und Benutzerattribute bleiben unverändert. Entfernte
 Nodes werden mit <code>matter_status=removed</code> markiert und nicht automatisch
 gelöscht. Dieses Reading beschreibt die Mitgliedschaft auf dem Matter-Server,
 nicht die physische Erreichbarkeit des Geräts. Das am Root und seinen Endpunkten geführte Reading
-<code>available</code> bildet die vom Server ausdrücklich gemeldete
-knotenweite Erreichbarkeit ab; es erfolgt kein Polling. TCP-Aufbau und WebSocket-Handshake haben zusammen
+<code>available</code> bildet die letzte ausdrücklich gemeldete knotenweite
+Erreichbarkeit ab. Der Root-<code>state</code> ist <code>online/offline</code>
+bei bestätigter Verfügbarkeit, <code>removed</code> bei Entfernung aus der
+Serverliste und <code>unknown</code> nach einem IO-Verbindungsverlust bis
+zur nächsten gültigen Servermeldung. Die technischen Readings und Endpunkt-
+Zustände bleiben erhalten; es erfolgt kein Polling. TCP-Aufbau und WebSocket-Handshake haben zusammen
 10 Sekunden Zeit. Danach prüfen Ping/Pong alle 30 Sekunden die Verbindung,
 wobei ein Pong spätestens nach weiteren 15 Sekunden eintreffen muss. Bei Fehlern
 erfolgt automatisch alle 30 Sekunden ein Wiederverbindungsversuch. Numerische

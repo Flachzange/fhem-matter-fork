@@ -5,7 +5,7 @@ use Test::More;
 use JSON qw(encode_json);
 use IO::Socket::INET;
 use Socket qw(AF_UNIX SOCK_STREAM PF_UNSPEC);
-use vars qw(%defs %attr %modules %selectlist $readingFnAttributes);
+use vars qw(%defs %attr %modules %selectlist $readingFnAttributes $init_done);
 
 BEGIN { $INC{'HttpUtils.pm'} = 1; } # No FHEM network stack is needed by these simulated callbacks.
 
@@ -21,6 +21,9 @@ sub Log3 { push @log, $_[2]; }
 sub AttrVal { return exists $attr{$_[0]}{$_[1]} ? $attr{$_[0]}{$_[1]} : $_[2]; }
 sub ReadingsVal {
     my ($name, $reading, $default) = @_;
+    return $default unless exists($defs{$name}) &&
+                           exists($defs{$name}{READINGS}) &&
+                           exists($defs{$name}{READINGS}{$reading});
     return $defs{$name}{READINGS}{$reading}{VAL} // $default;
 }
 sub readingsSingleUpdate {
@@ -216,31 +219,28 @@ MATTER_ProcessNodeList($defs{ioA}, [node(42, 'Hall Light')], 'start_listening');
 my $root = $defs{MATTER_Hall_Light};
 my $child = $defs{MATTER_Hall_Light_EP1};
 ok($root && $child, 'full snapshot creates root and endpoint');
-is($attr{MATTER_Hall_Light}{stateFormat}, 'available',
-   'new root defaults to displaying its availability reading');
+is($modules{MATTERDevice}{NotifyFn}, 'MATTERDevice_Notify',
+   'Matter devices register lifecycle notifications');
+is($root->{NOTIFYDEV}, 'global', 'root listens only to FHEM global lifecycle events');
+is($child->{NOTIFYDEV}, 'global', 'endpoint notification overhead is also limited to global events');
+ok(!exists($attr{MATTER_Hall_Light}{stateFormat}),
+   'new root does not need a stateFormat attribute');
 ok(!exists($attr{MATTER_Hall_Light_EP1}{stateFormat}),
    'endpoint display format is not overridden');
 ok(!exists($root->{READINGS}{available}),
-   'default root display does not fabricate a reachability reading');
-# CommandAttr is already modeled; repeated discovery must keep the user value.
+   'missing availability is not fabricated by default');
+ok(!exists($root->{READINGS}{state}),
+   'root Define during startup leaves statefile restoration undisturbed');
 is(CommandAttr(undef, 'MATTER_Hall_Light stateFormat Custom'), undef,
    'user can override root display');
 MATTER_ProcessNode($defs{ioA}, node(42, 'Repeated after user format'));
 is($attr{MATTER_Hall_Light}{stateFormat}, 'Custom',
-   'synchronization respects a custom root stateFormat');
+   'reconciliation respects a custom root stateFormat');
 is(CommandDeleteAttr(undef, 'MATTER_Hall_Light stateFormat'), undef,
    'user can remove custom root stateFormat');
-MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'Display migration'});
-is($attr{MATTER_Hall_Light}{stateFormat}, 'available',
-   'existing root missing stateFormat migrates during discovery');
-is(CommandDefine(undef, 'Standalone_Root MATTERDevice 999'), undef,
-   'manually defined root can be initialized without discovery');
-is($attr{Standalone_Root}{stateFormat}, 'available',
-   'root Define configures the display even before server discovery');
-ok(!exists($defs{Standalone_Root}{READINGS}{available}),
-   'root Define does not invent physical availability');
-is(CommandDelete(undef, 'Standalone_Root'), undef,
-   'standalone root test device is cleaned up');
+MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'Display default'});
+ok(!exists($attr{MATTER_Hall_Light}{stateFormat}),
+   'a missing root stateFormat stays absent during discovery');
 is($root->{DEF}, '42', 'root definition contains only the node ID');
 is($child->{DEF}, '42 1', 'endpoint definition contains no root FHEM name');
 my $legacy_define = CommandDefine(undef, 'Legacy_Endpoint MATTERDevice 42 9 Former_Root');
@@ -256,6 +256,42 @@ like(CommandDefine(undef, 'Invalid_Endpoint MATTERDevice 42 0') // '',
 # persisted display state only while that placeholder is untouched.
 is($root->{STATE}, '???', 'root Define leaves default STATE for statefile restore');
 is($child->{STATE}, '???', 'endpoint Define leaves default STATE for statefile restore');
+
+# FHEM emits INITIALIZED only after config and statefile are both restored.
+is(CommandAttr(undef, 'MATTER_Hall_Light stateFormat available'), undef,
+   'old V0.15 root format can be restored from FHEM configuration');
+$defs{global} = { NAME => 'global', CHANGED => ['INITIALIZED'] };
+$init_done = 1;
+MATTERDevice_Notify($root, $defs{global});
+ok(!exists($attr{MATTER_Hall_Light}{stateFormat}),
+   'INITIALIZED removes legacy auto stateFormat after config restoration');
+is(ReadingsVal('MATTER_Hall_Light', 'state', ''), 'unknown',
+   'INITIALIZED invalidates any stale root status');
+is(CommandAttr(undef, 'MATTER_Hall_Light stateFormat Custom'), undef,
+   'custom FHEM status formatting is supported');
+$defs{global}{CHANGED} = ['REREADCFG'];
+MATTERDevice_Notify($root, $defs{global});
+is($attr{MATTER_Hall_Light}{stateFormat}, 'Custom',
+   'REREADCFG leaves user-defined stateFormat intact');
+is(CommandDeleteAttr(undef, 'MATTER_Hall_Light stateFormat'), undef,
+   'custom display can be removed');
+is(CommandAttr(undef, 'MATTER_Hall_Light stateFormat available'), undef,
+   'user may explicitly restore available display after migration');
+MATTERDevice_Notify($root, $defs{global});
+is($attr{MATTER_Hall_Light}{stateFormat}, 'available',
+   'post-migration user override is not removed again in the same process');
+CommandDeleteAttr(undef, 'MATTER_Hall_Light stateFormat');
+
+is(CommandDefine(undef, 'Standalone_Root MATTERDevice 999'), undef,
+   'manually defined root can be initialized without discovery');
+is(ReadingsVal('Standalone_Root', 'state', ''), 'unknown',
+   'root created after FHEM init displays unknown until a server report');
+ok(!exists($attr{Standalone_Root}{stateFormat}),
+   'manual root never auto-creates stateFormat');
+ok(!exists($defs{Standalone_Root}{READINGS}{available}),
+   'root Define does not invent physical availability');
+is(CommandDelete(undef, 'Standalone_Root'), undef,
+   'standalone root test device is cleaned up');
 is($root->{IODev}{NAME}, 'ioA', 'root IODev is correct');
 is($child->{IODev}{NAME}, 'ioA', 'endpoint IODev is correct');
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'associatedWith', ''), 'MATTER_Hall_Light',
@@ -468,8 +504,8 @@ MATTER_ProcessNode($defs{ioA}, node(42, 'Hall Light'));
 is($child->{IODev}{NAME}, 'ioA',
    'correct IO rebinds a child without trusting its previous root name');
 is($defs{MATTER_Other_IO_light_EP1}{IODev}{NAME}, 'ioB', 'new endpoint binds to matching IO');
-is($attr{MATTER_Other_IO_light}{stateFormat}, 'available',
-   'other Matter IO root gets the default display independently');
+ok(!exists($attr{MATTER_Other_IO_light}{stateFormat}),
+   'other Matter IO root uses its native state without stateFormat');
 ok(!exists($attr{MATTER_Other_IO_light_EP1}{stateFormat}),
    'other Matter IO endpoint retains its own display');
 is($attr{MATTER_Other_IO_light}{group}, 'Matter Nodes',
@@ -493,17 +529,46 @@ is($attr{MATTER_Other_IO_light_EP1}{group}, 'On/Off light',
 
 MATTER_ProcessNodeList($defs{ioA}, [], 'get_nodes');
 is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'removed', 'missing node marked removed');
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'removed',
+   'missing node receives removed as native root status');
 ok($defs{ManuallyRenamedRoot}, 'removed node not deleted');
 is(ReadingsVal('MATTER_Other_IO_light', 'matter_status', ''), 'present', 'other IO status untouched');
 MATTER_ParseMessage($defs{ioA}, encode_json({event => 'node_added', data => node(42, 'Hall Light')}));
 is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present', 'node_added restores status');
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'unknown',
+   'reappearing node without reported reachability is unknown');
 
 MATTER_ProcessNodeList($defs{ioA}, [{ node_id => 'invalid' }], 'get_nodes');
 is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present', 'malformed snapshot cannot mark devices removed');
 
+MATTER_ProcessNode($defs{ioA}, {node_id => 42, available => JSON::true});
+MATTER_ProcessNode($defs{ioB}, {node_id => 42, available => JSON::false});
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'online',
+   'availability true before an IO failure means online');
+is(ReadingsVal('MATTER_Other_IO_light', 'state', ''), 'offline',
+   'same node ID may have a distinct state on another IO');
 $defs{ioA}{helper}{pending_command}{17} = 'get_nodes';
+my $child_state_before_close = ReadingsVal($child->{NAME}, 'state', '');
 MATTER_Close($defs{ioA});
 ok(!exists($defs{ioA}{helper}{pending_command}), 'close clears pending commands');
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'unknown',
+   'IO closure invalidates only the owning root status');
+is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
+   'IO closure preserves last Matter server availability report');
+is(ReadingsVal($child->{NAME}, 'state', ''), $child_state_before_close,
+   'IO closure does not overwrite endpoint physical state');
+is(ReadingsVal('MATTER_Other_IO_light', 'state', ''), 'offline',
+   'another Matter IO root is not changed by unrelated socket loss');
+my $unknown_events = $single_writes{ManuallyRenamedRoot}{state} // 0;
+MATTER_Close($defs{ioA});
+is($single_writes{ManuallyRenamedRoot}{state} // 0, $unknown_events,
+   'repeated IO close does not produce duplicate unknown state events');
+MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'No new reachability'});
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'unknown',
+   'attribute-free reconnect snapshot cannot reuse stale available=true');
+MATTER_ProcessNode($defs{ioA}, {node_id => 42, available => JSON::true});
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'online',
+   'fresh availability after reconnect restores online');
 
 # Restore logical ownership after losing runtime IODev pointers (rereadcfg/reload case).
 delete $root->{IODev};
@@ -930,11 +995,15 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'false',
    'node_updated records physical unavailability on the root');
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'offline',
+   'valid server unavailable report produces native offline state');
 is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present',
    'availability is independent of server membership');
 MATTER_ProcessNode($defs{ioA}, { node_id => 42, name => 'Hall Light', available => JSON::true });
 is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
    'available flag is restored by a node snapshot');
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'online',
+   'valid server availability report produces native online state');
 MATTER_ProcessNode($defs{ioA}, { node_id => 42, name => 'No availability field' });
 is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
    'missing availability in a snapshot does not overwrite the previous report');
@@ -942,6 +1011,8 @@ MATTER_ProcessNode($defs{ioA}, { node_id => 42, name => 'Invalid availability',
                                 available => 'unknown' });
 is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
    'malformed availability is ignored');
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'online',
+   'malformed availability never alters valid native root state');
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'available', ''), 'true',
    'node-level availability is mirrored to the existing endpoint');
 
@@ -1423,6 +1494,8 @@ is(ReadingsVal($metadata_ep1->{NAME}, 'available', ''), 'false',
    'node_updated availability is propagated to endpoints');
 is(ReadingsVal($metadata_ep3->{NAME}, 'available', ''), 'false',
    'node_updated reaches all endpoints');
+is(ReadingsVal($metadata_root->{NAME}, 'state', ''), 'offline',
+   'node_updated also sets the root native status');
 is($bulk_writes{$metadata_ep1->{NAME}}{available} // 0, $available_writes + 1,
    'changed availability produces one endpoint update');
 
@@ -1438,6 +1511,8 @@ MATTERDevice_Parse($metadata_root, encode_json({
 }));
 is(ReadingsVal($metadata_ep1->{NAME}, 'available', ''), 'true',
    'direct MATTERDevice node_updated event mirrors valid availability');
+is(ReadingsVal($metadata_root->{NAME}, 'state', ''), 'online',
+   'direct MATTERDevice updates use the same root state mapping');
 MATTERDevice_Parse($metadata_root, encode_json({
     event => 'node_updated', data => {node_id => 95, available => 'unknown'},
 }));
