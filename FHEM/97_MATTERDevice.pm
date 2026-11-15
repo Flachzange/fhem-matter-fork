@@ -350,13 +350,22 @@ sub MATTERDevice_Define($$) {
     my ($hash, $def) = @_;
     my @a = split("[ \t]+", $def);
 
+    # Upgrade existing endpoint definitions in place. The old root name is a
+    # mutable FHEM label, not part of the Matter node/endpoint identity.
+    my $legacy_def = @a == 5 && ($a[4] // '') =~ /^[A-Za-z0-9_.-]+$/;
     return "wrong syntax: define <name> MATTERDevice <node_id> [<endpoint_id>]"
-        unless (@a == 3 || @a == 4) && $a[2] =~ /^\d+$/
-            && (@a == 3 || $a[3] =~ /^[1-9]\d*$/);
+        unless (@a == 3 || @a == 4 || $legacy_def)
+            && ($a[2] // '') =~ /^\d+$/
+            && (@a == 3 || ($a[3] // '') =~ /^[1-9]\d*$/);
 
     my $name = $a[0];
     my $node_id = $a[2];
     my $endpoint_id = $a[3] // 0;
+
+    if ($legacy_def) {
+        $hash->{DEF} = "$node_id $endpoint_id";
+        Log3 $name, 3, "MATTERDevice: Migrated endpoint DEF to '$hash->{DEF}'; use save to persist";
+    }
 
     $hash->{node_id} = $node_id;
     $hash->{endpoint_id} = $endpoint_id;
@@ -1586,8 +1595,9 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
   <li><b>Define:</b>
       <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id]</code>.
       The endpoint's IODev attribute identifies the Matter server; the root
-      name is not part of the DEF. Existing three-argument endpoint definitions
-      must be converted before upgrading (see README).</li>
+      name is not part of the DEF. On first load, legacy definitions with a
+      root name are normalized automatically; save the FHEM configuration once
+      after restarting to persist the shorter DEF.</li>
   <li><b>Set:</b> Depending on the reported capabilities:
       <code>on</code>, <code>off</code>, <code>brightness</code>, <code>ct</code>,
       <code>rgb</code>, <code>getConfig</code> and supported device-specific commands.</li>
@@ -1642,8 +1652,9 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
   <li><b>Definition:</b>
       <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id]</code>.
       Das IODev-Attribut bestimmt den Matter-Server; der Root-Name gehört nicht
-      in die DEF. Bestehende dreiteilige Endpoint-Definitionen müssen vor dem
-      Update umgestellt werden (siehe README).</li>
+      in die DEF. Bisherige dreiteilige Endpoint-Definitionen werden beim
+      ersten Laden automatisch gekürzt. Anschließend die FHEM-Konfiguration
+      einmal speichern, um die neue DEF dauerhaft zu übernehmen.</li>
   <li><b>Set:</b> Abhängig von den Fähigkeiten z. B. <code>on</code>,
       <code>off</code>, <code>brightness</code>, <code>ct</code>,
       <code>rgb</code>, <code>getConfig</code> und weitere Gerätebefehle.</li>
