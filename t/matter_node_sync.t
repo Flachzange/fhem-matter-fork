@@ -185,9 +185,13 @@ my $child = $defs{MATTER_Hall_Light_EP1};
 ok($root && $child, 'full snapshot creates root and endpoint');
 is($root->{DEF}, '42', 'root definition contains only the node ID');
 is($child->{DEF}, '42 1', 'endpoint definition contains no root FHEM name');
-my $legacy_define = CommandDefine(undef, 'Legacy_Endpoint MATTERDevice 42 9 MATTER_Hall_Light');
-like($legacy_define // '', qr/wrong syntax/, 'legacy three-argument endpoint DEF is rejected');
-ok(!exists $defs{Legacy_Endpoint}, 'legacy DEF failure creates no FHEM device');
+my $legacy_define = CommandDefine(undef, 'Legacy_Endpoint MATTERDevice 42 9 Former_Root');
+is($legacy_define, undef, 'legacy three-argument endpoint DEF is accepted for migration');
+is($defs{Legacy_Endpoint}{DEF}, '42 9', 'old root name is removed from persisted DEF at define');
+is($defs{Legacy_Endpoint}{endpoint_id}, 9, 'migration retains endpoint identity');
+is($defs{Legacy_Endpoint}{node_id}, 42, 'migration retains node identity');
+ok(!exists $defs{Legacy_Endpoint}{device}, 'legacy root name is not retained as parent identity');
+is(CommandDelete(undef, 'Legacy_Endpoint'), undef, 'temporary legacy test device is removed');
 like(CommandDefine(undef, 'Invalid_Endpoint MATTERDevice 42 0') // '',
      qr/wrong syntax/, 'explicit endpoint zero is rejected; roots omit endpoint ID');
 # FHEM's CommandDefine starts at STATE=???; its startup setstate restores a
@@ -314,8 +318,18 @@ is(CommandModify(undef, "$child->{NAME} $child_before_modify"), undef,
    'confirming the endpoint DEF accepts the two-ID format');
 is($child->{DEF}, '42 1', 'modify preserves the stable endpoint definition');
 ok(!exists $child->{device}, 'modify clears any cached display-only parent name');
-like(CommandModify(undef, "$child->{NAME} 42 1 MATTER_Hall_Light") // '',
-     qr/wrong syntax/, 'modify rejects a legacy root-name argument');
+my $child_uuid = $child->{FUUID};
+my $child_io = $child->{IODev};
+my $child_readings = $child->{READINGS};
+is(CommandModify(undef, "$child->{NAME} 42 1 MATTER_Hall_Light"), undef,
+   'confirming a stale legacy DEF migrates it instead of reassigning the root');
+is($child->{DEF}, '42 1', 'legacy modify is normalized to node ID and endpoint ID');
+is($child->{FUUID}, $child_uuid, 'DEF migration preserves FUUID');
+is($child->{IODev}, $child_io, 'DEF migration preserves IODev');
+is($child->{READINGS}, $child_readings, 'DEF migration preserves readings');
+ok(!exists $child->{device}, 'legacy root name does not restore display parent');
+like(CommandModify(undef, "$child->{NAME} 42 1 MATTER_Hall_Light extra") // '',
+     qr/wrong syntax/, 'unrecognized extra DEF arguments remain invalid');
 is($child->{DEF}, $child_before_modify, 'invalid modify rolls back the DEF');
 MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'Metadata only'});
 is($child->{device}, 'ManuallyRenamedRoot',
