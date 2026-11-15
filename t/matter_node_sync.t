@@ -522,17 +522,46 @@ is($attr{MATTER_Other_IO_light_EP1}{group}, 'On/Off light',
 
 MATTER_ProcessNodeList($defs{ioA}, [], 'get_nodes');
 is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'removed', 'missing node marked removed');
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'removed',
+   'missing node receives removed as native root status');
 ok($defs{ManuallyRenamedRoot}, 'removed node not deleted');
 is(ReadingsVal('MATTER_Other_IO_light', 'matter_status', ''), 'present', 'other IO status untouched');
 MATTER_ParseMessage($defs{ioA}, encode_json({event => 'node_added', data => node(42, 'Hall Light')}));
 is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present', 'node_added restores status');
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'unknown',
+   'reappearing node without reported reachability is unknown');
 
 MATTER_ProcessNodeList($defs{ioA}, [{ node_id => 'invalid' }], 'get_nodes');
 is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present', 'malformed snapshot cannot mark devices removed');
 
+MATTER_ProcessNode($defs{ioA}, {node_id => 42, available => JSON::true});
+MATTER_ProcessNode($defs{ioB}, {node_id => 42, available => JSON::false});
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'online',
+   'availability true before an IO failure means online');
+is(ReadingsVal('MATTER_Other_IO_light', 'state', ''), 'offline',
+   'same node ID may have a distinct state on another IO');
 $defs{ioA}{helper}{pending_command}{17} = 'get_nodes';
+my $child_state_before_close = ReadingsVal($child->{NAME}, 'state', '');
 MATTER_Close($defs{ioA});
 ok(!exists($defs{ioA}{helper}{pending_command}), 'close clears pending commands');
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'unknown',
+   'IO closure invalidates only the owning root status');
+is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
+   'IO closure preserves last Matter server availability report');
+is(ReadingsVal($child->{NAME}, 'state', ''), $child_state_before_close,
+   'IO closure does not overwrite endpoint physical state');
+is(ReadingsVal('MATTER_Other_IO_light', 'state', ''), 'offline',
+   'another Matter IO root is not changed by unrelated socket loss');
+my $unknown_events = $single_writes{ManuallyRenamedRoot}{state} // 0;
+MATTER_Close($defs{ioA});
+is($single_writes{ManuallyRenamedRoot}{state} // 0, $unknown_events,
+   'repeated IO close does not produce duplicate unknown state events');
+MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'No new reachability'});
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'unknown',
+   'attribute-free reconnect snapshot cannot reuse stale available=true');
+MATTER_ProcessNode($defs{ioA}, {node_id => 42, available => JSON::true});
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'online',
+   'fresh availability after reconnect restores online');
 
 # Restore logical ownership after losing runtime IODev pointers (rereadcfg/reload case).
 delete $root->{IODev};
@@ -959,11 +988,15 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'false',
    'node_updated records physical unavailability on the root');
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'offline',
+   'valid server unavailable report produces native offline state');
 is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present',
    'availability is independent of server membership');
 MATTER_ProcessNode($defs{ioA}, { node_id => 42, name => 'Hall Light', available => JSON::true });
 is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
    'available flag is restored by a node snapshot');
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'online',
+   'valid server availability report produces native online state');
 MATTER_ProcessNode($defs{ioA}, { node_id => 42, name => 'No availability field' });
 is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
    'missing availability in a snapshot does not overwrite the previous report');
@@ -971,6 +1004,8 @@ MATTER_ProcessNode($defs{ioA}, { node_id => 42, name => 'Invalid availability',
                                 available => 'unknown' });
 is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
    'malformed availability is ignored');
+is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'online',
+   'malformed availability never alters valid native root state');
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'available', ''), 'true',
    'node-level availability is mirrored to the existing endpoint');
 
@@ -1452,6 +1487,8 @@ is(ReadingsVal($metadata_ep1->{NAME}, 'available', ''), 'false',
    'node_updated availability is propagated to endpoints');
 is(ReadingsVal($metadata_ep3->{NAME}, 'available', ''), 'false',
    'node_updated reaches all endpoints');
+is(ReadingsVal($metadata_root->{NAME}, 'state', ''), 'offline',
+   'node_updated also sets the root native status');
 is($bulk_writes{$metadata_ep1->{NAME}}{available} // 0, $available_writes + 1,
    'changed availability produces one endpoint update');
 
@@ -1467,6 +1504,8 @@ MATTERDevice_Parse($metadata_root, encode_json({
 }));
 is(ReadingsVal($metadata_ep1->{NAME}, 'available', ''), 'true',
    'direct MATTERDevice node_updated event mirrors valid availability');
+is(ReadingsVal($metadata_root->{NAME}, 'state', ''), 'online',
+   'direct MATTERDevice updates use the same root state mapping');
 MATTERDevice_Parse($metadata_root, encode_json({
     event => 'node_updated', data => {node_id => 95, available => 'unknown'},
 }));
