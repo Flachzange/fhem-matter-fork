@@ -1675,7 +1675,8 @@ sub MATTERDevice_GetOrCreateChild($$) {
 <p>A MATTERDevice represents a Matter node (root endpoint 0) or one of its
 additional endpoints. It uses the assigned MATTER IO device to receive attribute
 updates and send supported commands. The module preserves existing FHEM names,
-rooms and attributes during node synchronization. It does not override FHEM's
+rooms and attributes during node synchronization. Device set commands
+require an active IO WebSocket; a send failure is reported as an error. It does not override FHEM's
 initial STATE, allowing the normal statefile restoration at startup.</p>
 <ul>
   <li><b>Define:</b>
@@ -1740,8 +1741,9 @@ Decommissioned devices are retained in FHEM rather than automatically deleted.</
 <h3>MATTERDevice</h3>
 <p>Ein MATTERDevice repräsentiert einen Matter-Knoten (Root-Endpunkt 0) oder einen
 seiner weiteren Endpunkte. Über das zugeordnete MATTER-IO-Device empfängt es
-Attributänderungen und sendet unterstützte Befehle. Bei der Synchronisation
-bleiben bestehende Namen, Räume und Benutzerattribute erhalten. Der von FHEM
+Attributänderungen und sendet unterstützte Befehle. Ein Set-Befehl setzt
+eine aktive IO-WebSocket-Verbindung voraus; Sendefehler werden gemeldet.
+Bei der Synchronisation bleiben bestehende Namen, Räume und Benutzerattribute erhalten. Der von FHEM
 initial gesetzte STATE bleibt unverändert, damit das Statefile beim Neustart
 den gespeicherten Anzeigestatus wiederherstellen kann.</p>
 <ul>
