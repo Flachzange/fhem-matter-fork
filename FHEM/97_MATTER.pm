@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.13 15.11.2026";
+my $MATTER_version = "V0.14 15.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -1162,7 +1162,9 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
       One commissioning request can be active per IO. On connection loss
       the result is unknown; no BLE/PASE intermediate progress is exposed.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Configure or inspect available
-      network credentials (do not expose secrets in logs).</li>
+      network credentials. The synthetic FHEM set event is suppressed for
+      Wi-Fi credentials; FHEM command history and plaintext WebSocket traffic
+      remain sensitive.</li>
   <li><b>Attribute commissionMode (network/auto):</b> Persistent default
       for <code>commissionCode</code> when no mode argument is supplied.
       Defaults to <code>network</code>. Explicit mode arguments take priority.</li>
@@ -1179,9 +1181,9 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
 <p>Newly created logical devices default to room <code>Matter</code>; existing FHEM
 names, rooms and user attributes are retained. A removed node is marked with
 <code>matter_status=removed</code> rather than deleted. This status describes node
-membership on the server, not physical device availability. The root-only
-<code>available</code> reading reflects a boolean availability report from the
-server, without polling. The TCP/WebSocket handshake has a 10-second deadline;
+membership on the server, not physical device availability. The root and its endpoints mirror
+<code>available</code> when the server reports a valid node-wide boolean,
+without polling. The TCP/WebSocket handshake has a 10-second deadline;
 while connected, WebSocket Ping/Pong checks run every 30 seconds with a 15-second
 Pong deadline. Any connection failure triggers a new attempt after 30 seconds,
 without manual intervention. Numeric IPv4 addresses avoid blocking DNS lookup.
@@ -1221,7 +1223,9 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
       Pro IO ist nur ein Vorgang gleichzeitig aktiv. Bei Verbindungsabbruch
       ist das Ergebnis unbekannt; einzelne BLE-/PASE-Phasen meldet der Server nicht.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Netzwerkzugangsdaten
-      konfigurieren bzw. auslesen.</li>
+      konfigurieren bzw. auslesen. Das synthetische FHEM-set-Event für WLAN-
+      Zugangsdaten wird unterdrückt; Eingabeverlauf und unverschlüsselter
+      WebSocket-Verkehr bleiben vertraulich zu behandeln.</li>
   <li><b>Attribut commissionMode (network/auto):</b> Dauerhafter
       Standard für <code>commissionCode</code> ohne Modusangabe.
       Ohne Attribut gilt <code>network</code>. Eine explizite Modusangabe
@@ -1240,9 +1244,9 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
 Vorhandene Namen, Räume und Benutzerattribute bleiben unverändert. Entfernte
 Nodes werden mit <code>matter_status=removed</code> markiert und nicht automatisch
 gelöscht. Dieses Reading beschreibt die Mitgliedschaft auf dem Matter-Server,
-nicht die physische Erreichbarkeit des Geräts. Das nur am Root geführte Reading
-<code>available</code> bildet die vom Server ausdrücklich gemeldete Erreichbarkeit ab;
-es erfolgt kein Polling. TCP-Aufbau und WebSocket-Handshake haben zusammen
+nicht die physische Erreichbarkeit des Geräts. Das am Root und seinen Endpunkten geführte Reading
+<code>available</code> bildet die vom Server ausdrücklich gemeldete
+knotenweite Erreichbarkeit ab; es erfolgt kein Polling. TCP-Aufbau und WebSocket-Handshake haben zusammen
 10 Sekunden Zeit. Danach prüfen Ping/Pong alle 30 Sekunden die Verbindung,
 wobei ein Pong spätestens nach weiteren 15 Sekunden eintreffen muss. Bei Fehlern
 erfolgt automatisch alle 30 Sekunden ein Wiederverbindungsversuch. Numerische
