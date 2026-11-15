@@ -21,6 +21,9 @@ sub Log3 { push @log, $_[2]; }
 sub AttrVal { return exists $attr{$_[0]}{$_[1]} ? $attr{$_[0]}{$_[1]} : $_[2]; }
 sub ReadingsVal {
     my ($name, $reading, $default) = @_;
+    return $default unless exists($defs{$name}) &&
+                           exists($defs{$name}{READINGS}) &&
+                           exists($defs{$name}{READINGS}{$reading});
     return $defs{$name}{READINGS}{$reading}{VAL} // $default;
 }
 sub readingsSingleUpdate {
