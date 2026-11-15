@@ -158,6 +158,9 @@ sub CommandRename {
     $defs{$new} = delete $defs{$old};
     $defs{$new}{NAME} = $new;
     $attr{$new} = delete $attr{$old} if exists $attr{$old};
+    # FHEM runs the device RenameFn before rewriting associatedWith references.
+    my $rename_fn = $modules{$defs{$new}{TYPE}}{RenameFn};
+    $rename_fn->($new, $old) if $rename_fn;
     for my $device (values %defs) {
         my $links = ReadingsVal($device->{NAME}, 'associatedWith', '');
         next unless $links =~ /\b\Q$old\E\b/;
@@ -522,7 +525,8 @@ is($defs{$old_child_name}, $child, 'endpoint retains identity after restoring it
 # Real TCP byte-stream behavior: HTTP upgrade followed by a split >64 KiB WS frame.
 my ($client, $server);
 socketpair($client, $server, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die "socketpair: $!";
-my $ws = { NAME => 'ioWS', TYPE => 'MATTER', helper => {},
+my $ws = { NAME => 'ioWS', TYPE => 'MATTER',
+    helper => { ws_expected_accept => 'synthetic-valid-accept' },
     ws_status => 'handshake', websocket => 0, BUF => '', CD => $client,
     FD => fileno($client), READINGS => {} };
 $defs{ioWS} = $ws;
@@ -534,7 +538,7 @@ ok(length($json) > 65535, 'fixture exercises 64-bit frame length');
 my $high = int(length($json) / 4294967296);
 my $low = length($json) % 4294967296;
 my $frame = pack('CCNN', 0x81, 127, $high, $low) . $json;
-my $wire = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n" . $frame;
+my $wire = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: synthetic-valid-accept\r\n\r\n" . $frame;
 while (length($wire)) {
     my $part = substr($wire, 0, 8192, '');
     my $n = syswrite($server, $part);
@@ -566,6 +570,24 @@ for my $i (0 .. $pong_len - 1) {
                           ord(substr($mask, $i % 4, 1)));
 }
 is($unmasked_body, 'abc', 'Pong echoes original ping payload');
+
+# TCP splitting and WebSocket fragmentation are different cases. A partial
+# FIN=0 JSON text frame must not be parsed until the continuation arrives.
+my $fragment_json = encode_json({
+    schema_version => 7, sdk_version => 'fragmented-message',
+    fabric_id => 'synthetic', bluetooth_enabled => JSON::false
+});
+my $half = int(length($fragment_json) / 2);
+my $fragment_first = pack('CC', 0x01, $half) . substr($fragment_json, 0, $half);
+my $fragment_last = pack('CC', 0x80, length($fragment_json) - $half)
+                  . substr($fragment_json, $half);
+syswrite($server, $fragment_first) == length($fragment_first) or die 'fragment first write failed';
+MATTER_Read($ws);
+is(ReadingsVal('ioWS', 'sdk_version', ''), '', 'partial WebSocket message does not publish telemetry');
+syswrite($server, $fragment_last) == length($fragment_last) or die 'fragment last write failed';
+MATTER_Read($ws);
+is(ReadingsVal('ioWS', 'sdk_version', ''), 'fragmented-message',
+   'continuation completes a fragmented WebSocket text message');
 
 # After the upgrade, exactly one heartbeat timer is active.
 is(scalar(grep { $_->{callback} eq 'MATTER_Heartbeat' && $_->{owner} eq $ws } @timers),
@@ -617,6 +639,22 @@ MATTER_Read($bad);
 is($bad->{ws_status}, 'disconnected', 'rejected HTTP upgrade does not become connected');
 is(scalar(@timers), 1, 'invalid upgrade schedules reconnect');
 close($bad_server);
+
+# A 101 status without a matching Sec-WebSocket-Accept is not authenticated
+# as the response to this client's handshake nonce.
+@timers = ();
+socketpair(my $bad_accept_client, my $bad_accept_peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+    or die 'bad accept socketpair';
+my $bad_accept = { NAME => 'badAccept', TYPE => 'MATTER',
+    helper => { ws_expected_accept => 'synthetic-valid-accept' },
+    ws_status => 'handshake', websocket => 0, BUF => '',
+    CD => $bad_accept_client, FD => fileno($bad_accept_client), READINGS => {} };
+$defs{badAccept} = $bad_accept;
+my $forged_upgrade = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: wrong-value\r\n\r\n";
+syswrite($bad_accept_peer, $forged_upgrade) == length($forged_upgrade) or die 'bad accept write failed';
+MATTER_Read($bad_accept);
+is($bad_accept->{ws_status}, 'disconnected', 'mismatched WebSocket accept hash is rejected');
+close($bad_accept_peer);
 
 @timers = ();
 socketpair(my $huge_client, my $huge_server, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die "socketpair: $!";
@@ -703,7 +741,7 @@ my $accepted = $listener->accept() or die "accept local WebSocket: $!";
 my $request;
 sysread($accepted, $request, 2048);
 like($request, qr{^GET /ws HTTP/1\.1\r\n}, 'nonblocking connect sent a complete HTTP upgrade');
-my $http101 = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+my $http101 = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: $async->{helper}{ws_expected_accept}\r\n\r\n";
 syswrite($accepted, $http101) == length($http101) or die 'HTTP 101 write failed';
 MATTER_Read($async);
 is($async->{ws_status}, 'connected', 'successful upgrade finishes the async handshake');
@@ -882,8 +920,16 @@ is(ReadingsVal('MATTER_Hall_Light_EP1', 'state', ''), $old_state,
    'null OnOff state is not incorrectly published as off');
 
 my @sent_requests;
+# Device commands require a connected transport; the stub simulates only
+# the successful accepted-send contract, not delivery or device execution.
+like(MATTERDevice_Set($child, $child->{NAME}, 'on') // '',
+     qr/No active WebSocket/, 'device set rejects disconnected IO without claiming success');
+$defs{ioA}{CD} = 'mock-socket';
+$defs{ioA}{websocket} = 1;
+$defs{ioA}{ws_status} = 'connected';
 $defs{ioA}{fhem}{helper}{sendWS} = sub {
     push @sent_requests, JSON::decode_json($_[0]);
+    return 1;
 };
 is(MATTERDevice_Set($child, $child->{NAME}, 'getConfig'), undef,
    'getConfig can be sent via current IODev');
@@ -1025,6 +1071,41 @@ is($attr{MATTER_TypeDisplay_EP10}{group}, 'Temperature sensor',
    'temperature endpoint has its own type group');
 is($attr{MATTER_TypeDisplay_EP11}{group}, 'Contact sensor',
    'live device type update adjusts an existing automatic group');
+
+# A read started before a live update must not overwrite the newer endpoint
+# state when the stale server response eventually arrives.
+@sent_requests = ();
+is(MATTERDevice_Set($child, $child->{NAME}, 'getConfig'), undef,
+   'getConfig starts tracked request before live telemetry');
+my $older_read = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [42, '1/6/0', JSON::false]
+}));
+is(ReadingsVal($child->{NAME}, 'state', ''), 'off', 'live state update applied');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $older_read, result => { '1/6/0' => JSON::true }
+}));
+is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
+   'late read_attribute snapshot cannot regress a newer live state');
+
+# Inputs without valid Matter boolean/numeric representations are ignored.
+MATTERDevice_Parse($root, encode_json({
+    node_id => 42, attributes => {
+        '1/6/0' => 'false',
+        '1/8/0' => 'not-a-number'
+    }
+}));
+is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
+   'string false is not interpreted as OnOff true');
+my $pct_before_invalid = ReadingsVal($child->{NAME}, 'pct', '');
+MATTERDevice_Parse($root, encode_json({
+    node_id => 42, attributes => { '1/8/0' => 'invalid' }
+}));
+is(ReadingsVal($child->{NAME}, 'pct', ''), $pct_before_invalid,
+   'malformed brightness cannot be converted to zero percent');
+my $no_hash_error = eval { MATTER_ParseMessage($defs{ioA}, '[]'); 1 };
+ok($no_hash_error, 'valid non-object JSON cannot crash the IO parser');
+
 
 # Power Source is a utility type, not a competing application device type.
 MATTERDevice_Parse($types_root, encode_json({
