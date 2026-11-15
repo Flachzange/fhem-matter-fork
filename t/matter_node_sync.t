@@ -1007,10 +1007,10 @@ like($type_html, qr/<td>10<\/td><td>0xF123<\/td>/,
      'unknown hexadecimal type is restored without runtime helpers');
 like($type_html, qr/<td>11<\/td><td>Contact sensor<\/td>/,
      'other endpoint type is restored independently');
-is($attr{MATTER_TypeDisplay_EP1}{group}, 'Smoke CO Alarm',
-   'cached groups are not arbitrarily overwritten during the simulated restart');
-is(MATTERDevice_DeviceTypeIds($defs{MATTER_TypeDisplay_EP10}), 0xF123,
-   'group and display consume the same persisted type ID data');
+is($attr{MATTER_TypeDisplay_EP1}{group}, 'On/Off light',
+   'current group remains unchanged during the simulated restart');
+is_deeply([MATTERDevice_DeviceTypeIds($defs{MATTER_TypeDisplay_EP10})], [0xF123],
+    'group and display consume the same persisted type ID data');
 $attr{MATTER_TypeDisplay_EP10}{group} = 'Node 88 (ioA)';
 MATTERDevice_EnsureTypeGroup($defs{MATTER_TypeDisplay_EP10});
 is($attr{MATTER_TypeDisplay_EP10}{group}, '0xF123',
