@@ -350,18 +350,18 @@ sub MATTERDevice_Define($$) {
     my ($hash, $def) = @_;
     my @a = split("[ \t]+", $def);
 
-    return "wrong syntax: define <name> MATTERDevice <node_id> [<endpoint_id>, <root_device_name>]" if (@a < 3);
+    return "wrong syntax: define <name> MATTERDevice <node_id> [<endpoint_id>]"
+        unless (@a == 3 || @a == 4) && $a[2] =~ /^\d+$/
+            && (@a == 3 || $a[3] =~ /^[1-9]\d*$/);
 
-    my $name    = $a[0];
+    my $name = $a[0];
     my $node_id = $a[2];
     my $endpoint_id = $a[3] // 0;
-    my $root_device_name = $a[4] // undef;
 
     $hash->{node_id} = $node_id;
     $hash->{endpoint_id} = $endpoint_id;
-    if ($root_device_name) {
-        $hash->{device} = $root_device_name;
-    }
+    # The root name is derived from IODev + node ID, never from the DEF.
+    delete $hash->{device};
     
     if ($endpoint_id == 0) {
         AssignIoPort($hash);
@@ -1501,11 +1501,12 @@ sub MATTERDevice_GetOrCreateChild($$) {
             next unless ($device->{TYPE} // '') eq 'MATTERDevice';
             next unless ($device->{node_id} // '') eq $node_id;
             next unless ($device->{endpoint_id} // -1) == $ep_id;
-            # A device without IODev can only be reattached to its recorded root.
+            # Rebind an endpoint with a missing runtime IODev only to its
+            # explicitly configured MATTER IO; names are not identities.
             if ($device->{IODev}) {
                 next unless $device->{IODev}{NAME} eq $io_name;
             } else {
-                next unless ($device->{device} // '') eq $root_name;
+                next unless AttrVal($device->{NAME}, 'IODev', '') eq $io_name;
             }
             $child = $device;
             last;
@@ -1526,7 +1527,7 @@ sub MATTERDevice_GetOrCreateChild($$) {
             }
         }
 
-        my $error = CommandDefine(undef, "$child_name MATTERDevice $node_id $ep_id $root_name");
+        my $error = CommandDefine(undef, "$child_name MATTERDevice $node_id $ep_id");
         $child = $defs{$child_name};
         if ($error || !$child || ($child->{TYPE} // '') ne 'MATTERDevice' ||
             ($child->{node_id} // '') ne $node_id || ($child->{endpoint_id} // -1) != $ep_id) {
@@ -1583,7 +1584,10 @@ rooms and attributes during node synchronization. It does not override FHEM's
 initial STATE, allowing the normal statefile restoration at startup.</p>
 <ul>
   <li><b>Define:</b>
-      <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id root_device_name]</code></li>
+      <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id]</code>.
+      The endpoint's IODev attribute identifies the Matter server; the root
+      name is not part of the DEF. Existing three-argument endpoint definitions
+      must be converted before upgrading (see README).</li>
   <li><b>Set:</b> Depending on the reported capabilities:
       <code>on</code>, <code>off</code>, <code>brightness</code>, <code>ct</code>,
       <code>rgb</code>, <code>getConfig</code> and supported device-specific commands.</li>
@@ -1636,7 +1640,10 @@ initial gesetzte STATE bleibt unverändert, damit das Statefile beim Neustart
 den gespeicherten Anzeigestatus wiederherstellen kann.</p>
 <ul>
   <li><b>Definition:</b>
-      <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id root_device_name]</code></li>
+      <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id]</code>.
+      Das IODev-Attribut bestimmt den Matter-Server; der Root-Name gehört nicht
+      in die DEF. Bestehende dreiteilige Endpoint-Definitionen müssen vor dem
+      Update umgestellt werden (siehe README).</li>
   <li><b>Set:</b> Abhängig von den Fähigkeiten z. B. <code>on</code>,
       <code>off</code>, <code>brightness</code>, <code>ct</code>,
       <code>rgb</code>, <code>getConfig</code> und weitere Gerätebefehle.</li>
