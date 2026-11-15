@@ -1790,6 +1790,15 @@ MATTER_ParseMessage($credential_io, encode_json({
 is(ReadingsVal('credentialIO', 'wifi_7_ssid', ''), 'PreviousSSID',
    'malformed nested credential list preserves existing readings');
 is(MATTER_Set($credential_io, 'credentialIO', 'getCredentials'), undef,
+   'request credential inventory with malformed item');
+my $invalid_item_id = $credential_io->{helper}{next_message_id};
+MATTER_ParseMessage($credential_io, encode_json({
+    message_id => $invalid_item_id,
+    result => { wifi => [{ id => 7, ssid => ['not-a-scalar'] }] }
+}));
+is(ReadingsVal('credentialIO', 'wifi_7_ssid', ''), 'PreviousSSID',
+   'malformed credential item cannot partially delete the previous inventory');
+is(MATTER_Set($credential_io, 'credentialIO', 'getCredentials'), undef,
    'request valid updated credential inventory');
 my $valid_credential_id = $credential_io->{helper}{next_message_id};
 MATTER_ParseMessage($credential_io, encode_json({
