@@ -1,1 +1,1 @@
-2026-11-15  MATTERDevice: show each endpoint's root through FHEM's native 'Probably associated with' links using persistent associatedWith readings; preserve user links and FHEM rename behavior.
+2026-11-15  MATTER IO/Device V0.14: fix IO rename ownership, credential set-event privacy, invalid telemetry coercion and disconnected command handling; correlate requests and protect newer events from stale snapshots; validate WebSocket upgrade and fragmentation.
