@@ -39,7 +39,8 @@ sub RemoveInternalTimer {
     } @timers;
 }
 sub InternalTimer { push @timers, { at => $_[0], callback => $_[1], owner => $_[2] }; }
-sub gettimeofday { return 1; }
+my $mock_time = 1;
+sub gettimeofday { return $mock_time; }
 
 # FHEMWEB URL and HTML helpers as used by FW_detailFn.
 sub urlEncode {
@@ -1023,6 +1024,12 @@ is(scalar(keys %{$commission_io->{helper}{pending_command} // {}}), 0,
 is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode', $manual_code),
    undef, 'legacy one-argument command remains accepted');
 my $network_request = $read_ws_json->($commission_server);
+is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'running',
+   'commissioning starts with running status');
+is(ReadingsVal('commissionIO', 'commissioning_mode', ''), 'network',
+   'default mode recorded');
+is(ReadingsVal('commissionIO', 'commissioning_error', 'unset'), '',
+   'running clears previous error');
 is($network_request->{command}, 'commission_with_code',
    'commissioning keeps the existing server API command');
 is($network_request->{args}{code}, $manual_code,
@@ -1034,12 +1041,35 @@ like(join("\n", @log), qr/Commissioning requested \(mode=network; BLE disabled\)
 unlike(join("\n", @log), qr/\Q$manual_code\E/,
        'setup code is not logged for default mode');
 
+my $busy = MATTER_Set($commission_io, 'commissionIO', 'commissionCode', $manual_code, 'auto');
+like($busy // '', qr/already in progress/, 'parallel attempt is rejected');
+unlike($busy // '', qr/\Q$manual_code\E/, 'busy error omits setup code');
+is(scalar(keys %{$commission_io->{helper}{pending_command} // {}}), 1,
+   'busy attempt does not add a request');
+$mock_time += 38;
+MATTER_ParseMessage($commission_io, encode_json({
+    message_id => $network_request->{message_id}, result => { node_id => 121 }
+}));
+is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'success',
+   'server response reports success');
+is(ReadingsVal('commissionIO', 'commissioning_node_id', ''), 121,
+   'successful response contains node ID');
+is(ReadingsVal('commissionIO', 'commissioning_duration', ''), 38,
+   'duration measures elapsed seconds');
+ok(!exists($commission_io->{helper}{commissioning_active}),
+   'success releases the active commissioning slot');
+
 is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode',
               $manual_code, 'network'), undef,
    'explicit network mode is accepted');
 my $explicit_network = $read_ws_json->($commission_server);
 ok($explicit_network->{args}{network_only},
    'explicit network mode also sends network_only=true');
+MATTER_ParseMessage($commission_io, encode_json({
+    message_id => $explicit_network->{message_id}, result => { node_id => 122 }
+}));
+is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'success',
+   'second network request completes independently');
 
 @log = ();
 my ($auto_return, $auto_skip_event) = MATTER_Set(
@@ -1053,6 +1083,30 @@ like(join("\n", @log), qr/Commissioning requested \(mode=auto; BLE allowed\)/,
      'auto mode is logged without implying that BLE was actually used');
 unlike(join("\n", @log), qr/\Q$manual_code\E/,
        'manual setup code is not logged in auto mode');
+is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'running',
+   'BLE-capable attempt shows running');
+is(ReadingsVal('commissionIO', 'commissioning_mode', ''), 'auto',
+   'BLE-capable attempt records auto mode');
+$mock_time += 7;
+MATTER_ParseMessage($commission_io, encode_json({
+    message_id => $auto_request->{message_id}, error_code => 4,
+    reason => 'not-discovered',
+    details => "Could not commission code $manual_code from $qr_code"
+}));
+is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'failed',
+   'server error reports failure');
+is(ReadingsVal('commissionIO', 'commissioning_duration', ''), 7,
+   'failed attempt records duration');
+like(ReadingsVal('commissionIO', 'commissioning_error', ''), qr/^not-discovered:/,
+   'typed failure reason preserved');
+like(ReadingsVal('commissionIO', 'commissioning_error', ''),
+     qr/\[code redacted\].*\[QR code redacted\]/,
+   'error reading redacts manual and QR codes');
+unlike(ReadingsVal('commissionIO', 'commissioning_error', ''),
+       qr/\Q$manual_code\E|\Q$qr_code\E/,
+   'error reading contains no setup code');
+unlike(join("\n", @log), qr/\Q$manual_code\E|\Q$qr_code\E/,
+   'error log contains no setup code');
 
 is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode',
               $qr_code, 'auto'), undef,
@@ -1061,6 +1115,23 @@ my $qr_request = $read_ws_json->($commission_server);
 is($qr_request->{args}{code}, $qr_code,
    'QR payload is delivered unchanged to the Matter server');
 ok(!$qr_request->{args}{network_only}, 'QR auto mode also permits BLE discovery');
+is(ReadingsVal('commissionIO', 'commissioning_error', 'unset'), '',
+   'new attempt clears stale failure');
+MATTER_ParseMessage($commission_io, encode_json({
+    message_id => 'unrelated', result => { node_id => 999 }
+}));
+is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'running',
+   'unrelated result cannot finish active commissioning');
+$mock_time += 3;
+MATTER_ParseMessage($commission_io, encode_json({
+    message_id => $qr_request->{message_id}, result => { node_id => 123 }
+}));
+is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'success',
+   'QR response reports success');
+is(ReadingsVal('commissionIO', 'commissioning_node_id', ''), 123,
+   'QR response reports new node ID');
+unlike(join("\n", @log), qr/\Q$qr_code\E/,
+   'QR code is absent from FHEM logs');
 unlike(join("\n", @log), qr/\Q$qr_code\E/,
        'QR setup code is absent from FHEM logs');
 
@@ -1087,37 +1158,32 @@ for my $invalid (
        $pending_before_invalid, 'invalid request creates no pending command');
 }
 
-# A server-side failure may echo a code; sanitize before including its
-# diagnostic text in FHEM logs. It must also clear the pending correlation.
-my $failed_id = $auto_request->{message_id};
-@log = ();
+# A WebSocket disconnect interrupts the outstanding extended-code attempt.
+# The Matter server may still complete; a lost response is not a failure.
+$mock_time += 5;
+MATTER_Close($commission_io);
+is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'interrupted',
+   'connection loss marks commissioning as interrupted');
+is(ReadingsVal('commissionIO', 'commissioning_duration', ''), 5,
+   'interrupt reports elapsed time');
+like(ReadingsVal('commissionIO', 'commissioning_error', ''), qr/outcome unknown/,
+   'interruption does not imply a failed server operation');
+ok(!exists $commission_io->{helper}{commissioning_active},
+   'closed connection releases active commissioning');
+ok(!exists $commission_io->{helper}{pending_command},
+   'closed connection clears all pending requests');
 MATTER_ParseMessage($commission_io, encode_json({
-    message_id => $failed_id,
-    error => { message => "Could not commission code $manual_code from $qr_code" },
+    message_id => $extended_request->{message_id}, result => { node_id => 456 }
 }));
-ok(!exists($commission_io->{helper}{pending_command}{$failed_id}),
-   'failed commissioning response clears its pending request');
-like(join("\n", @log), qr/Commissioning failed on IO commissionIO:/,
-     'failure is reported in the module log');
-like(join("\n", @log), qr/\[code redacted\].*\[QR code redacted\]/,
-     'server error details retain context with setup codes redacted');
-unlike(join("\n", @log), qr/\Q$manual_code\E|\Q$qr_code\E/,
-       'server-side commissioning errors do not leak setup codes');
-
-my $succeeded_id = $qr_request->{message_id};
-@log = ();
-MATTER_ParseMessage($commission_io, encode_json({
-    message_id => $succeeded_id, result => { node_id => 123 },
-}));
-ok(!exists($commission_io->{helper}{pending_command}{$succeeded_id}),
-   'successful commissioning response clears its pending request');
-like(join("\n", @log), qr/Device successfully commissioned on IO commissionIO/,
-     'success is logged only after the correlated server response');
-unlike(join("\n", @log), qr/\Q$manual_code\E|\Q$qr_code\E/,
-       'successful commissioning logs contain no setup codes');
-close($commission_client);
+is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'interrupted',
+   'late reply cannot overwrite interrupted status');
+my $disconnected = MATTER_Set($commission_io, 'commissionIO', 'commissionCode',
+                              $manual_code, 'auto');
+like($disconnected // '', qr/No active WebSocket/, 'disconnected IO refuses new request');
+unlike($disconnected // '', qr/\Q$manual_code\E/,
+   'disconnected error does not echo setup code');
+is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'interrupted',
+   'failed send does not produce misleading running status');
 close($commission_server);
-
-
 
 done_testing();
