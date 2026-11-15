@@ -359,7 +359,7 @@ sub MATTERDevice_Define($$) {
 
     $hash->{node_id} = $node_id;
     $hash->{endpoint_id} = $endpoint_id;
-    $hash->{STATE}   = "unknown";
+    $hash->{STATE}   = "Initialized";
     if ($root_device_name) {
         $hash->{device} = $root_device_name;
     }
@@ -1164,7 +1164,6 @@ sub MATTERDevice_Parse($ $) {
         my $available_value = $available ? "true" : "false";
         readingsSingleUpdate($hash, "available", $available_value, 1)
             if ReadingsVal($name, 'available', '') ne $available_value;
-        MATTERDevice_UpdateDisplayState($hash);
         MATTERDevice_SyncNodeReadings($hash);
     };
     
@@ -1399,24 +1398,6 @@ sub MATTERDevice_NodeChildren($) {
     } values %defs;
 }
 
-# FHEMWEB fallback for endpoints that have no device-specific state Reading.
-# Availability describes reachability, not the power/switch state of an endpoint.
-# Preserve FHEM stateFormat overrides and real device state telemetry.
-sub MATTERDevice_UpdateDisplayState($) {
-    my ($device) = @_;
-    return unless $device && defined $device->{NAME};
-    my $name = $device->{NAME};
-    return if defined AttrVal($name, 'stateFormat', undef);
-    return if exists $device->{READINGS}{state};
-
-    my $membership = ReadingsVal($name, 'matter_status', '');
-    my $available = ReadingsVal($name, 'available', '');
-    $device->{STATE} = $membership eq 'removed' ? 'removed'
-                     : $available eq 'true'     ? 'available'
-                     : $available eq 'false'    ? 'unavailable'
-                     : 'unknown';
-}
-
 # Mirror only node-wide readings, using the same IODev/node membership as the
 # endpoint link list. Newly created children can be updated individually.
 # Missing values and unchanged values must not create endpoint events.
@@ -1436,12 +1417,10 @@ sub MATTERDevice_SyncNodeReadings($;$) {
             next if defined($previous) && $previous eq $value;
             push @changes, [$reading, $value];
         }
-        if (@changes) {
-            readingsBeginUpdate($child);
-            readingsBulkUpdate($child, $_->[0], $_->[1]) foreach @changes;
-            readingsEndUpdate($child, 1);
-        }
-        MATTERDevice_UpdateDisplayState($child);
+        next unless @changes;
+        readingsBeginUpdate($child);
+        readingsBulkUpdate($child, $_->[0], $_->[1]) foreach @changes;
+        readingsEndUpdate($child, 1);
     }
 }
 
@@ -1638,11 +1617,8 @@ Additional structural types such as Power Source and OTA Requestor are ignored
 when a functional type is present. Unknown IDs use hexadecimal labels.
 Multiple distinct functional types do not cause an arbitrary group choice.
 Old generated <code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code> groups are migrated;
-custom groups are preserved. Without a device-specific <code>state</code>
-Reading, the FHEMWEB state shows reported node availability
-(<code>available</code>/<code>unavailable</code>), <code>removed</code> or
-<code>unknown</code>; user <code>stateFormat</code> is respected.
-The root detail view links to its endpoints, even after renaming.</p>
+custom groups are preserved. The root detail view links to its endpoints,
+even after renaming.</p>
 <p>Only newly autocreated nodes/endpoints are assigned to room <code>Matter</code>.
 Decommissioned devices are retained in FHEM rather than automatically deleted.</p>
 
@@ -1695,11 +1671,7 @@ bei vorhandener Gerätefunktion ignoriert. Unbekannte Typ-IDs erscheinen
 hexadezimal. Bei mehreren funktionalen Typen wird keine willkürliche
 Auswahl getroffen. Bisherige automatisch erzeugte
 <code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code>-Gruppen werden migriert;
-eigene Gruppen bleiben erhalten. Fehlt ein gerätespezifisches
-<code>state</code>-Reading, zeigt FHEMWEB die gemeldete Erreichbarkeit
-(<code>available</code>/<code>unavailable</code>), <code>removed</code>
-oder <code>unknown</code> an; ein eigenes <code>stateFormat</code>
-bleibt maßgeblich. Die Root-Detailansicht verlinkt die Endpunkte.</p>
+eigene Gruppen bleiben erhalten. Die Root-Detailansicht verlinkt die Endpunkte.</p>
 <p>Nur neu automatisch erzeugte Geräte werden dem Raum <code>Matter</code>
 zugeordnet. Entfernte Geräte bleiben in FHEM erhalten.</p>
 

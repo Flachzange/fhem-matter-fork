@@ -24,9 +24,6 @@ sub ReadingsVal {
 sub readingsSingleUpdate {
     my ($device, $reading, $value) = @_;
     $device->{READINGS}{$reading} = { VAL => $value, TIME => 'test-time' };
-    # The FHEM state Reading also drives the standard STATE presentation.
-    $device->{STATE} = $value if $reading eq 'state'
-        && !defined(AttrVal($device->{NAME}, 'stateFormat', undef));
 }
 sub readingsBeginUpdate { return; }
 sub readingsBulkUpdate {
@@ -765,8 +762,6 @@ MATTER_ProcessNode($defs{ioA}, {
     },
 });
 my $types_root = $defs{MATTER_TypeDisplay};
-is($defs{MATTER_TypeDisplay_EP10}{STATE}, 'unknown',
-   'unknown reachability displays unknown rather than Initialized');
 my $type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
 like($type_html, qr/<tr><td>EP<\/td><td>Type<\/td><td>FHEM device<\/td><\/tr>/,
      'compact column labels use regular table cells');
@@ -883,43 +878,6 @@ is($attr{MATTER_Bridge_grouping_EP1}{group}, 'Matter Infrastruktur',
 is($attr{MATTER_Bridge_grouping_EP10}{group}, 'Matter Infrastruktur',
    'legacy Bridged Node group is migrated without new endpoint attributes');
 
-# The STATE fallback is a presentation of reported reachability, not the
-# device's on/off state or the Matter server's membership marker.
-is($defs{MATTER_Bridge_grouping}{STATE}, 'unavailable',
-   'root displays node reachability instead of Initialized');
-is($defs{MATTER_Bridge_grouping_EP2}{STATE}, 'unavailable',
-   'sensor without a state Reading displays unavailable');
-is($defs{MATTER_Bridge_grouping_EP1}{STATE}, 'unavailable',
-   'structural endpoint without a state Reading displays unavailable');
-is($defs{MATTER_Bridge_grouping_EP11}{STATE}, 'on',
-   'actual OnOff telemetry keeps precedence over fallback');
-MATTER_ProcessNode($defs{ioA}, {
-    node_id => 190, name => 'Bridge grouping', available => JSON::true,
-});
-is($defs{MATTER_Bridge_grouping_EP2}{STATE}, 'available',
-   'a reported node reconnection updates the sensor presentation');
-is($defs{MATTER_Bridge_grouping_EP11}{STATE}, 'on',
-   'reachability must not overwrite real on/off state');
-MATTER_SetNodeStatus($defs{ioA}, 190, 'removed');
-is($defs{MATTER_Bridge_grouping_EP2}{STATE}, 'removed',
-   'removed Matter membership overrides stale reachability in presentation');
-MATTER_SetNodeStatus($defs{ioA}, 190, 'present');
-is($defs{MATTER_Bridge_grouping_EP2}{STATE}, 'available',
-   'restored server membership recalculates the presentation');
-
-$attr{MATTER_Bridge_grouping_EP2}{stateFormat} = 'user-controlled';
-$defs{MATTER_Bridge_grouping_EP2}{STATE} = 'custom-presentation';
-MATTER_ProcessNode($defs{ioA}, {
-    node_id => 190, name => 'Bridge grouping', available => JSON::false,
-});
-is($defs{MATTER_Bridge_grouping_EP2}{STATE}, 'custom-presentation',
-   'user stateFormat remains authoritative');
-is(ReadingsVal('MATTER_Bridge_grouping_EP2', 'available', ''), 'false',
-   'node availability still updates with a custom stateFormat');
-delete $attr{MATTER_Bridge_grouping_EP2}{stateFormat};
-MATTER_ProcessNode($defs{ioA}, { node_id => 190, name => 'Bridge grouping' });
-is($defs{MATTER_Bridge_grouping_EP2}{STATE}, 'unavailable',
-   'removing custom stateFormat restores the built-in reachability fallback');
 
 
 MATTERDevice_Parse($types_root, encode_json({
