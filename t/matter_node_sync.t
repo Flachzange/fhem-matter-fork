@@ -177,6 +177,8 @@ sub CommandRename {
     return undef;
 }
 
+# FHEM exports stateFormat through readingFnAttributes, not the global list.
+$readingFnAttributes = 'stateFormat:textField-long';
 require './FHEM/97_MATTERDevice.pm';
 require './FHEM/97_MATTER.pm';
 
@@ -214,6 +216,31 @@ MATTER_ProcessNodeList($defs{ioA}, [node(42, 'Hall Light')], 'start_listening');
 my $root = $defs{MATTER_Hall_Light};
 my $child = $defs{MATTER_Hall_Light_EP1};
 ok($root && $child, 'full snapshot creates root and endpoint');
+is($attr{MATTER_Hall_Light}{stateFormat}, 'available',
+   'new root defaults to displaying its availability reading');
+ok(!exists($attr{MATTER_Hall_Light_EP1}{stateFormat}),
+   'endpoint display format is not overridden');
+ok(!exists($root->{READINGS}{available}),
+   'default root display does not fabricate a reachability reading');
+# CommandAttr is already modeled; repeated discovery must keep the user value.
+is(CommandAttr(undef, 'MATTER_Hall_Light stateFormat Custom'), undef,
+   'user can override root display');
+MATTER_ProcessNode($defs{ioA}, node(42, 'Repeated after user format'));
+is($attr{MATTER_Hall_Light}{stateFormat}, 'Custom',
+   'synchronization respects a custom root stateFormat');
+is(CommandDeleteAttr(undef, 'MATTER_Hall_Light stateFormat'), undef,
+   'user can remove custom root stateFormat');
+MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'Display migration'});
+is($attr{MATTER_Hall_Light}{stateFormat}, 'available',
+   'existing root missing stateFormat migrates during discovery');
+is(CommandDefine(undef, 'Standalone_Root MATTERDevice 999'), undef,
+   'manually defined root can be initialized without discovery');
+is($attr{Standalone_Root}{stateFormat}, 'available',
+   'root Define configures the display even before server discovery');
+ok(!exists($defs{Standalone_Root}{READINGS}{available}),
+   'root Define does not invent physical availability');
+is(CommandDelete(undef, 'Standalone_Root'), undef,
+   'standalone root test device is cleaned up');
 is($root->{DEF}, '42', 'root definition contains only the node ID');
 is($child->{DEF}, '42 1', 'endpoint definition contains no root FHEM name');
 my $legacy_define = CommandDefine(undef, 'Legacy_Endpoint MATTERDevice 42 9 Former_Root');
@@ -441,6 +468,10 @@ MATTER_ProcessNode($defs{ioA}, node(42, 'Hall Light'));
 is($child->{IODev}{NAME}, 'ioA',
    'correct IO rebinds a child without trusting its previous root name');
 is($defs{MATTER_Other_IO_light_EP1}{IODev}{NAME}, 'ioB', 'new endpoint binds to matching IO');
+is($attr{MATTER_Other_IO_light}{stateFormat}, 'available',
+   'other Matter IO root gets the default display independently');
+ok(!exists($attr{MATTER_Other_IO_light_EP1}{stateFormat}),
+   'other Matter IO endpoint retains its own display');
 is($attr{MATTER_Other_IO_light}{group}, 'Matter Nodes',
     'different IO root also joins the administrative root group');
 is($attr{MATTER_Other_IO_light_EP1}{group}, 'On/Off light',
