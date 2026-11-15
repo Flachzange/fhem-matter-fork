@@ -15,6 +15,7 @@ my %bulk_writes;
 my %single_writes;
 my $preferred_io = 'ioA';
 my $fail_io_for = '';
+my $reading_event_hook;
 
 sub Log3 { push @log, $_[2]; }
 sub AttrVal { return exists $attr{$_[0]}{$_[1]} ? $attr{$_[0]}{$_[1]} : $_[2]; }
@@ -26,6 +27,7 @@ sub readingsSingleUpdate {
     my ($device, $reading, $value) = @_;
     $single_writes{$device->{NAME}}{$reading}++;
     $device->{READINGS}{$reading} = { VAL => $value, TIME => 'test-time' };
+    $reading_event_hook->($device, $reading, $value) if $reading_event_hook;
 }
 sub readingsBeginUpdate { return; }
 sub readingsBulkUpdate {
@@ -768,8 +770,19 @@ my $disabled = {NAME => 'disableIO', TYPE => 'MATTER', READINGS => {},
 $defs{disableIO} = $disabled;
 $selectlist{disableIO} = $disabled;
 InternalTimer(31, 'MATTER_Heartbeat', $disabled, 0);
+my $reentered_connect = 0;
+$reading_event_hook = sub {
+    my ($device, $reading, $value) = @_;
+    return unless $device eq $disabled && $reading eq 'state' && $value eq 'disconnected';
+    ++$reentered_connect;
+    MATTER_Set($disabled, 'disableIO', 'connect');
+};
 is(CommandAttr(undef, 'disableIO disable 1'), undef,
    'disable=1 is accepted on a running MATTER IO');
+$reading_event_hook = undef;
+is($reentered_connect, 1, 'synchronous FHEM event subscriber reentered set connect');
+ok(!$disabled->{helper}{connect_attempts},
+   'reentrant connect cannot defeat a pending disable transition');
 like(join("\n", @log), qr/\[disableIO\] Disabled: connection closed, pending timers cancelled/,
      'disable transition and cleanup are logged');
 ok(!$disabled->{CD} && !exists($selectlist{disableIO}),
@@ -971,6 +984,9 @@ is($sent_requests[1]{args}{command_name}, 'MoveToHueAndSaturation',
 like(MATTERDevice_Set($child, $child->{NAME}, 'rgb', 'GG0000'),
      qr/^Usage: set /, 'malformed RGB color is rejected');
 is(scalar(@sent_requests), 0, 'invalid RGB sends no device command');
+$attr{$child->{NAME}}{max_brightness} = 0;
+is(MATTERDevice_MaxBrightness($child), 254,
+   'invalid zero maximum falls back without division by zero');
 $attr{$child->{NAME}}{max_brightness} = 200;
 ok(MATTERDevice_AttributeUsable($child, 8, 3),
    'legacy min/max attributes remain usable without AttributeList');
@@ -1670,6 +1686,24 @@ unlike($disconnected // '', qr/\Q$manual_code\E/,
 is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'interrupted',
    'failed send does not produce misleading running status');
 close($commission_server);
+
+# FHEM calls SetFn in list context. The second return value prevents DoSet
+# from synthesizing a plaintext password-bearing event on this device.
+socketpair(my $credential_socket, my $credential_peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+    or die 'credential socketpair';
+my $credential_io = {
+    NAME => 'credentialIO', TYPE => 'MATTER', READINGS => {}, helper => {},
+    CD => $credential_socket, websocket => 1, ws_status => 'connected'
+};
+$defs{credentialIO} = $credential_io;
+my ($wifi_result, $wifi_skip_event) = MATTER_Set(
+    $credential_io, 'credentialIO', 'setWifiCredentials',
+    'SyntheticSSID', 'SyntheticPassword'
+);
+is($wifi_result, undef, 'credential setter accepts a connected request');
+is($wifi_skip_event, 1, 'credential command suppresses FHEM synthetic set event');
+MATTER_Close($credential_io);
+close($credential_peer);
 
 # FHEM renaming an IO does not automatically migrate its clients. Test both
 # the native callback and subsequent discovery without losing client identity.
