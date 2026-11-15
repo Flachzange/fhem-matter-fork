@@ -102,6 +102,32 @@ Enter the following commands in the **FHEM command line**.
 
 Only merged changes on `main` are published by this source. Adding it does not automatically schedule updates, and no copying of the Perl files is needed once this source is installed. `CHANGED` provides brief notes for the current branch release; [CHANGELOG.md](CHANGELOG.md) preserves the full fork history. FHEM's updater does not maintain a separate changelog baseline per update source, so the displayed notes are not necessarily the exact delta since your last installation.
 
+### Testing branch (optional)
+
+The [`testing` branch](https://github.com/Flachzange/fhem-matter-fork/tree/testing) contains changes that are being evaluated before they are merged into `main`. It provides its own [FHEM updater manifest](https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/testing/controls_matter.txt). Use this branch only when you intentionally want to test newer development changes.
+
+FHEM permits **only one update source named `controls_matter.txt`**. To switch an existing installation from this fork's `main` source to `testing`, enter the following commands in the **FHEM command line** (check your current sources with `update list` first):
+
+```text
+update delete https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/main/controls_matter.txt
+update add https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/testing/controls_matter.txt
+update check https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/testing/controls_matter.txt
+update all https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/testing/controls_matter.txt
+shutdown restart
+```
+
+To switch back to `main`, change the registered source and update the same modules from `main`:
+
+```text
+update delete https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/testing/controls_matter.txt
+update add https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/main/controls_matter.txt
+update check https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/main/controls_matter.txt
+update all https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/main/controls_matter.txt
+shutdown restart
+```
+
+Changing the registered source alone does **not** install or revert module files. The explicit `update all <source URL>` command downloads the selected branch's Matter modules; it does not update unrelated FHEM sources. Do not register the `main` and `testing` manifests simultaneously because they share the same filename and target module paths.
+
 ## Configuration and usage
 
 ### Matter IO device
