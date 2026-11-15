@@ -598,6 +598,16 @@ sub MATTERDevice_CommandSupported($$$) {
     return 1;
 }
 
+# Keep brightness bounds consistent across controls, commands and readings.
+sub MATTERDevice_MaxBrightness {
+    my ($hash) = @_;
+    my $max = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
+        ? AttrVal($hash->{NAME}, 'max_brightness', 254) : 254;
+    return 254 unless defined($max) && !ref($max) &&
+        $max =~ /^\d+$/ && $max > 0 && $max <= 254;
+    return $max;
+}
+
 sub MATTERDevice_Set($$@) {
     my ($hash, $name, $cmd, @args) = @_;
 
@@ -606,7 +616,6 @@ sub MATTERDevice_Set($$@) {
     my $valid = 0;
 
     if ($cmd eq "?") {
-        my $list_str = join(" ", @setList);
         return "Unknown argument $cmd, choose one of $list_str";
     }
 
@@ -619,7 +628,6 @@ sub MATTERDevice_Set($$@) {
     }
 
     unless ($valid) {
-        my $list_str = join(" ", @setList);
         return "Unknown argument $cmd, choose one of $list_str";
     }
     
@@ -638,7 +646,8 @@ sub MATTERDevice_Set($$@) {
         return "Usage: set $name $cmd <non-negative integer>"
             unless @args == 1 && defined($args[0]) && $args[0] =~ /\A\d+\z/;
         return "$cmd must be between 0 and 100" if ($cmd eq 'pct' || $cmd eq 'tilt') && $args[0] > 100;
-        return "Invalid brightness" if $cmd eq 'brightness' && $args[0] > 254;
+        return "Invalid brightness" if $cmd eq 'brightness' &&
+            $args[0] > MATTERDevice_MaxBrightness($hash);
         return "Invalid color temperature" if $cmd eq 'ct' && (!$args[0] || $args[0] > 65534);
         return "Invalid frequency" if $cmd eq 'frequency' && (!$args[0] || $args[0] > 65535);
     }
@@ -810,9 +819,7 @@ sub MATTERDevice_Set($$@) {
                 }
             };
         } else {
-            my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-            ? AttrVal($name, "max_brightness", 254)
-            : 254;
+            my $max_level = MATTERDevice_MaxBrightness($hash);
             my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
             $payload = {
                 message_id => MATTER_NextMessageId($io_hash),
@@ -893,9 +900,7 @@ sub MATTERDevice_Set($$@) {
             my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
             my $can_level = $use_with_onoff || MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
             if ($can_level) {
-                my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-                    ? AttrVal($name, "max_brightness", 254)
-                    : 254;
+                my $max_level = MATTERDevice_MaxBrightness($hash);
                 my $level = int(($rgb_max / 255) * $max_level + 0.5);
                 $level_payload = {
                     message_id => MATTER_NextMessageId($io_hash),
@@ -930,9 +935,7 @@ sub MATTERDevice_Set($$@) {
             my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
             my $can_level = $use_with_onoff || MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
             if ($can_level) {
-                my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-                    ? AttrVal($name, "max_brightness", 254)
-                    : 254;
+                my $max_level = MATTERDevice_MaxBrightness($hash);
                 my $level = int($max * $max_level + 0.5);
                 $level_payload = {
                     message_id => MATTER_NextMessageId($io_hash),
@@ -974,8 +977,7 @@ sub MATTERDevice_Set($$@) {
         };
     }
     elsif ($cmd eq "getConfig") {
-        my $ioHash = $hash->{IODev};
-        return "No IODev assigned to $name" if (!$ioHash || !$ioHash->{fhem}{helper}{sendWS});
+        my $ioHash = $io_hash; # Connection was already checked above.
 
         my @paths;
 
@@ -1189,17 +1191,9 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
             MATTERDevice_SetAttributeIfNotExists($name, $attr_name, $value);
         }
         if ($attr_name eq "brightness") {
-            # Während getConfig wird der Capability-Cache vor dem Neuaufbau geleert.
-            # Attribute aus dem Result-Hash haben keine garantierte Reihenfolge. Solange
-            # AttributeList noch nicht verarbeitet wurde, den bereits bekannten Wert nutzen.
-            my $attribute_list = $hash->{helper}{capabilities}{0x0008}{attribute_list};
-            my $max_level = (
-                ref($attribute_list) ne 'HASH' ||
-                MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-            ) ? AttrVal($name, "max_brightness", 254) : 254;
-            $max_level = 254 unless defined($max_level) &&
-                !ref($max_level) && $max_level =~ /^\d+$/ &&
-                $max_level > 0 && $max_level <= 254;
+            # Metadata and user overrides are interpreted consistently with
+            # the set slider and outgoing LevelControl commands.
+            my $max_level = MATTERDevice_MaxBrightness($hash);
             my $pct_value = int($value * 100 / $max_level);
             readingsBulkUpdate($hash, "pct", $pct_value);
         }
@@ -1353,9 +1347,7 @@ sub MATTERDevice_GetSetList($) {
         MATTERDevice_CommandSupported($hash, 0x0008, 0x04) ||
         MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
     if ($can_level) {
-        my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-            ? AttrVal($name, "max_brightness", 254)
-            : 254;
+        my $max_level = MATTERDevice_MaxBrightness($hash);
         $add->("brightness:slider,0,1,$max_level");
         $add->("pct:slider,0,1,100");
     }
