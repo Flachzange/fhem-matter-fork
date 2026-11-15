@@ -959,6 +959,20 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'battery_percent', ''), 55,
    'read_attribute response is routed to the original endpoint');
+
+# A connected IO whose send callback rejects a frame must not return success
+# or leave a pending getConfig request behind.
+my $previous_sender = $defs{ioA}{fhem}{helper}{sendWS};
+$defs{ioA}{fhem}{helper}{sendWS} = sub { return 0 };
+my $pending_before_send_failure = scalar keys %{$defs{ioA}{helper}{pending_config} // {}};
+like(MATTERDevice_Set($child, $child->{NAME}, 'on') // '',
+     qr/Unable to send device command/, 'failed device send returns a FHEM error');
+like(MATTERDevice_Set($child, $child->{NAME}, 'getConfig') // '',
+     qr/Unable to send getConfig/, 'failed read send returns a FHEM error');
+is(scalar(keys %{$defs{ioA}{helper}{pending_config} // {}}),
+   $pending_before_send_failure, 'failed read leaves no dangling pending request');
+$defs{ioA}{fhem}{helper}{sendWS} = $previous_sender;
+
 ok(!exists $defs{ioA}{helper}{pending_config}{$read_request->{message_id}},
    'matched getConfig pending request is cleared');
 
