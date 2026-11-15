@@ -359,7 +359,6 @@ sub MATTERDevice_Define($$) {
 
     $hash->{node_id} = $node_id;
     $hash->{endpoint_id} = $endpoint_id;
-    $hash->{STATE}   = "Initialized";
     if ($root_device_name) {
         $hash->{device} = $root_device_name;
     }
@@ -1580,7 +1579,8 @@ sub MATTERDevice_GetOrCreateChild($$) {
 <p>A MATTERDevice represents a Matter node (root endpoint 0) or one of its
 additional endpoints. It uses the assigned MATTER IO device to receive attribute
 updates and send supported commands. The module preserves existing FHEM names,
-rooms and attributes during node synchronization.</p>
+rooms and attributes during node synchronization. It does not override FHEM's
+initial STATE, allowing the normal statefile restoration at startup.</p>
 <ul>
   <li><b>Define:</b>
       <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id root_device_name]</code></li>
@@ -1631,7 +1631,9 @@ Decommissioned devices are retained in FHEM rather than automatically deleted.</
 <p>Ein MATTERDevice repräsentiert einen Matter-Knoten (Root-Endpunkt 0) oder einen
 seiner weiteren Endpunkte. Über das zugeordnete MATTER-IO-Device empfängt es
 Attributänderungen und sendet unterstützte Befehle. Bei der Synchronisation
-bleiben bestehende Namen, Räume und Benutzerattribute erhalten.</p>
+bleiben bestehende Namen, Räume und Benutzerattribute erhalten. Der von FHEM
+initial gesetzte STATE bleibt unverändert, damit das Statefile beim Neustart
+den gespeicherten Anzeigestatus wiederherstellen kann.</p>
 <ul>
   <li><b>Definition:</b>
       <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id root_device_name]</code></li>

@@ -76,7 +76,7 @@ sub CommandDefine {
     return "Only MATTERDevice is modeled" unless $type eq 'MATTERDevice';
     my $device = {
         NAME => $name, TYPE => $type, DEF => join(' ', @args),
-        READINGS => {}, FUUID => "uuid-$name",
+        STATE => '???', READINGS => {}, FUUID => "uuid-$name",
     };
     $defs{$name} = $device;
     my $err = MATTERDevice_Define($device, "$name $type " . join(' ', @args));
@@ -170,6 +170,10 @@ MATTER_ProcessNodeList($defs{ioA}, [node(42, 'Hall Light')], 'start_listening');
 my $root = $defs{MATTER_Hall_Light};
 my $child = $defs{MATTER_Hall_Light_EP1};
 ok($root && $child, 'full snapshot creates root and endpoint');
+# FHEM's CommandDefine starts at STATE=???; its startup setstate restores a
+# persisted display state only while that placeholder is untouched.
+is($root->{STATE}, '???', 'root Define leaves default STATE for statefile restore');
+is($child->{STATE}, '???', 'endpoint Define leaves default STATE for statefile restore');
 is($root->{IODev}{NAME}, 'ioA', 'root IODev is correct');
 is($child->{IODev}{NAME}, 'ioA', 'endpoint IODev is correct');
 is($attr{MATTER_Hall_Light}{room}, 'Matter', 'new root gets default room');
