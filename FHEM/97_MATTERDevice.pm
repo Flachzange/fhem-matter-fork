@@ -1060,7 +1060,8 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
     # Descriptor cluster (0x001D), DeviceTypeList (0x0000).
     # Matter.js supplies an array of DeviceTypeStruct objects (deviceType, revision).
-    # Store validated IDs only in the endpoint's runtime helper; no new readings/events.
+    # Persist the advertised IDs as a canonical reading. Unlike helper data,
+    # regular FHEM readings survive a restart through the statefile/configDB.
     if ($cluster_id == 0x001D && $attr_id == 0x0000) {
         if (ref($value) eq 'ARRAY') {
             my (@types, %seen);
@@ -1072,7 +1073,9 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
                 push @types, $type_id unless $seen{$type_id}++;
             }
             if (@types) {
-                $hash->{helper}{device_types} = \@types;
+                my $ids = join(',', map { sprintf('0x%04X', $_) } sort { $a <=> $b } @types);
+                readingsSingleUpdate($hash, 'device_type_ids', $ids, 1)
+                    if ReadingsVal($name, 'device_type_ids', '') ne $ids;
                 MATTERDevice_EnsureTypeGroup($hash);
             }
         }
@@ -1345,6 +1348,16 @@ sub MATTERDevice_GetSetList($) {
     return @list;
 }
 
+# Read canonical persisted Matter Descriptor IDs instead of transient helper data.
+# Malformed or missing readings must never be interpreted as a valid device type.
+sub MATTERDevice_DeviceTypeIds($) {
+    my ($hash) = @_;
+    my $ids = ReadingsVal($hash->{NAME}, 'device_type_ids', '');
+    return () unless defined($ids)
+        && $ids =~ /^0x[0-9A-Fa-f]{1,8}(?:,0x[0-9A-Fa-f]{1,8})*$/;
+    return map { hex($_) } split(/,/, $ids);
+}
+
 # Root endpoints share one administrative FHEMWEB group; functional
 # endpoints use their single non-utility Matter Descriptor device type.
 # Replace only legacy node groups or uncustomized type groups.
@@ -1361,7 +1374,7 @@ sub MATTERDevice_EnsureTypeGroup($) {
     if ($root) {
         $group = 'Matter Nodes';
     } else {
-        my @declared = @{$device->{helper}{device_types} // []};
+        my @declared = MATTERDevice_DeviceTypeIds($device);
         my @types = grep { !$MATTER_STRUCTURAL_DEVICE_TYPES{$_} } @declared;
         # Never choose arbitrarily between multiple functional device types.
         return if @types > 1 || !@declared;
@@ -1437,7 +1450,7 @@ sub MATTERDevice_SyncNodeReadings($;$) {
 # from a switch or a light.
 sub MATTERDevice_EndpointType($) {
     my ($hash) = @_;
-    my @types = @{$hash->{helper}{device_types} // []};
+    my @types = MATTERDevice_DeviceTypeIds($hash);
     if (@types) {
         my @specific = grep { !$MATTER_STRUCTURAL_DEVICE_TYPES{$_} } @types;
         @types = @specific if @specific;
@@ -1608,6 +1621,12 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
       the Matter server; <code>removed</code> means it was decommissioned or is
       missing from a complete server snapshot. Neither value is a reachability
       or availability indication.</li>
+  <li><b>Reading device_type_ids:</b> The validated IDs from Matter
+      <code>Descriptor.DeviceTypeList</code> are stored as comma-separated
+      hexadecimal IDs (for example <code>0x010A</code>). FHEM restores this
+      reading after a restart, so endpoint type labels and automatic grouping
+      do not depend on a new server connection. Invalid or missing Descriptor
+      updates do not overwrite known IDs.</li>
   <li><b>Readings model and available:</b> The root's <code>model</code> (from
       BasicInformation) and node-wide <code>available</code> are mirrored to
       its endpoints if reported. <code>available=true/false</code> describes
@@ -1665,6 +1684,12 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
       auf dem Matter-Server vorhanden ist; <code>removed</code> bedeutet, dass er
       dort entfernt wurde oder in einer vollständigen Node-Liste fehlt. Das Reading
       zeigt nicht die physische Erreichbarkeit oder Verfügbarkeit an.</li>
+  <li><b>Reading device_type_ids:</b> Die validierten IDs aus
+      <code>Descriptor.DeviceTypeList</code> werden als kommaseparierte
+      Hexadezimalwerte (z. B. <code>0x010A</code>) gespeichert. FHEM stellt
+      das Reading beim Neustart wieder her; die Typanzeige und die automatische
+      Gruppierung benötigen dafür keine neue Serververbindung. Ungültige oder
+      fehlende Descriptor-Updates überschreiben die gespeicherten IDs nicht.</li>
   <li><b>Readings model und available:</b> Das am Root über BasicInformation
       ermittelte <code>model</code> und die Node-weite Erreichbarkeit
       <code>available</code> werden bei bekannten Werten an die Endpunkte

@@ -12,6 +12,7 @@ BEGIN { $INC{'HttpUtils.pm'} = 1; } # No FHEM network stack is needed by these s
 my @log;
 my @timers;
 my %bulk_writes;
+my %single_writes;
 my $preferred_io = 'ioA';
 my $fail_io_for = '';
 
@@ -23,6 +24,7 @@ sub ReadingsVal {
 }
 sub readingsSingleUpdate {
     my ($device, $reading, $value) = @_;
+    $single_writes{$device->{NAME}}{$reading}++;
     $device->{READINGS}{$reading} = { VAL => $value, TIME => 'test-time' };
 }
 sub readingsBeginUpdate { return; }
@@ -855,6 +857,21 @@ like($type_html, qr/<td>10<\/td><td>Temperature sensor<\/td>/,
      'Descriptor DeviceTypeList identifies the temperature sensor');
 like($type_html, qr/<td>11<\/td><td>Humidity sensor<\/td>/,
      'Descriptor DeviceTypeList identifies the humidity sensor');
+is(ReadingsVal('MATTER_TypeDisplay_EP1', 'device_type_ids', ''), '0x010A',
+   'DeviceTypeList is stored as a persistent canonical FHEM reading');
+is(ReadingsVal('MATTER_TypeDisplay_EP10', 'device_type_ids', ''), '0x0302',
+   'endpoint 10 stores its own DeviceTypeList independently');
+is(ReadingsVal('MATTER_TypeDisplay_EP11', 'device_type_ids', ''), '0x0307',
+   'endpoint 11 stores its own DeviceTypeList independently');
+my $prior_type_events = $single_writes{MATTER_TypeDisplay_EP1}{device_type_ids};
+MATTERDevice_Parse($types_root, encode_json({
+    node_id => 88, attributes => {
+        '1/29/0' => [{deviceType => 0x010A, revision => 1},
+                     {deviceType => 0x010A, revision => 1}],
+    },
+}));
+is($single_writes{MATTER_TypeDisplay_EP1}{device_type_ids}, $prior_type_events,
+   'repeated equivalent Descriptor metadata does not generate another reading update');
 
 # Per-endpoint getConfig reads DeviceTypeList explicitly.
 @sent_requests = ();
@@ -890,6 +907,8 @@ MATTERDevice_Parse($types_root, encode_json({
 }));
 is($attr{MATTER_TypeDisplay_EP1}{group}, 'Smoke CO Alarm',
    'Power Source plus Smoke CO Alarm produces one alarm group');
+is(ReadingsVal('MATTER_TypeDisplay_EP1', 'device_type_ids', ''), '0x0011,0x0076',
+   'structural and functional IDs are stored together, sorted numerically');
 
 # Ambiguous functional types must not force an arbitrary group change.
 MATTERDevice_Parse($types_root, encode_json({
@@ -964,6 +983,8 @@ like($type_html, qr/<td>1<\/td><td>On\/Off light<\/td>/,
      'application type is preferred to the utility root type');
 like($type_html, qr/<td>10<\/td><td>0xF123<\/td>/,
      'unknown type ID stays explicitly identifiable');
+is(ReadingsVal('MATTER_TypeDisplay_EP10', 'device_type_ids', ''), '0xF123',
+   'unrecognized type IDs remain persistable and visible without a label');
 
 MATTERDevice_Parse($types_root, encode_json({
     node_id => 88, attributes => { '10/29/0' => [{deviceType => 'invalid'}] },
@@ -971,9 +992,33 @@ MATTERDevice_Parse($types_root, encode_json({
 $type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
 like($type_html, qr/<td>10<\/td><td>0xF123<\/td>/,
      'malformed type metadata does not replace the last valid device type');
+is(ReadingsVal('MATTER_TypeDisplay_EP10', 'device_type_ids', ''), '0xF123',
+   'malformed Descriptor updates do not overwrite persisted type IDs');
 
-ok(!exists($defs{MATTER_TypeDisplay_EP10}{READINGS}{device_type}),
-   'type presentation does not create additional readings');
+# Model a FHEM restart after the statefile has restored the readings but
+# without any new start_listening response or runtime helper metadata.
+for my $ep (qw(MATTER_TypeDisplay_EP1 MATTER_TypeDisplay_EP10 MATTER_TypeDisplay_EP11)) {
+    $defs{$ep}{helper} = {};
+}
+$type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
+like($type_html, qr/<td>1<\/td><td>On\/Off light<\/td>/,
+     'endpoint type is restored from its reading without a Matter connection');
+like($type_html, qr/<td>10<\/td><td>0xF123<\/td>/,
+     'unknown hexadecimal type is restored without runtime helpers');
+like($type_html, qr/<td>11<\/td><td>Contact sensor<\/td>/,
+     'other endpoint type is restored independently');
+is($attr{MATTER_TypeDisplay_EP1}{group}, 'On/Off light',
+   'current group remains unchanged during the simulated restart');
+is_deeply([MATTERDevice_DeviceTypeIds($defs{MATTER_TypeDisplay_EP10})], [0xF123],
+    'group and display consume the same persisted type ID data');
+$attr{MATTER_TypeDisplay_EP10}{group} = 'Node 88 (ioA)';
+MATTERDevice_EnsureTypeGroup($defs{MATTER_TypeDisplay_EP10});
+is($attr{MATTER_TypeDisplay_EP10}{group}, '0xF123',
+   'automatic grouping recovers from the persisted reading after restart');
+$defs{MATTER_TypeDisplay_EP10}{READINGS}{device_type_ids}{VAL} = 'not-a-type';
+is_deeply([MATTERDevice_DeviceTypeIds($defs{MATTER_TypeDisplay_EP10})], [],
+    'invalid restored reading cannot masquerade as a device type');
+$defs{MATTER_TypeDisplay_EP10}{READINGS}{device_type_ids}{VAL} = '0xF123';
 
 # Model and availability are the only root readings mirrored onto endpoints.
 # Test all supported input paths with independent nodes sharing an ID on two IOs.
