@@ -924,7 +924,10 @@ my @sent_requests;
 # the successful accepted-send contract, not delivery or device execution.
 like(MATTERDevice_Set($child, $child->{NAME}, 'on') // '',
      qr/No active WebSocket/, 'device set rejects disconnected IO without claiming success');
-$defs{ioA}{CD} = 'mock-socket';
+socketpair(my $io_a_socket, my $io_a_peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+    or die 'connected IO test socketpair';
+$defs{ioA}{CD} = $io_a_socket;
+$defs{ioA}{FD} = fileno($io_a_socket);
 $defs{ioA}{websocket} = 1;
 $defs{ioA}{ws_status} = 'connected';
 $defs{ioA}{fhem}{helper}{sendWS} = sub {
@@ -1667,5 +1670,67 @@ unlike($disconnected // '', qr/\Q$manual_code\E/,
 is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'interrupted',
    'failed send does not produce misleading running status');
 close($commission_server);
+
+# FHEM renaming an IO does not automatically migrate its clients. Test both
+# the native callback and subsequent discovery without losing client identity.
+my $old_preferred_io = $preferred_io;
+$preferred_io = 'renameIO';
+$defs{renameIO} = {
+    NAME => 'renameIO', TYPE => 'MATTER', helper => {}, READINGS => {}
+};
+MATTER_ProcessNode($defs{renameIO}, node(778, 'Renamable'));
+my $rename_root = $defs{MATTER_Renamable};
+my $rename_child = $defs{MATTER_Renamable_EP1};
+ok($rename_root && $rename_child, 'IO rename fixture creates node and endpoint');
+$defs{renameIO}{FD} = 100;
+$selectlist{renameIO} = $defs{renameIO};
+is(CommandRename(undef, 'renameIO renamedIO'), undef, 'native FHEM IO rename succeeds');
+is(AttrVal($rename_root->{NAME}, 'IODev', ''), 'renamedIO',
+   'root IODev attribute follows renamed IO');
+is(AttrVal($rename_child->{NAME}, 'IODev', ''), 'renamedIO',
+   'endpoint IODev attribute follows renamed IO');
+is($modules{MATTERDevice}{defptr}{'renamedIO:778'}, $rename_root,
+   'root defptr is indexed under new IO name');
+ok(!exists $modules{MATTERDevice}{defptr}{'renameIO:778'},
+   'old IO root key is removed');
+ok(!exists $selectlist{renameIO} && $selectlist{renamedIO} eq $defs{renamedIO},
+   'FHEM selectlist uses renamed IO key');
+my $before_rename_resync = count_devices();
+MATTER_ProcessNode($defs{renamedIO}, node(778, 'Renamable'));
+is(count_devices(), $before_rename_resync,
+   'rediscovery after IO rename preserves the original devices');
+$preferred_io = $old_preferred_io;
+delete $selectlist{renamedIO};
+
+# Request IDs are unique across all in-flight command and read namespaces.
+$defs{ioA}{helper}{next_message_id} = 15;
+$defs{ioA}{helper}{pending_command}{16} = 'get_nodes';
+$defs{ioA}{helper}{pending_config}{17} = { node_id => 42, created_at => $mock_time };
+is(MATTER_NextMessageId($defs{ioA}), 18,
+   'shared message ID allocator skips both pending request maps');
+delete $defs{ioA}{helper}{pending_command}{16};
+delete $defs{ioA}{helper}{pending_config}{17};
+
+# A complete snapshot cannot reverse structural events delivered after its
+# request, even if the snapshot contains the affected node.
+is(MATTER_Set($defs{ioA}, 'ioA', 'discover'), undef, 'tracked discovery is sent');
+my $snapshot_id = $defs{ioA}{helper}{next_message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_removed', data => 42
+}));
+is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'removed',
+   'newer node removal event is applied');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $snapshot_id, result => [node(42, 'OldNodeLabel')]
+}));
+is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'removed',
+   'late snapshot does not re-add node removed by a newer event');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_added', data => node(42, 'Hall Light')
+}));
+is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present',
+   'new node_added event restores node membership');
+close($io_a_peer);
+MATTER_Close($defs{ioA});
 
 done_testing();
