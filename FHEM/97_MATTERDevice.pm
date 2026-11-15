@@ -313,6 +313,7 @@ sub MATTERDevice_Initialize($) {
     $hash->{SetFn}    = "MATTERDevice_Set";
     $hash->{GetFn}    = "MATTERDevice_Get";
     $hash->{ParseFn}  = "MATTERDevice_Parse";
+    $hash->{NotifyFn} = "MATTERDevice_Notify";
     $hash->{FW_detailFn} = "MATTERDevice_FWDetail";
     $hash->{FW_deviceOverview} = 1; # Keep FHEMWEB DeviceOverview above the endpoint links.
     $hash->{AttrList} = "IODev " .
@@ -346,15 +347,49 @@ sub MATTERDevice_Initialize($) {
     $hash->{MatchList} = { "1" => ".*" };
 }
 
-# A root is an administrative node, so its default display is reachability,
-# not the endpoint-specific state. Explicit FHEM user formatting takes priority.
-sub MATTERDevice_EnsureRootStateFormat($) {
-    my ($hash) = @_;
+# Root status is an interpreted node-wide reachability report, not an endpoint
+# state or a copy of the last saved available value.
+sub MATTERDevice_SetRootState($$) {
+    my ($hash, $state) = @_;
     return unless ($hash->{endpoint_id} // 0) == 0;
+    readingsSingleUpdate($hash, 'state', $state, 1)
+        if ReadingsVal($hash->{NAME}, 'state', '') ne $state;
+}
+
+sub MATTERDevice_UpdateAvailability($$) {
+    my ($hash, $reported) = @_;
+    return unless ($hash->{endpoint_id} // 0) == 0;
+    my $boolean = MATTERDevice_NormalizeBoolean($reported);
+    return unless defined $boolean;
+    my $available = $boolean ? 'true' : 'false';
+    my $state = $boolean ? 'online' : 'offline';
+    my $change_available = ReadingsVal($hash->{NAME}, 'available', '') ne $available;
+    my $change_state = ReadingsVal($hash->{NAME}, 'state', '') ne $state;
+    if ($change_available || $change_state) {
+        readingsBeginUpdate($hash);
+        readingsBulkUpdate($hash, 'available', $available) if $change_available;
+        readingsBulkUpdate($hash, 'state', $state) if $change_state;
+        readingsEndUpdate($hash, 1);
+    }
+    MATTERDevice_SyncNodeReadings($hash);
+}
+
+# Config and statefile restoration complete before INITIALIZED/REREADCFG.
+# The former module created exactly 'stateFormat available' automatically.
+# Migrate that legacy default once, without altering other user formatting.
+sub MATTERDevice_Notify($$) {
+    my ($hash, $dev) = @_;
+    return unless ($hash->{endpoint_id} // 0) == 0 &&
+                  ($dev->{NAME} // '') eq 'global';
+    return unless grep { $_ eq 'INITIALIZED' || $_ eq 'REREADCFG' }
+                  @{$dev->{CHANGED} // []};
     my $name = $hash->{NAME};
-    return if defined AttrVal($name, 'stateFormat', undef);
-    my $error = CommandAttr(undef, "$name stateFormat available");
-    Log3 $name, 3, "MATTERDevice: Cannot set root stateFormat on $name: $error" if $error;
+    if (AttrVal($name, 'stateFormat', '') eq 'available' &&
+        ReadingsVal($name, 'state', '') !~ /\A(?:online|offline|unknown|removed)\z/) {
+        my $error = CommandDeleteAttr(undef, "$name stateFormat");
+        Log3 $name, 3, "MATTERDevice: Cannot remove legacy stateFormat on $name: $error" if $error;
+    }
+    MATTERDevice_SetRootState($hash, 'unknown');
 }
 
 sub MATTERDevice_Define($$) {
@@ -394,7 +429,10 @@ sub MATTERDevice_Define($$) {
         AssignIoPort($hash);
         my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
         $modules{MATTERDevice}{defptr}{"$io_name:$node_id"} = $hash;
-        MATTERDevice_EnsureRootStateFormat($hash);
+        $hash->{NOTIFYDEV} = 'global';
+        MATTERDevice_SetRootState($hash, 'unknown') if $init_done;
+    } else {
+        delete $hash->{NOTIFYDEV};
     }
     Log3 $name, 3, "MATTERDevice: Defined node_id $node_id for $name";
     return undef;
@@ -1188,7 +1226,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     readingsBeginUpdate($hash);
 
     # Spezieller Fall: OnOff State mappen
-    if ($cluster_id == 6 && $attr_id == 0) {
+    if ($cluster_id == 6 && $attr_id == 0 && ($hash->{endpoint_id} // 0) > 0) {
         my $state_val = $value ? "on" : "off";
         readingsBulkUpdate($hash, "state", $state_val);
     }
@@ -1229,17 +1267,8 @@ sub MATTERDevice_Parse($ $) {
 
     my $my_endpoint = $hash->{endpoint_id} // 0;
 
-    # Availability is node-wide. An absent or invalid boolean is not a report.
-    my $update_available = sub {
-        my ($available) = @_;
-        return if $my_endpoint != 0;
-        my $normalized = MATTERDevice_NormalizeBoolean($available);
-        return unless defined $normalized;
-        my $available_value = $normalized ? "true" : "false";
-        readingsSingleUpdate($hash, "available", $available_value, 1)
-            if ReadingsVal($name, 'available', '') ne $available_value;
-        MATTERDevice_SyncNodeReadings($hash);
-    };
+    # Availability is node-wide; missing/invalid values are not state reports.
+    my $update_available = sub { MATTERDevice_UpdateAvailability($hash, $_[0]) };
     
     # Hilfs-Subroutine zur internen Weiterleitung an Root oder Child
     my $route_attribute = sub {
