@@ -8,6 +8,7 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-15  MATTER IO: add commissionMode (network/auto) attribute for the default commissionCode mode; explicit mode arguments override it.
 - 2026-11-15  MATTER IO: expose correlated commissioning status, mode, node ID, duration and sanitized errors; mark lost connections as unknown outcome and serialize attempts per IO.
 - 2026-11-14  Documentation: clarify Matter architecture, security, supported commands, hardware validation and upstream attribution; update MATTER IO version to V0.3 (14.11.2026).
 - 2026-11-14  FHEM updater: publish fork modules via controls_matter.txt; add deterministic manifest generation and CI validation (PR #12).

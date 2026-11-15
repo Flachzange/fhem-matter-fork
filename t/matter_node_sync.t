@@ -141,6 +141,8 @@ MATTERDevice_Initialize($modules{MATTERDevice} ||= {});
 MATTER_Initialize($modules{MATTER} ||= {});
 like($modules{MATTER}{AttrList}, qr/(?:^|\s)autocreate:0,1(?:\s|$)/,
      'MATTER IO exposes autocreate as a configurable 0/1 attribute');
+like($modules{MATTER}{AttrList}, qr/(?:^|\s)commissionMode:network,auto(?:\s|$)/,
+     'MATTER IO exposes the configurable default commissioning mode');
 is(AttrVal('ioA', 'autocreate', 1), 1, 'autocreate defaults to enabled');
 is($modules{MATTERDevice}{FW_detailFn}, 'MATTERDevice_FWDetail', 'FHEMWEB detail hook is registered');
 ok($modules{MATTERDevice}{FW_deviceOverview}, 'FHEMWEB standard DeviceOverview remains visible');
@@ -1070,6 +1072,64 @@ MATTER_ParseMessage($commission_io, encode_json({
 }));
 is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'success',
    'second network request completes independently');
+
+# Attribute default is persistent FHEM configuration; command mode overrides it.
+is(CommandAttr(undef, 'commissionIO commissionMode auto'), undef,
+   'commissionMode auto is a valid MATTER attribute');
+is(AttrVal('commissionIO', 'commissionMode', ''), 'auto',
+   'configured commissioning mode is stored');
+is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode', $manual_code),
+   undef, 'omitted command mode uses configured auto');
+my $from_auto_attr = $read_ws_json->($commission_server);
+ok(!$from_auto_attr->{args}{network_only},
+   'configured auto enables BLE/IP discovery without command suffix');
+is(ReadingsVal('commissionIO', 'commissioning_mode', ''), 'auto',
+   'status reading reflects configured auto');
+MATTER_ParseMessage($commission_io, encode_json({
+    message_id => $from_auto_attr->{message_id}, result => { node_id => 124 }
+}));
+
+is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode', $manual_code, 'network'),
+   undef, 'explicit network overrides configured auto');
+my $from_network_override = $read_ws_json->($commission_server);
+ok($from_network_override->{args}{network_only},
+   'explicit network requires IP-only despite auto attribute');
+is(ReadingsVal('commissionIO', 'commissioning_mode', ''), 'network',
+   'status reading reflects explicit network');
+MATTER_ParseMessage($commission_io, encode_json({
+    message_id => $from_network_override->{message_id}, result => { node_id => 125 }
+}));
+is(AttrVal('commissionIO', 'commissionMode', ''), 'auto',
+   'one-off override does not alter persistent attribute');
+like(CommandAttr(undef, 'commissionIO commissionMode invalid') // '',
+     qr/commissionMode must be network or auto/,
+   'invalid commissioning default is rejected');
+is(AttrVal('commissionIO', 'commissionMode', ''), 'auto',
+   'invalid value does not overwrite configured default');
+
+is(CommandAttr(undef, 'commissionIO commissionMode network'), undef,
+   'network can be configured explicitly');
+is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode', $manual_code),
+   undef, 'omitted mode works with configured network');
+my $from_network_attr = $read_ws_json->($commission_server);
+ok($from_network_attr->{args}{network_only},
+   'configured network uses IP-only mode');
+MATTER_ParseMessage($commission_io, encode_json({
+    message_id => $from_network_attr->{message_id}, result => { node_id => 126 }
+}));
+
+is(CommandDeleteAttr(undef, 'commissionIO commissionMode'), undef,
+   'commissionMode attribute can be removed');
+is(AttrVal('commissionIO', 'commissionMode', 'network'), 'network',
+   'unset commissioning mode falls back to network');
+is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode', $manual_code),
+   undef, 'omitted mode works after deleting attribute');
+my $without_attr = $read_ws_json->($commission_server);
+ok($without_attr->{args}{network_only},
+   'removing attribute restores original IP-only default');
+MATTER_ParseMessage($commission_io, encode_json({
+    message_id => $without_attr->{message_id}, result => { node_id => 127 }
+}));
 
 @log = ();
 my ($auto_return, $auto_skip_event) = MATTER_Set(

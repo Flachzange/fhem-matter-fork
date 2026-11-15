@@ -124,7 +124,7 @@ set matterServer commissionCode 35325335079 network
 set matterServer commissionCode 35325335079 auto
 ```
 
-The omitted mode and explicit `network` both request **IP-only** commissioning. `auto` permits **IP and BLE discovery**, including a compatible BLE proxy connected to the Matter server; it does not force BLE. A Matter QR payload beginning with `MT:` can be used instead of an 11- or 21-digit manual code.
+Without the `commissionMode` attribute, an omitted mode defaults to **`network`** (IP-only). Set `attr matterServer commissionMode auto` in the FHEM command line for persistent BLE/IP discovery. Explicit `network` and `auto` arguments override the attribute for that request; `auto` permits BLE (including a connected proxy) but does not force it. A Matter QR payload beginning with `MT:` can be used instead of an 11- or 21-digit manual code.
 
 The Matter server handles commissioning, fabric and stored Thread/Wi-Fi network credentials. The FHEM module neither stores a Thread operational dataset nor operates the BLE radio.
 
@@ -148,7 +148,7 @@ The available commands depend on the endpoint's reported clusters and commands. 
 
 `set <MATTERDevice> getConfig` reads attributes from the **implemented Matter clusters**, the global capability metadata and the endpoint's DeviceTypeList. It is **not** a read of all possible attributes of every Matter cluster.
 
-Supported MATTER IO attributes include `disable:0,1` and `autocreate:0,1` (default `1`). Setting `autocreate` to `0` prevents newly discovered FHEM root/endpoint devices from being created; it does not delete Matter-server nodes or stop updates to existing FHEM devices.
+Supported MATTER IO attributes include `disable:0,1`, `autocreate:0,1` (default `1`) and `commissionMode:network,auto` (default `network`). Setting `autocreate` to `0` prevents newly discovered FHEM root/endpoint devices from being created; it does not delete Matter-server nodes or stop updates to existing FHEM devices. `commissionMode` affects subsequent `commissionCode` requests without an explicit mode.
 
 MATTERDevice attributes include `IODev`, legacy capability overrides (for example `has_onoff`, `has_level`, `has_ct`, `has_wc` and `has_lock`) and level/color limits. If a command list has been reported, that server metadata takes precedence over legacy positive flags; a manually configured `has_*=0` disables the corresponding control.
 

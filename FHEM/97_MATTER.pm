@@ -13,7 +13,7 @@ use Data::Dumper;
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.4 15.11.2026";
+my $MATTER_version = "V0.5 15.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -43,7 +43,7 @@ sub MATTER_Initialize {
     $hash->{Clients}    = ":MATTERDevice:";
     $hash->{MatchList}  = { "1" => ".*" };
 
-    $hash->{AttrList} = "disable:0,1 autocreate:0,1 " . $readingFnAttributes;
+    $hash->{AttrList} = "disable:0,1 autocreate:0,1 commissionMode:network,auto " . $readingFnAttributes;
 }
 
 sub MATTER_Define {
@@ -110,12 +110,12 @@ sub MATTER_Set {
         return undef;
     }
     elsif ($opt eq "commissionCode") {
-        # The existing one-argument command retains its network-only behavior.
+        # A configured IO attribute determines the default; explicit mode wins.
         # 'auto' allows the server to discover the device via BLE as well as IP.
         my ($setup_code, $mode) = @args;
         my $usage = "Usage: set $name commissionCode <manual-code|MT:QR-code> [network|auto]";
         return $usage unless defined($setup_code) && @args <= 2;
-        $mode //= 'network';
+        $mode //= AttrVal($name, 'commissionMode', 'network');
         return $usage unless $mode eq 'network' || $mode eq 'auto';
 
         # Matter manual codes have 11 or 21 decimal digits; QR payloads use
@@ -246,6 +246,12 @@ sub MATTER_CommissioningDuration {
 
 sub MATTER_Attr {
     my ($cmd, $name, $attr_name, $attr_value) = @_;
+    if ($attr_name eq 'commissionMode') {
+        return "commissionMode must be network or auto"
+            if $cmd eq 'set' &&
+               (!defined($attr_value) || ($attr_value ne 'network' && $attr_value ne 'auto'));
+        return undef;
+    }
     return undef unless $attr_name eq 'disable';
     my $hash = $defs{$name};
     return undef unless $hash;
@@ -954,9 +960,12 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
   <li><b>Set discover:</b> Manually request a complete <code>get_nodes</code> snapshot;
       this is optional under normal operation.</li>
   <li><b>Set commissionCode:</b> <code>set &lt;IO&gt; commissionCode &lt;manual-code|MT:QR-code&gt; [network|auto]</code>.
-      Default <code>network</code> preserves IP-only commissioning; <code>auto</code> also allows
-      BLE discovery (including a connected BLE proxy) when enabled on the Matter server.
-      The server selects the transport and uses its stored Thread/Wi-Fi credentials.
+      Without an explicit mode, IO attribute <code>commissionMode</code>
+      applies (default <code>network</code> for IP-only commissioning).
+      Set it to <code>auto</code> to allow BLE as well as IP discovery by
+      default. Explicit <code>network</code> or <code>auto</code> overrides
+      the attribute for that request. The server selects the transport
+      and uses its stored Thread/Wi-Fi credentials.
       The setup code is not written to module logs; the synthetic FHEM
       set event is suppressed. Command input/history remains sensitive.
       The IO reports <code>commissioning_status</code> (running/success/failed/interrupted),
@@ -966,6 +975,9 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
       the result is unknown; no BLE/PASE intermediate progress is exposed.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Configure or inspect available
       network credentials (do not expose secrets in logs).</li>
+  <li><b>Attribute commissionMode (network/auto):</b> Persistent default
+      for <code>commissionCode</code> when no mode argument is supplied.
+      Defaults to <code>network</code>. Explicit mode arguments take priority.</li>
   <li><b>Attribute disable:</b> Disable or enable the IO connection. Setting
       <code>1</code> immediately closes the socket and cancels all pending timers;
       setting <code>0</code> or removing the attribute reconnects.</li>
@@ -1004,10 +1016,13 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
   <li><b>Set discover:</b> Optional eine vollständige Node-Liste per
       <code>get_nodes</code> erneut anfordern.</li>
   <li><b>Set commissionCode:</b> <code>set &lt;IO&gt; commissionCode &lt;Manual-Code|MT:QR-Code&gt; [network|auto]</code>.
-      Standard <code>network</code> nutzt nur IP. <code>auto</code> erlaubt zusätzlich
-      BLE-Discovery (auch über einen verbundenen BLE-Proxy), wenn BLE am Matter-Server
-      aktiviert ist. Der Server wählt den Transport und verwendet seine gespeicherten
-      Thread-/WLAN-Zugangsdaten. Der Setup-Code wird nicht im Modul-Log
+      Ohne Modusangabe gilt das IO-Attribut <code>commissionMode</code>
+      (Standard <code>network</code>, nur IP). <code>auto</code> erlaubt
+      zusätzlich BLE-Discovery über einen verbundenen BLE-Proxy, sofern
+      BLE am Matter-Server aktiviert ist. Ein ausdrücklich angegebenes
+      <code>network</code> oder <code>auto</code> übersteuert das Attribut
+      für den jeweiligen Auftrag. Der Server wählt den Transport und
+      verwendet seine gespeicherten Thread-/WLAN-Zugangsdaten. Der Setup-Code wird nicht im Modul-Log
       ausgegeben; das automatische FHEM-set-Event wird unterdrückt.
       Kommandoeingabe und -verlauf bleiben vertraulich zu behandeln.
       Der IO meldet <code>commissioning_status</code> (running/success/failed/interrupted),
@@ -1017,6 +1032,10 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
       ist das Ergebnis unbekannt; einzelne BLE-/PASE-Phasen meldet der Server nicht.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Netzwerkzugangsdaten
       konfigurieren bzw. auslesen.</li>
+  <li><b>Attribut commissionMode (network/auto):</b> Dauerhafter
+      Standard für <code>commissionCode</code> ohne Modusangabe.
+      Ohne Attribut gilt <code>network</code>. Eine explizite Modusangabe
+      im Befehl hat Vorrang.</li>
   <li><b>Attribut disable:</b> IO-Verbindung deaktivieren oder aktivieren.
       Bei <code>1</code> werden die Verbindung und alle Timer sofort beendet;
       <code>0</code> oder das Entfernen des Attributs startet einen neuen Verbindungsversuch.</li>

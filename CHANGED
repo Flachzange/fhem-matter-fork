@@ -1,1 +1,1 @@
-2026-11-15  MATTER IO: expose correlated commissioning status, mode, node ID, duration and sanitized errors; mark lost connections as unknown outcome and serialize attempts per IO.
+2026-11-15  MATTER IO: add commissionMode (network/auto) attribute for the default commissionCode mode; explicit mode arguments override it.
