@@ -106,6 +106,20 @@ Only merged changes on `main` are published by this source. Adding it does not a
 
 The [`testing` branch](https://github.com/Flachzange/fhem-matter-fork/tree/testing) contains changes that are being evaluated before they are merged into `main`. It provides its own [FHEM updater manifest](https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/testing/controls_matter.txt). Use this branch only when you intentionally want to test newer development changes.
 
+**Breaking change in testing V0.10 (endpoint DEF):** Old endpoint definitions containing a root FHEM name, such as `18 11 MATTER_MatterDevice_18`, are **not supported**. Before installing this version or restarting FHEM with it, convert existing endpoints while the previous module version is still loaded. Existing devices must have an explicit `IODev` attribute (autocreated endpoints already have one); correct any missing assignment before migration. In the **FHEM command line**, run this once to rewrite all MATTERDevice endpoint DEFs in place, preserving each device's name, FUUID, readings and attributes:
+
+```text
+{ join("\\n", map { $_->{NAME}.": ".(fhem("modify ".$_->{NAME}." ".$_->{node_id}." ".$_->{endpoint_id}) || "OK") } grep { ($_->{TYPE}//"") eq "MATTERDevice" && ($_->{endpoint_id}//0) > 0 } values %defs) }
+```
+
+Then persist the modified definitions, **before updating**:
+
+```text
+save
+```
+
+Only proceed when the migration output reports no errors. Skipping this prerequisite can cause old endpoint definitions to fail during FHEM startup. Do not save a configuration in which endpoints failed to load. The new module intentionally does not automatically accept or convert the legacy syntax.
+
 FHEM permits **only one update source named `controls_matter.txt`**. To switch an existing installation from this fork's `main` source to `testing`, enter the following commands in the **FHEM command line** (check your current sources with `update list` first):
 
 ```text
@@ -164,7 +178,7 @@ Newly commissioned nodes are normally imported automatically. After a reconnect 
 set matterServer discover
 ```
 
-New root and endpoint devices default to FHEM room `Matter` unless manually changed later. Root devices (endpoint 0) use the shared administrative group `Matter Nodes`; functional endpoints use the name of their **single non-structural** Matter `Descriptor.DeviceTypeList` device type (for example `On/Off light`, `Electrical Sensor` for `0x0510`, or `Smoke CO Alarm`). Although Matter classifies `Electrical Sensor` as a utility type, it represents a usable measurement endpoint. Endpoints with only structural types, including `Aggregator` and `Bridged Node`, use `Matter Infrastruktur` instead of retaining a technical node group. Structural companions such as Power Source and OTA Requestor do not create additional groups. Unknown device type IDs use hexadecimal labels; multiple distinct functional device types do not trigger an arbitrary choice. Automatically generated legacy groups in the exact format `Node <node_id> (<IODev>)` migrate to these groups; custom group values are not replaced. Existing physical room assignments are never changed during synchronization. `Smoke CO Alarm` is Matter's shared device type and does not imply that a CO-only detector also detects smoke. The root detail view links to existing endpoints and shows their Matter Descriptor device types when known, otherwise a conservative cluster-based description.
+Root devices use `DEF = <node_id>` (for example `18`); endpoints use `DEF = <node_id> <endpoint_id>` (for example `18 11`). The `IODev` attribute selects the Matter server independently of the FHEM name; a root name is never part of an endpoint DEF. This allows root and endpoint devices to be renamed without changing the technical definition. New root and endpoint devices default to FHEM room `Matter` unless manually changed later. Root devices (endpoint 0) use the shared administrative group `Matter Nodes`; functional endpoints use the name of their **single non-structural** Matter `Descriptor.DeviceTypeList` device type (for example `On/Off light`, `Electrical Sensor` for `0x0510`, or `Smoke CO Alarm`). Although Matter classifies `Electrical Sensor` as a utility type, it represents a usable measurement endpoint. Endpoints with only structural types, including `Aggregator` and `Bridged Node`, use `Matter Infrastruktur` instead of retaining a technical node group. Structural companions such as Power Source and OTA Requestor do not create additional groups. Unknown device type IDs use hexadecimal labels; multiple distinct functional device types do not trigger an arbitrary choice. Automatically generated legacy groups in the exact format `Node <node_id> (<IODev>)` migrate to these groups; custom group values are not replaced. Existing physical room assignments are never changed during synchronization. `Smoke CO Alarm` is Matter's shared device type and does not imply that a CO-only detector also detects smoke. The root detail view links to existing endpoints and shows their Matter Descriptor device types when known, otherwise a conservative cluster-based description.
 
 MATTERDevice leaves FHEM's initial `STATE` unchanged so FHEM can restore the last saved display state from its statefile on restart. This is independent of the server connection and does not create a synthetic reachability state.
 
