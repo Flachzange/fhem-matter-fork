@@ -1,1 +1,1 @@
-2026-11-15  MATTERDevice: use node ID and endpoint ID only in endpoint DEF; resolve ownership via IODev and node identity. BREAKING: migrate old three-field DEFs before updating (see README).
+2026-11-15  MATTERDevice: use node and endpoint IDs in DEF; automatically normalize legacy root-name definitions on load (save once afterward). Match endpoint ownership by IODev and node identity.
