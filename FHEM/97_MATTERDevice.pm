@@ -18,7 +18,7 @@ my %MATTER_GLOBAL_ATTRIBUTES = (
     0xFFFD => "cluster_revision",
 );
 
-# Device Type IDs from the Matter Device Library; values are used for UI only.
+# Device Type IDs from the Matter Device Library; used for UI and FHEM groups.
 # Descriptor.DeviceTypeList is authoritative when supplied by the server.
 my %MATTER_DEVICE_TYPE_LABELS = (
     0x000A => "Door lock",
@@ -29,7 +29,7 @@ my %MATTER_DEVICE_TYPE_LABELS = (
     0x0016 => "Root node",
     0x002B => "Fan",
     0x002C => "Air quality sensor",
-    0x0076 => "Smoke/CO alarm",
+    0x0076 => "Smoke CO Alarm",
     0x0100 => "On/Off light",
     0x0101 => "Dimmable light",
     0x0103 => "On/Off light switch",
@@ -49,7 +49,7 @@ my %MATTER_DEVICE_TYPE_LABELS = (
     0x0307 => "Humidity sensor",
     0x0850 => "On/Off sensor",
 );
-my %MATTER_UTILITY_DEVICE_TYPES = map { $_ => 1 } (0x000E, 0x0013, 0x0016);
+my %MATTER_UTILITY_DEVICE_TYPES = map { $_ => 1 } (0x000E, 0x0011, 0x0012, 0x0013, 0x0014, 0x0016);
 
 # Zentrale Definition der vom FHEM-Modul fachlich unterstützten Cluster, Attribute und Commands
 my %MATTER_CLUSTERS = (
@@ -1060,7 +1060,10 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
                 next unless defined($type_id) && $type_id <= 0xFFFFFFFF;
                 push @types, $type_id unless $seen{$type_id}++;
             }
-            $hash->{helper}{device_types} = \@types if @types;
+            if (@types) {
+                $hash->{helper}{device_types} = \@types;
+                MATTERDevice_EnsureTypeGroup($hash);
+            }
         }
         return;
     }
@@ -1331,20 +1334,41 @@ sub MATTERDevice_GetSetList($) {
     return @list;
 }
 
-# A single FHEMWEB group per Matter node, also unique across Matter IO devices.
-# Never replace a group explicitly configured by the FHEM user.
-sub MATTERDevice_EnsureNodeGroup($) {
+# Root endpoints share one administrative FHEMWEB group; functional
+# endpoints use their single non-utility Matter Descriptor device type.
+# Replace only legacy node groups or uncustomized type groups.
+sub MATTERDevice_EnsureTypeGroup($) {
     my ($device) = @_;
     return unless $device && defined($device->{NAME});
     my $name = $device->{NAME};
-    return if defined(AttrVal($name, 'group', undef));
     my $node_id = $device->{node_id};
     my $io_name = $device->{IODev} ? $device->{IODev}{NAME} : AttrVal($name, 'IODev', '');
     return unless defined($node_id) && $node_id =~ /^\d+$/ && defined($io_name) && length($io_name);
 
-    my $group = "Node $node_id ($io_name)";
+    my $root = ($device->{endpoint_id} // 0) == 0;
+    my $group;
+    if ($root) {
+        $group = 'Matter Nodes';
+    } else {
+        my @types = grep { !$MATTER_UTILITY_DEVICE_TYPES{$_} }
+                    @{$device->{helper}{device_types} // []};
+        # Multiple application types do not identify an unambiguous FHEM group.
+        return unless @types == 1;
+        $group = $MATTER_DEVICE_TYPE_LABELS{$types[0]} // sprintf("0x%04X", $types[0]);
+    }
+
+    my $current = AttrVal($name, 'group', undef);
+    return if defined($current) && $current eq $group;
+    my $legacy = "Node $node_id ($io_name)";
+    if (defined($current) && $current ne $legacy) {
+        # Previously generated type labels can change when the Descriptor
+        # changes. Other existing group values remain user-owned.
+        my %type_labels = map { $_ => 1 } values %MATTER_DEVICE_TYPE_LABELS;
+        return if $root || (!$type_labels{$current} && $current !~ /^0x[0-9A-F]{4,8}$/);
+    }
+
     my $error = CommandAttr(undef, "$name group $group");
-    Log3 $name, 3, "MATTERDevice: Cannot set node group for $name: $error" if $error;
+    Log3 $name, 3, "MATTERDevice: Cannot set type group for $name: $error" if $error;
 }
 
 # Resolve an existing root's children for both navigation and group migration.
@@ -1532,7 +1556,7 @@ sub MATTERDevice_GetOrCreateChild($$) {
     # User-assigned names and attributes are retained for existing endpoint devices.
     $child->{device} = $root_name;
     $root_hash->{$cache_key} = $child;
-    MATTERDevice_EnsureNodeGroup($child);
+    MATTERDevice_EnsureTypeGroup($child);
     MATTERDevice_SyncNodeReadings($root_hash, $child);
     return $child;
 }
@@ -1578,11 +1602,15 @@ rooms and attributes during node synchronization.</p>
       power and cumulative energy clusters, where the server supplies the
       corresponding attributes.</li>
 </ul>
-<p>Nodes and their endpoints without a user-defined <code>group</code> attribute
-receive the same FHEMWEB group, <code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code>.
-Existing group values are preserved. Missing groups are also filled on already defined
-endpoints without fresh attribute updates. The detail view of the root device (endpoint 0)
-links to all its endpoint devices, even if they have been renamed.</p>
+<p>Root nodes use the administrative FHEMWEB group <code>Matter Nodes</code>.
+Functional endpoints are grouped by their single non-utility Matter
+<code>Descriptor.DeviceTypeList</code> device type (for example
+<code>On/Off light</code> or <code>Smoke CO Alarm</code>). Technical utility
+types such as Power Source and OTA Requestor are ignored. Unknown device
+type IDs use a hexadecimal label. If no unique application type is known, no
+group is assigned automatically. The old <code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code>
+group is migrated when a unique type is available; custom group values are
+preserved. The root detail view links to its endpoints, even after renaming.</p>
 <p>Only newly autocreated nodes/endpoints are assigned to room <code>Matter</code>.
 Decommissioned devices are retained in FHEM rather than automatically deleted.</p>
 
@@ -1624,12 +1652,16 @@ bleiben bestehende Namen, Räume und Benutzerattribute erhalten.</p>
       Kohlenmonoxidkonzentration, elektrische Leistung und kumulierte Energie,
       soweit die Geräte die jeweiligen Attribute liefern.</li>
 </ul>
-<p>Knoten und Endpunkte ohne manuell gesetztes <code>group</code>-Attribut
-erhalten dieselbe FHEMWEB-Gruppe <code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code>.
-Vorhandene Gruppeneinstellungen bleiben erhalten. Fehlende Gruppen werden
-auch bei bereits definierten Endpunkten ohne neue Attributmeldungen ergänzt.
-In der Detailansicht des Root-Devices (Endpunkt 0) werden die Endpunkt-Devices verlinkt,
-auch wenn diese umbenannt wurden.</p>
+<p>Root-Knoten erhalten die Verwaltungsgruppe <code>Matter Nodes</code>.
+Funktionale Endpunkte werden nach ihrem eindeutigen Matter-Gerätetyp aus
+<code>Descriptor.DeviceTypeList</code> gruppiert (z. B.
+<code>On/Off light</code> oder <code>Smoke CO Alarm</code>).
+Technische Utility-Typen wie Power Source und OTA Requestor zählen nicht mit.
+Unbekannte Typ-IDs erscheinen hexadezimal. Ohne eindeutigen funktionalen
+Gerätetyp wird keine Gruppe automatisch vergeben. Bisherige
+<code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code>-Gruppen werden bei eindeutiger
+Typinformation ersetzt; eigene Gruppen bleiben erhalten.
+Die Root-Detailansicht verlinkt weiterhin die zugehörigen Endpunkte.</p>
 <p>Nur neu automatisch erzeugte Geräte werden dem Raum <code>Matter</code>
 zugeordnet. Entfernte Geräte bleiben in FHEM erhalten.</p>
 
