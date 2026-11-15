@@ -106,19 +106,15 @@ Only merged changes on `main` are published by this source. Adding it does not a
 
 The [`testing` branch](https://github.com/Flachzange/fhem-matter-fork/tree/testing) contains changes that are being evaluated before they are merged into `main`. It provides its own [FHEM updater manifest](https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/testing/controls_matter.txt). Use this branch only when you intentionally want to test newer development changes.
 
-**Breaking change in testing V0.10 (endpoint DEF):** Old endpoint definitions containing a root FHEM name, such as `18 11 MATTER_MatterDevice_18`, are **not supported**. Before installing this version or restarting FHEM with it, convert existing endpoints while the previous module version is still loaded. Existing devices must have an explicit `IODev` attribute (autocreated endpoints already have one); correct any missing assignment before migration. In the **FHEM command line**, run this once to rewrite all MATTERDevice endpoint DEFs in place, preserving each device's name, FUUID, readings and attributes:
+**Automatic migration in testing V0.10:** Endpoint definitions now contain only a node ID and endpoint ID, for example `18 11`. On the first startup with the updated module, legacy definitions such as `18 11 MATTER_MatterDevice_18` are recognized and normalized **in memory**, discarding the obsolete root FHEM name. No pre-update `modify` commands are required. Existing device names, FUUIDs, readings and attributes are retained. The separate `IODev` attribute still identifies the Matter server; previously autocreated endpoints already have it.
 
-```text
-{ join("\n", map { $_->{NAME}.": ".(AttrVal($_->{NAME},"IODev","") eq "" ? "ERROR: missing IODev attribute" : (fhem("modify ".$_->{NAME}." ".$_->{node_id}." ".$_->{endpoint_id}) || "OK")) } grep { ($_->{TYPE}//"") eq "MATTERDevice" && ($_->{endpoint_id}//0) > 0 } values %defs) }
-```
-
-Then persist the modified definitions, **before updating**:
+After restarting FHEM with V0.10, **save the configuration once** using the **FHEM command line**:
 
 ```text
 save
 ```
 
-Only proceed when the migration output reports no errors. Skipping this prerequisite can cause old endpoint definitions to fail during FHEM startup. Do not save a configuration in which endpoints failed to load. The new module intentionally does not automatically accept or convert the legacy syntax.
+FHEM's normal save then writes the normalized endpoint definitions permanently, both for file-based configuration and configDB. The module does **not** automatically rewrite the configuration during startup. If no save is performed, the migration repeats on the next startup; the legacy root name is never used for device ownership. New endpoint definitions are always generated without a root-name parameter. Arbitrary extra fields remain invalid.
 
 FHEM permits **only one update source named `controls_matter.txt`**. To switch an existing installation from this fork's `main` source to `testing`, enter the following commands in the **FHEM command line** (check your current sources with `update list` first):
 
