@@ -1,1 +1,2 @@
+2026-11-15  MATTERDevice: group root nodes administratively and functional endpoints by their unique non-utility Matter DeviceTypeList type; migrate legacy node groups without changing physical rooms or custom groups.
 2026-11-15  MATTER IO: add commissionMode (network/auto) attribute for the default commissionCode mode; explicit mode arguments override it.
