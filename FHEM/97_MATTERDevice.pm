@@ -6,6 +6,8 @@ use warnings;
 use JSON;
 use Scalar::Util qw(blessed);
 
+our $init_done; # FHEM startup: statefile and attributes are not yet restored
+
 # Globale Matter-Metadaten-IDs. Sie werden unabhängig von der clusterspezifischen
 # Attributdefinition verarbeitet. EventList (0xFFFA) wird für ältere
 # Matter-Versionen weiterhin unterstützt.
