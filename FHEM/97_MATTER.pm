@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.14 15.11.2026";
+my $MATTER_version = "V0.15 15.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -869,6 +869,8 @@ sub MATTER_ProcessNode($$) {
         Log3 $io_name, 3, "MATTER: Created root device $device_name for node $node_id";
     }
     $modules{MATTERDevice}{defptr}{$root_key} = $root;
+    # Reconcile roots already defined before this module was updated/reloaded.
+    MATTERDevice_EnsureRootStateFormat($root);
     MATTERDevice_EnsureTypeGroup($root);
 
     # Apply the reported node availability before endpoint creation to avoid
