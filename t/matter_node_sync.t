@@ -1730,13 +1730,15 @@ MATTER_ProcessNode($defs{renameIO}, node(778, 'Renamable'));
 my $rename_root = $defs{MATTER_Renamable};
 my $rename_child = $defs{MATTER_Renamable_EP1};
 ok($rename_root && $rename_child, 'IO rename fixture creates node and endpoint');
+# Explicit root IODev and auto-assigned endpoint IODev both need to survive.
+delete $attr{$rename_child->{NAME}}{IODev};
 $defs{renameIO}{FD} = 100;
 $selectlist{renameIO} = $defs{renameIO};
 is(CommandRename(undef, 'renameIO renamedIO'), undef, 'native FHEM IO rename succeeds');
 is(AttrVal($rename_root->{NAME}, 'IODev', ''), 'renamedIO',
    'root IODev attribute follows renamed IO');
 is(AttrVal($rename_child->{NAME}, 'IODev', ''), 'renamedIO',
-   'endpoint IODev attribute follows renamed IO');
+   'endpoint without a prior IODev attribute gains durable new ownership');
 is($modules{MATTERDevice}{defptr}{'renamedIO:778'}, $rename_root,
    'root defptr is indexed under new IO name');
 ok(!exists $modules{MATTERDevice}{defptr}{'renameIO:778'},
