@@ -1,3 +1,3 @@
 2026-11-15  MATTERDevice: name Electrical Sensor (0x0510), group structural bridge endpoints under Matter Infrastruktur, and show reachability instead of Initialized when no device state is available.
-2026-11-15  MATTERDevice: group root nodes administratively and functional endpoints by their unique non-utility Matter DeviceTypeList type; migrate legacy node groups without changing physical rooms or custom groups.
+2026-11-15  MATTERDevice: group root nodes administratively and functional endpoints by their unique non-structural Matter DeviceTypeList type; migrate legacy node groups without changing physical rooms or custom groups.
 2026-11-15  MATTER IO: add commissionMode (network/auto) attribute for the default commissionCode mode; explicit mode arguments override it.
