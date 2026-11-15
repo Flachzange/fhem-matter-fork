@@ -1,1 +1,1 @@
-2026-11-15  MATTER IO/Device V0.14: fix IO rename ownership, credential set-event privacy, invalid telemetry coercion and disconnected command handling; correlate requests and protect newer events from stale snapshots; validate WebSocket upgrade and fragmentation.
+2026-11-15  MATTER IO/Device V0.15: default root status display to last-reported availability, including existing roots; preserve custom stateFormat and endpoint display.
