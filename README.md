@@ -178,6 +178,8 @@ Root devices use `DEF = <node_id>` (for example `18`); endpoints use `DEF = <nod
 
 MATTERDevice leaves FHEM's initial `STATE` unchanged so FHEM can restore the last saved display state from its statefile on restart. This is independent of the server connection and does not create a synthetic reachability state.
 
+Matter `Descriptor.DeviceTypeList` is stored per endpoint in the **`device_type_ids` reading** as canonical comma-separated hexadecimal IDs (for example `0x0011,0x0076`). Both the root detail's endpoint type labels and automatic device-type groups use this reading rather than temporary helper metadata. Once a valid DeviceTypeList has been received, FHEM restores the IDs after restart through its normal statefile or configDB handling, even when the Matter server is still disconnected. Repeated identical values do not produce additional reading events. Invalid Descriptor responses do not erase previously known IDs. For endpoints that have **never** supplied a valid DeviceTypeList, the existing cluster-based fallback is still based on currently observed runtime clusters; the fix does not invent an authoritative device type or add polling. The runtime capabilities/command metadata remains transient and is not treated as a persisted reading.
+
 `matter_status=present` / `removed` indicates membership in the server's node list, **not** physical availability. `available=true` / `false` indicates reachability only if reported by the server. Node-wide `model` and `available` values are mirrored from the root to endpoints when known. No recurring availability poll is introduced.
 
 ### Device commands and attributes
