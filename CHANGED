@@ -1,1 +1,1 @@
-2026-11-15  MATTERDevice: persist Descriptor DeviceTypeList IDs in the device_type_ids reading; restore endpoint type labels and automatic groups from FHEM's statefile without new Matter server data.
+2026-11-15  MATTER IO: defer the initial TCP/WebSocket connection until FHEM's event loop starts, preventing handshake timeouts during configuration load; preserve immediate manual connect and existing reconnect behavior.

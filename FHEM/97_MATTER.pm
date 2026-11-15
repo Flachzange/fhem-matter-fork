@@ -13,7 +13,7 @@ use Data::Dumper;
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.11 15.11.2026";
+my $MATTER_version = "V0.12 15.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -72,7 +72,12 @@ sub MATTER_Define {
         }
     };
 
-    MATTER_Open($hash);
+    # A connection started during FHEM configuration loading cannot be
+    # processed by the socket event loop yet. An already-expired handshake
+    # timer would cause a needless 30-second reconnect delay after startup.
+    # Close previous resources on modify and defer opening until the main loop.
+    MATTER_Close($hash);
+    InternalTimer(1, 'MATTER_Open', $hash, 0);
     return undef;
 }
 
@@ -957,7 +962,9 @@ Subsequent <code>node_added</code>, <code>node_updated</code> and <code>node_rem
 events synchronize logical MATTERDevice nodes and their endpoints automatically.</p>
 <ul>
   <li><b>Define:</b> <code>define &lt;name&gt; MATTER &lt;IP&gt; &lt;PORT&gt;</code>
-      (default server port: 5580)</li>
+      (default server port: 5580). The initial connection is scheduled for
+      FHEM's event loop after configuration loading, so the 10-second
+      handshake deadline does not run during startup.</li>
   <li><b>Set connect:</b> Reconnect the WebSocket to the server.</li>
   <li><b>Set discover:</b> Manually request a complete <code>get_nodes</code> snapshot;
       this is optional under normal operation.</li>
@@ -1013,7 +1020,9 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
 <code>node_removed</code> die Matter-Knoten und ihre Endpunkte ereignisgesteuert.</p>
 <ul>
   <li><b>Definition:</b> <code>define &lt;name&gt; MATTER &lt;IP&gt; &lt;PORT&gt;</code>
-      (Standardport: 5580)</li>
+      (Standardport: 5580). Der erste Verbindungsversuch wird erst in
+      FHEMs Ereignisschleife nach dem Einlesen der Konfiguration gestartet.
+      Damit läuft die 10-Sekunden-Frist nicht schon während des Starts.</li>
   <li><b>Set connect:</b> Verbindung zum Matter-Server neu aufbauen.</li>
   <li><b>Set discover:</b> Optional eine vollständige Node-Liste per
       <code>get_nodes</code> erneut anfordern.</li>

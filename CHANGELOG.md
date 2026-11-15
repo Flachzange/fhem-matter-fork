@@ -8,6 +8,7 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-15  MATTER IO: defer the initial TCP/WebSocket connection until FHEM's event loop starts, preventing handshake timeouts during configuration load; preserve immediate manual connect and existing reconnect behavior.
 - 2026-11-15  MATTERDevice: persist Descriptor DeviceTypeList IDs in the device_type_ids reading; restore endpoint type labels and automatic groups from FHEM's statefile without new Matter server data.
 - 2026-11-15  MATTERDevice: use node and endpoint IDs in DEF; automatically normalize legacy root-name definitions on load (save once afterward). Match endpoint ownership by IODev and node identity.
 - 2026-11-15  MATTERDevice: preserve FHEM's initial STATE placeholder so the statefile can restore the previous display state after restart.

@@ -708,6 +708,85 @@ MATTER_Undef($disabled, 'disableIO');
 is(scalar(@timers), 0, 'undefine cancels retry after del disable');
 
 
+# The initial MATTER connect must be deferred until FHEM's timer event loop is
+# running; starting its 10-second deadline inside Define can expire during
+# a slow configuration load. FHEM's InternalTimer(1, ..., 0) is immediately
+# due in the event loop, not a one-second sleep.
+@timers = ();
+my $startup_listener = IO::Socket::INET->new(
+    LocalAddr => '127.0.0.1', LocalPort => 0, Proto => 'tcp', Listen => 4,
+) or die "startup TCP listener: $!";
+my $startup_port = $startup_listener->sockport;
+my $startup = { NAME => 'startupIO', TYPE => 'MATTER', READINGS => {},
+                helper => {}, STATE => '???' };
+$defs{startupIO} = $startup;
+is(MATTER_Define($startup, "startupIO MATTER 127.0.0.1 $startup_port"),
+   undef, 'Define schedules MATTER connection without opening a socket');
+is(scalar(@timers), 1, 'Define leaves exactly one initial connect timer');
+is($timers[0]{at}, 1, 'initial connect is due immediately after FHEM startup');
+is($timers[0]{callback}, 'MATTER_Open', 'initial timer starts the existing connection path');
+ok(!defined($startup->{CD}) && !exists($selectlist{startupIO}),
+   'no TCP socket or selectlist entry is created during configuration loading');
+ok(!grep(/\[startupIO\] TCP connect attempt/, @log),
+   'no connection attempt is logged before the startup timer fires');
+
+# Model FHEM's event loop consuming the one-shot timer.
+my $startup_timer = shift @timers;
+MATTER_Open($startup_timer->{owner});
+is($startup->{ws_status}, 'tcp_connecting',
+   'the event-loop timer starts the asynchronous TCP connection');
+ok($startup->{CD} && exists($selectlist{startupIO}),
+   'the active connection is registered with FHEM after timer dispatch');
+is(scalar(@timers), 1, 'one TCP/WebSocket timeout replaces the startup timer');
+is($timers[0]{callback}, 'MATTER_ConnectTimeout',
+   'handshake timeout is scheduled only after the actual connection attempt');
+is($timers[0]{at}, $mock_time + 10,
+   'handshake deadline begins at connection time, not configuration load');
+
+is(MATTER_Define($startup, "startupIO MATTER 127.0.0.1 $startup_port"),
+   undef, 'modify closes an in-flight connection and schedules a fresh attempt');
+ok(!defined($startup->{CD}) && !exists($selectlist{startupIO}),
+   'modify removes the old socket and selectlist entry');
+is(scalar(@timers), 1, 'modify replaces timeout with one immediate connect timer');
+is($timers[0]{callback}, 'MATTER_Open',
+   'modify does not leave the old handshake deadline behind');
+is(MATTER_Define($startup, "startupIO MATTER 127.0.0.1 $startup_port"),
+   undef, 'repeating modify before timer dispatch is safe');
+is(scalar(@timers), 1, 'repeated modify never duplicates the initial timer');
+
+is(MATTER_Set($startup, 'startupIO', 'connect'), undef,
+   'manual set connect remains immediate while a startup timer is pending');
+is($startup->{ws_status}, 'tcp_connecting',
+   'manual connect does not wait for the deferred initial timer');
+is(scalar(@timers), 1, 'manual connection removes the startup timer');
+is($timers[0]{callback}, 'MATTER_ConnectTimeout',
+   'manual connection has only its own handshake deadline');
+
+# Persisted disable attributes are applied after Define during config loading.
+is(CommandAttr(undef, 'startupIO disable 1'), undef,
+   'disable=1 closes the pending manual connection');
+ok(!defined($startup->{CD}) && !exists($selectlist{startupIO}),
+   'disabled connection has no active socket');
+is(scalar(@timers), 0, 'disable removes its pending handshake deadline');
+is(MATTER_Define($startup, "startupIO MATTER 127.0.0.1 $startup_port"),
+   undef, 'Define may schedule before the persisted disable attribute is known');
+is(scalar(@timers), 1, 'disabled IO still has one deferred startup callback');
+$startup_timer = shift @timers;
+MATTER_Open($startup_timer->{owner});
+ok(!defined($startup->{CD}) && !exists($selectlist{startupIO}),
+   'deferred callback respects disable=1 and does not open a socket');
+is(scalar(@timers), 0, 'disabled startup does not schedule reconnects');
+
+is(MATTER_Define($startup, "startupIO MATTER 127.0.0.1 $startup_port"),
+   undef, 'a pending startup timer can be cancelled by undefine');
+MATTER_Undef($startup, 'startupIO');
+is(scalar(@timers), 0, 'undefine cancels the initial connect timer');
+ok(!exists($selectlist{startupIO}), 'undefine leaves no stale selectlist entry');
+close($startup_listener);
+delete $defs{startupIO};
+delete $attr{startupIO};
+
+
 # Regression coverage for the integrated legacy feature branches.
 MATTER_ParseMessage($defs{ioA}, encode_json({
     event => 'node_updated', data => { node_id => 42, available => JSON::false }
