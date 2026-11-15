@@ -24,7 +24,7 @@
 - The Matter server owns its nodes and Matter fabric. The FHEM IO device owns the connection and dispatch; a root `MATTERDevice` represents endpoint 0, and endpoint children represent additional endpoints. Do not conflate node IDs, endpoint IDs, FHEM names, server labels, and stable device identity.
 - Current routing uses `$modules{MATTERDevice}{defptr}` keyed by IO name and node ID for root nodes, plus per-root endpoint references. Check this exact routing path, including multiple IO devices and stale references, before changing discovery, rebind, rename, or deletion behavior. Preserve user-defined device names, FUUIDs, readings, and attributes wherever possible.
 - `get_nodes` discovery and live `attribute_updated` events have different payload shapes and ordering. Validate `node_id`, endpoint/cluster/attribute paths, payload types, and the intended IO before routing or autocreating. An unknown node/event is not a reason to create or overwrite an unrelated existing FHEM device.
-- Keep autocreate collision handling and endpoint ownership explicit. Do not assume that the name derived from a remote node label is unique. When adding a room default, only set `room Matter` for **newly created** devices; do not override a manually chosen room. This is a desired enhancement, not a claim that the current module implements it.
+- Keep autocreate collision handling and endpoint ownership explicit. Do not assume that the name derived from a remote node label is unique. When adding a room default, only set `room Matter` for **newly created** devices; do not override a manually chosen room. New autocreated roots and endpoints already default to room `Matter`; this is implemented, not a pending enhancement.
 - Coordinated naming of all endpoints after renaming a root is a **proposed feature**, not existing guaranteed behavior. Before implementing it, define a stable root/endpoint naming contract and decide how manually renamed endpoints are protected. Do not rename unrelated devices by prefix alone.
 
 ## Capabilities, commands, readings
@@ -34,6 +34,47 @@
 - Preserve endpoint-specific values and update semantics. Never publish a command as confirmed hardware state without readback/event evidence. Do not collapse unknown, null, unsupported, stale, or unreachable status into `0`, `off`, or success.
 - Treat pending reads, live updates, discovery snapshots, and node availability as separate sources of evidence. Reconcile event order and freshness deliberately rather than overwriting newer readings with late responses.
 - Do not silently add mandatory support for device classes or clusters merely because the Matter specification defines them. Extend mappings with focused tests and verified device/server evidence.
+
+## Regression checklist: historical failure modes
+
+Before approving **any Matter IO or device change**, inspect the actual current source
+and include focused negative-control coverage for the affected item. These are
+concrete regression cases, not a mandate for new generic frameworks or polling:
+
+- **IO identity/lifecycle:** Test FHEM's actual `RenameFn` invocation and its
+  `IODev` attribute, root `defptr`, `%selectlist`, and pending timer effects.
+  A renamed IO must not duplicate a root during later discovery. Test reentrant
+  event notifications during `disable`/close: internal ownership must be set
+  before any reading/event publishes, and reconnect cannot defeat disable.
+- **Command acceptance:** A missing or failed WebSocket send must return a FHEM
+  error, not success. An accepted send is not a device acknowledgment. Ensure
+  shared `message_id` allocation avoids collisions across commands and
+  `pending_config`; check late, unsolicited, failed and disconnect responses.
+- **Asynchronous freshness:** A live `attribute_updated` event must not be
+  overwritten by a delayed `read_attribute` response. A late full-node
+  snapshot must not reverse a newer `node_added`/`node_removed` event.
+  Do not mutate partially through a malformed snapshot.
+- **Input validity:** Invalid JSON top-level values, objects where scalars are
+  expected, strings like `"false"`, null, malformed numbers, zero divisors
+  and invalid endpoint/attribute paths must not become valid device readings,
+  trigger commands, or crash FHEM. Preserve a prior known value if an update
+  is invalid; never manufacture a physical `off` or zero reading.
+- **WebSocket framing:** Distinguish split TCP data from actual WebSocket
+  continuation frames. Cover HTTP upgrade header and accept-key verification,
+  FIN/fragment sequencing, control frames, masking, sizes, partial writes,
+  timeout/FD cleanup and invalid opcodes.
+- **Secrets:** Check both logs **and FHEM's synthetic set events** for any
+  command accepting setup codes or network credentials. Verify the SetFn
+  `skipTrigger` return in FHEM list context. The command history and
+  unencrypted WebSocket remain a separate exposure to document accurately.
+- **Framework fidelity:** Verify FHEM core `CommandRename`,
+  `CommandAttr`, `DoSet` and reading-trigger order rather than trusting
+  simplified stubs. A stub lacking synchronous notify dispatch cannot
+  establish the absence of reentrant bugs.
+- **Documentation:** Reconcile `README.md`, both German/English commandrefs,
+  current changelog, version and updater manifest with actual source behavior.
+  Avoid stale feature proposals or describing mirrored endpoint readings as
+  root-only.
 
 ## Tests, review, and deployment
 
