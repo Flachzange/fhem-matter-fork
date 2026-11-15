@@ -1,1 +1,1 @@
-2026-11-15  MATTERDevice: preserve FHEM's initial STATE placeholder so the statefile can restore the previous display state after restart.
+2026-11-15  MATTERDevice: use node ID and endpoint ID only in endpoint DEF; resolve ownership via IODev and node identity. BREAKING: migrate old three-field DEFs before updating (see README).
