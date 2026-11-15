@@ -9,7 +9,7 @@ use JSON;
 use IO::Socket::INET;
 use Socket qw(SOL_SOCKET SO_ERROR);
 use MIME::Base64;
-use Data::Dumper;
+use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
@@ -39,6 +39,7 @@ sub MATTER_Initialize {
     $hash->{SetFn}      = \&MATTER_Set;
     $hash->{GetFn}      = \&MATTER_Get;
     $hash->{AttrFn}     = \&MATTER_Attr;
+    $hash->{RenameFn}   = \&MATTER_Rename;
     $hash->{ReadFn}     = \&MATTER_Read;
     $hash->{Clients}    = ":MATTERDevice:";
     $hash->{MatchList}  = { "1" => ".*" };
@@ -50,7 +51,7 @@ sub MATTER_Define {
     my ($hash, $def) = @_;
     my @param = split('[ \t]+', $def);
     
-    if (int(@param) < 4) {
+    if (@param != 4 || $param[3] !~ /^\d+$/ || $param[3] < 1 || $param[3] > 65535) {
         return "too few parameters: define <name> MATTER <IP> <PORT>";    
     }
     
@@ -87,6 +88,52 @@ sub MATTER_Undef {
     return undef;
 }
 
+# FHEM changes the IO name before RenameFn and does not rewrite client IODev
+# attributes or custom defptr keys. Keep the existing connection and ownership.
+sub MATTER_Rename {
+    my ($new, $old) = @_;
+    my $hash = $defs{$new};
+    return unless $hash;
+    if (($selectlist{$old} // '') eq $hash) {
+        delete $selectlist{$old};
+        $selectlist{$new} = $hash if defined $hash->{FD};
+    }
+    foreach my $device (values %defs) {
+        next unless ($device->{TYPE} // '') eq 'MATTERDevice';
+        my $configured = AttrVal($device->{NAME}, 'IODev', '');
+        next unless (($device->{IODev} // '') eq $hash) || $configured eq $old;
+        if ($configured eq $old) {
+            my $error = CommandAttr(undef, "$device->{NAME} IODev $new");
+            Log3 $new, 2, "MATTER: Cannot update IODev for $device->{NAME}: $error" if $error;
+        }
+        next unless ($device->{endpoint_id} // 0) == 0;
+        my $node_id = $device->{node_id};
+        next unless defined($node_id);
+        my $old_key = "$old:$node_id";
+        delete $modules{MATTERDevice}{defptr}{$old_key}
+            if ($modules{MATTERDevice}{defptr}{$old_key} // '') eq $device;
+        $modules{MATTERDevice}{defptr}{"$new:$node_id"} = $device
+            if ($device->{IODev} // '') eq $hash;
+    }
+    return undef;
+}
+
+# Shared, monotonic request IDs avoid collisions across discovery, reads,
+# commissioning and untracked device commands on the same WebSocket.
+sub MATTER_NextMessageId {
+    my ($hash) = @_;
+    return undef unless $hash;
+    for (1 .. 1000) {
+        my $id = ($hash->{helper}{next_message_id} // 0) + 1;
+        $id = 1 if $id > 2147483647;
+        $hash->{helper}{next_message_id} = $id;
+        next if exists($hash->{helper}{pending_command}{$id}) ||
+                exists($hash->{helper}{pending_config}{$id});
+        return $id;
+    }
+    return undef;
+}
+
 sub MATTER_Get {
     my ($hash, $name, $cmd, @args) = @_;
     my @cList = keys %MATTER_gets;
@@ -102,8 +149,13 @@ sub MATTER_Set {
         return undef;
     } 
     elsif ($opt eq "discover") {
-        my $msg_id = int(rand(100000) + 1);
+        return "MATTER: No active WebSocket connection on $name"
+            unless $hash->{CD} && $hash->{websocket} && ($hash->{ws_status} // '') eq 'connected';
+        my $msg_id = MATTER_NextMessageId($hash);
+        return "MATTER: Cannot allocate request ID" unless defined($msg_id);
         $hash->{helper}{pending_command}{$msg_id} = "get_nodes";
+        $hash->{helper}{pending_snapshot_generation}{$msg_id} =
+            $hash->{helper}{node_event_generation} // 0;
 
         my $payload = {
             message_id => $msg_id,
@@ -111,7 +163,11 @@ sub MATTER_Set {
         };
         
         Log3 $name, 3, "MATTER: Requesting node list from server...";
-        MATTER_SendJsonCommand($hash, $payload);
+        unless (MATTER_SendJsonCommand($hash, $payload)) {
+            delete $hash->{helper}{pending_command}{$msg_id};
+            delete $hash->{helper}{pending_snapshot_generation}{$msg_id};
+            return "MATTER: Cannot send discovery request on $name";
+        }
         return undef;
     }
     elsif ($opt eq "commissionCode") {
@@ -138,10 +194,8 @@ sub MATTER_Set {
             unless $hash->{CD} && $hash->{websocket} &&
                 ($hash->{ws_status} // '') eq 'connected';
 
-        my $msg_id;
-        do { $msg_id = int(rand(100000) + 1); }
-            while exists($hash->{helper}{pending_command}{$msg_id}) ||
-                  exists($hash->{helper}{pending_config}{$msg_id});
+        my $msg_id = MATTER_NextMessageId($hash);
+        return "MATTER: Cannot allocate request ID" unless defined($msg_id);
         $hash->{helper}{pending_command}{$msg_id} = "commission";
         $hash->{helper}{commissioning_active} = {
             message_id => $msg_id, mode => $mode, started_at => gettimeofday()
@@ -188,12 +242,15 @@ sub MATTER_Set {
         }
 
         # Zur Sicherheit: Falls doch irgendwo Anführungszeichen hängen geblieben sind, hart entfernen
-        $ssid =~ s/^["']|["']$//g;
-        $credentials =~ s/^["']|["']$//g;
+        $ssid =~ s/^["']|["']$//g if defined($ssid);
+        $credentials =~ s/^["']|["']$//g if defined($credentials);
 
         return "Please provide SSID and credentials. Usage: set <dev> setWifiCredentials \"SSID\" Password [ID]" if (!$ssid || !$credentials);
 
-        my $msg_id = int(rand(100000) + 1);
+        return "MATTER: No active WebSocket connection on $name"
+            unless $hash->{CD} && $hash->{websocket} && ($hash->{ws_status} // '') eq 'connected';
+        my $msg_id = MATTER_NextMessageId($hash);
+        return "MATTER: Cannot allocate request ID" unless defined($msg_id);
         $hash->{helper}{pending_command}{$msg_id} = "set_wifi_credentials";
         
         my $payload = {
@@ -208,11 +265,18 @@ sub MATTER_Set {
         $payload->{args}{id} = int($id) if (defined($id) && $id ne '');
 
         Log3 $name, 3, "MATTER: Sending Wi-Fi credentials (ID: " . ($id // 'default') . ")";
-        MATTER_SendJsonCommand($hash, $payload);
-        return undef;
+        unless (MATTER_SendJsonCommand($hash, $payload)) {
+            delete $hash->{helper}{pending_command}{$msg_id};
+            return "MATTER: Cannot send Wi-Fi credentials on $name";
+        }
+        # DoSet would otherwise publish the plaintext SSID/password as a set event.
+        return wantarray ? (undef, 1) : undef;
     }
     elsif ($opt eq "getCredentials") {
-        my $msg_id = int(rand(100000) + 1);
+        return "MATTER: No active WebSocket connection on $name"
+            unless $hash->{CD} && $hash->{websocket} && ($hash->{ws_status} // '') eq 'connected';
+        my $msg_id = MATTER_NextMessageId($hash);
+        return "MATTER: Cannot allocate request ID" unless defined($msg_id);
         $hash->{helper}{pending_command}{$msg_id} = "get_all_credentials";
 
         # Payload für den python-matter-server aufbauen
@@ -222,7 +286,10 @@ sub MATTER_Set {
         };
 
         Log3 $name, 3, "MATTER: Get credentials...";
-        MATTER_SendJsonCommand($hash, $payload);
+        unless (MATTER_SendJsonCommand($hash, $payload)) {
+            delete $hash->{helper}{pending_command}{$msg_id};
+            return "MATTER: Cannot send credential request on $name";
+        }
         return undef;
     }
     else {
@@ -264,11 +331,13 @@ sub MATTER_Attr {
     # FHEM calls AttrFn before storing the attribute. Reconnect from a timer
     # so MATTER_Open sees the updated AttrVal rather than the previous value.
     if ($cmd eq 'set' && defined($attr_value) && $attr_value eq '1') {
+        $hash->{helper}{disable_requested} = 1;
         MATTER_Close($hash);
         delete $hash->{helper}{connect_attempts};
         Log3 $name, 3, "[$name] Disabled: connection closed, pending timers cancelled";
     } elsif (($cmd eq 'set' && defined($attr_value) && $attr_value eq '0')
              || $cmd eq 'del') {
+        delete $hash->{helper}{disable_requested};
         unless ($hash->{CD}) {
             RemoveInternalTimer($hash);
             InternalTimer(gettimeofday() + 0.01, 'MATTER_Open', $hash, 0);
@@ -284,6 +353,7 @@ sub MATTER_Open($) {
     my $host = $hash->{ip};
     my $port = $hash->{port};
 
+    return if $hash->{helper}{closing} || $hash->{helper}{disable_requested};
     MATTER_Close($hash);
     return if AttrVal($name, 'disable', 0);
 
@@ -343,6 +413,9 @@ sub MATTER_ConnectWritable($) {
     my $host = $hash->{ip};
     my $port = $hash->{port};
     my $key = encode_base64(pack('C*', map { int(rand(256)) } 1 .. 16), '');
+    $hash->{helper}{ws_expected_accept} = sha1_base64(
+        $key . '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+    ) . '=';
     my $request = "GET /ws HTTP/1.1\r\n" .
                   "Host: $host:$port\r\n" .
                   "Upgrade: websocket\r\n" .
@@ -366,19 +439,16 @@ sub MATTER_ConnectTimeout($) {
 
 sub MATTER_Close($) {
     my ($hash) = @_;
+    return if $hash->{helper}{closing};
+    $hash->{helper}{closing} = 1;
     my $name = $hash->{NAME};
     my $previous = $hash->{CD} ? ($hash->{ws_status} // 'unknown') : undef;
+    my $active = delete $hash->{helper}{commissioning_active};
 
-    # If the link ends before a response, the server may still complete.
-    if (my $active = delete $hash->{helper}{commissioning_active}) {
-        MATTER_CommissioningReadings($hash, 'interrupted', $active->{mode}, '',
-            MATTER_CommissioningDuration($active->{started_at}),
-            'Connection lost before commissioning result; outcome unknown');
-    }
-
-    # No retry/heartbeat/handshake timer survives closing or undefining a device.
+    # Release all transport ownership before publishing an event: FHEM notify
+    # callbacks may reenter MATTER_Set or MATTER_Open synchronously.
     RemoveInternalTimer($hash);
-    delete $selectlist{$name};
+    delete $selectlist{$name} if ($selectlist{$name} // '') eq $hash;
     if ($hash->{CD}) {
         close($hash->{CD});
         delete $hash->{CD};
@@ -388,15 +458,25 @@ sub MATTER_Close($) {
     delete $hash->{wantWrite};
     delete $hash->{helper}{write_buffer};
     delete $hash->{helper}{pending_pong};
+    delete $hash->{helper}{ws_expected_accept};
+    delete $hash->{helper}{ws_fragment_opcode};
+    delete $hash->{helper}{ws_fragment_buffer};
     $hash->{websocket} = 0;
     $hash->{ws_status} = 'disconnected';
     $hash->{BUF} = '';
     delete $hash->{helper}{pending_command};
     delete $hash->{helper}{pending_config};
+    delete $hash->{helper}{pending_snapshot_generation};
     delete $hash->{fhem}{helper}{pending_config};
     Log3 $name, 4, "[$name] Connection closed (was $previous)" if defined($previous);
     readingsSingleUpdate($hash, 'state', 'disconnected', 1)
         if ReadingsVal($name, 'state', '') ne 'disconnected';
+    if ($active) {
+        MATTER_CommissioningReadings($hash, 'interrupted', $active->{mode}, '',
+            MATTER_CommissioningDuration($active->{started_at}),
+            'Connection lost before commissioning result; outcome unknown');
+    }
+    delete $hash->{helper}{closing};
 }
 
 sub MATTER_Reconnect($) {
@@ -430,9 +510,10 @@ sub MATTER_Heartbeat($) {
 # Handle partial writes on nonblocking sockets in FHEM's writable event loop.
 sub MATTER_QueueBytes($$) {
     my ($hash, $bytes) = @_;
-    return unless $hash->{CD};
+    return 0 unless $hash->{CD};
     $hash->{helper}{write_buffer} .= $bytes;
     MATTER_FlushWrite($hash);
+    return $hash->{CD} && ($hash->{ws_status} // '') ne 'disconnected' ? 1 : 0;
 }
 
 sub MATTER_FlushWrite($) {
@@ -493,29 +574,49 @@ sub MATTER_Read {
             }
             return;
         }
-        unless ($hash->{BUF} =~ m/^HTTP\/1\.[01]\s+101\b/i) {
-            Log3 $name, 2, "[$name] WebSocket upgrade was not accepted";
+        my $header_end = index($hash->{BUF}, "\r\n\r\n");
+        if ($header_end > 8192) {
+            Log3 $name, 2, "[$name] WebSocket HTTP handshake exceeds 8192 bytes";
             MATTER_Reconnect($hash);
             return;
         }
+        my $headers = substr($hash->{BUF}, 0, $header_end + 4, '');
+        my $accept = $hash->{helper}{ws_expected_accept} // '';
+        unless ($headers =~ m/^HTTP\/1\.[01]\s+101\b/i &&
+                $headers =~ m/^Upgrade:\s*websocket\s*\r?$/im &&
+                $headers =~ m/^Connection:\s*[^\r\n]*\bUpgrade\b[^\r\n]*\r?$/im &&
+                $headers =~ m/^Sec-WebSocket-Accept:\s*\Q$accept\E\s*\r?$/im &&
+                length($accept)) {
+            Log3 $name, 2, "[$name] Invalid WebSocket upgrade response";
+            MATTER_Reconnect($hash);
+            return;
+        }
+        delete $hash->{helper}{ws_expected_accept};
         RemoveInternalTimer($hash, 'MATTER_ConnectTimeout');
         $hash->{ws_status} = 'connected';
         $hash->{websocket} = 1;
-        $hash->{BUF} =~ s/(.*?)\x0d\x0a\x0d\x0a//s;
         readingsSingleUpdate($hash, 'state', 'connected', 1);
         my $attempts = delete($hash->{helper}{connect_attempts}) // 1;
         Log3 $name, 3, "[$name] WebSocket connected (attempt $attempts); restarting node listening";
         InternalTimer(gettimeofday() + $MATTER_ping_interval,
                       'MATTER_Heartbeat', $hash, 0);
         $hash->{helper}{pending_command}{fhem_init_1} = 'start_listening';
+        $hash->{helper}{pending_snapshot_generation}{fhem_init_1} =
+            $hash->{helper}{node_event_generation} // 0;
         MATTER_SendJsonCommand($hash, { message_id => 'fhem_init_1', command => 'start_listening' });
     }
 
     while (length($hash->{BUF}) >= 2) {
         my ($b1, $b2) = unpack('CC', substr($hash->{BUF}, 0, 2));
+        my $fin = ($b1 & 0x80) != 0;
         my $opcode = $b1 & 0x0f;
         my $payload_len = $b2 & 0x7f;
         my $header_len = 2;
+        if (($b1 & 0x70) || ($b2 & 0x80)) {
+            Log3 $name, 2, "[$name] Invalid WebSocket frame flags or server masking";
+            MATTER_Reconnect($hash);
+            return;
+        }
         if ($payload_len == 126) {
             return if length($hash->{BUF}) < 4;
             $payload_len = unpack('n', substr($hash->{BUF}, 2, 2));
@@ -526,8 +627,9 @@ sub MATTER_Read {
             $payload_len = ($l_bytes[0] * 4294967296) + $l_bytes[1];
             $header_len = 10;
         }
-        if ($payload_len > 32 * 1024 * 1024) {
-            Log3 $name, 2, "[$name] WebSocket frame exceeds 32 MiB limit";
+        if ($payload_len > 32 * 1024 * 1024 ||
+            ($opcode >= 0x8 && (!$fin || $payload_len > 125))) {
+            Log3 $name, 2, "[$name] Invalid or oversized WebSocket frame";
             MATTER_Reconnect($hash);
             return;
         }
@@ -537,7 +639,34 @@ sub MATTER_Read {
         substr($hash->{BUF}, 0, $total_len) = '';
 
         if ($opcode == 0x1) {
-            MATTER_ParseMessage($hash, $payload);
+            if (exists $hash->{helper}{ws_fragment_opcode}) {
+                Log3 $name, 2, "[$name] Unexpected WebSocket text frame during fragmentation";
+                MATTER_Reconnect($hash);
+                return;
+            }
+            if ($fin) {
+                MATTER_ParseMessage($hash, $payload);
+            } else {
+                $hash->{helper}{ws_fragment_opcode} = 0x1;
+                $hash->{helper}{ws_fragment_buffer} = $payload;
+            }
+        } elsif ($opcode == 0x0) {
+            unless (exists $hash->{helper}{ws_fragment_opcode}) {
+                Log3 $name, 2, "[$name] Unexpected WebSocket continuation frame";
+                MATTER_Reconnect($hash);
+                return;
+            }
+            $hash->{helper}{ws_fragment_buffer} .= $payload;
+            if (length($hash->{helper}{ws_fragment_buffer}) > 32 * 1024 * 1024) {
+                Log3 $name, 2, "[$name] Fragmented WebSocket message exceeds 32 MiB";
+                MATTER_Reconnect($hash);
+                return;
+            }
+            if ($fin) {
+                my $message = delete $hash->{helper}{ws_fragment_buffer};
+                delete $hash->{helper}{ws_fragment_opcode};
+                MATTER_ParseMessage($hash, $message);
+            }
         } elsif ($opcode == 0x9) {
             MATTER_SendWebSocketFrame($hash, 0xA, $payload);
         } elsif ($opcode == 0xA) {
@@ -552,19 +681,27 @@ sub MATTER_Read {
             Log3 $name, 3, "[$name] WebSocket close received, retrying in $MATTER_reconnect_delay seconds";
             MATTER_Reconnect($hash);
             return;
+        } else {
+            Log3 $name, 2, "[$name] Unsupported WebSocket opcode $opcode";
+            MATTER_Reconnect($hash);
+            return;
         }
+        # A synchronous FHEM notification may have closed the socket while
+        # parsing the previous frame. Never continue on a stale buffer.
+        return unless $hash->{CD} && ($hash->{ws_status} // '') eq 'connected';
     }
 }
 
 sub MATTER_SendJsonCommand($$) {
     my ($hash, $cmd_hash) = @_;
-    return unless $hash->{CD} && $hash->{websocket};
-    MATTER_SendWebSocketText($hash, encode_json($cmd_hash));
+    return 0 unless $hash->{CD} && $hash->{websocket} &&
+        ($hash->{ws_status} // '') eq 'connected';
+    return MATTER_SendWebSocketText($hash, encode_json($cmd_hash));
 }
 
 sub MATTER_SendWebSocketText($$) {
     my ($hash, $msg) = @_;
-    MATTER_SendWebSocketFrame($hash, 0x1, $msg);
+    return MATTER_SendWebSocketFrame($hash, 0x1, $msg);
 }
 
 sub MATTER_SendWebSocketFrame($$$) {
@@ -587,7 +724,7 @@ sub MATTER_SendWebSocketFrame($$$) {
         my $p_byte = ord(substr($msg, $i, 1));
         $masked_payload .= chr($p_byte ^ $m_byte);
     }
-    MATTER_QueueBytes($hash, $frame . $masked_payload);
+    return MATTER_QueueBytes($hash, $frame . $masked_payload);
 }
 
 
@@ -744,19 +881,23 @@ sub MATTER_ProcessNode($$) {
     return 1;
 }
 
-sub MATTER_ProcessNodeList($$$) {
-    my ($hash, $nodes, $source) = @_;
+sub MATTER_ProcessNodeList($$;$) {
+    my ($hash, $nodes, $source, $suppress_missing) = @_;
     my $io_name = $hash->{NAME};
     my %present;
+    # Validate the whole snapshot before performing any mutation.
     foreach my $node (@$nodes) {
         unless (ref($node) eq 'HASH' && defined($node->{node_id}) &&
                 !ref($node->{node_id}) && $node->{node_id} =~ /^\d+$/) {
             Log3 $io_name, 2, "MATTER: Invalid node in $source response, ignoring incomplete snapshot";
             return;
         }
+    }
+    foreach my $node (@$nodes) {
         $present{$node->{node_id}} = 1;
         MATTER_ProcessNode($hash, $node);
     }
+    return if $suppress_missing;
 
     # Full snapshots are authoritative; mark missing nodes without deleting FHEM devices.
     foreach my $device (values %defs) {
@@ -774,11 +915,11 @@ sub MATTER_ParseMessage($$) {
     my $name    = $hash->{NAME}; # Name des IO-Moduls (z.B. MATTER_Server1)
     
     my $decoded = eval { decode_json($payload) };
-    if ($@) {
-        Log3 $name, 3, "MATTER: JSON parse error: $@";
+    if ($@ || ref($decoded) ne 'HASH') {
+        Log3 $name, 3, "MATTER: Invalid JSON object in server response";
         return;
     }
-    
+
     # A) Server-Informationen beim Connect
     if (exists $decoded->{schema_version} && exists $decoded->{sdk_version}) {
         Log3 $name, 3, "MATTER: Received server_info from Matter server.";
@@ -796,11 +937,13 @@ sub MATTER_ParseMessage($$) {
     if (exists $decoded->{event}) {
         my $event = $decoded->{event};
         if (($event eq 'node_added' || $event eq 'node_updated') && ref($decoded->{data}) eq 'HASH') {
+            ++$hash->{helper}{node_event_generation};
             MATTER_ProcessNode($hash, $decoded->{data});
             return;
         }
         if ($event eq 'node_removed') {
-            if (defined($decoded->{data}) && $decoded->{data} =~ /^\d+$/) {
+            if (defined($decoded->{data}) && !ref($decoded->{data}) && $decoded->{data} =~ /^\d+$/) {
+                ++$hash->{helper}{node_event_generation};
                 MATTER_SetNodeStatus($hash, $decoded->{data}, 'removed');
                 Log3 $name, 3, "MATTER: Node $decoded->{data} removed from server; FHEM devices retained";
             }
@@ -811,7 +954,14 @@ sub MATTER_ParseMessage($$) {
     # B) Live-Events (z.B. attribute_updated) an das Root-Device der Node weiterleiten
     if (exists $decoded->{event} && $decoded->{event} eq "attribute_updated" && ref($decoded->{data}) eq 'ARRAY') {
         my ($node_id, undef, undef) = @{$decoded->{data}};
-        if (defined $node_id) {
+        if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
+            my $path = $decoded->{data}[1];
+            if (defined($path) && !ref($path) && $path =~ m{^(\d+)/(\d+)/(\d+)$}) {
+                foreach my $pending (values %{$hash->{helper}{pending_config} // {}}) {
+                    next unless ref($pending) eq 'HASH' && $pending->{node_id} eq $node_id;
+                    $pending->{changed_endpoints}{$1} = 1;
+                }
+            }
             # Wir suchen das Root-Device (Endpoint 0) exakt passend zu DIESEM IO und DIESER Node!
             my $root_key  = "$name:$node_id";
             my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
@@ -829,12 +979,25 @@ sub MATTER_ParseMessage($$) {
     # C) Antworten auf spezifische Befehle (getConfig / get_nodes)
     if (my $msg_id = $decoded->{message_id}) {
         # Antwort auf read_attribute (getConfig)
-        if (my $node_id = delete $hash->{helper}{pending_config}{$msg_id}) {
-            if ($decoded->{result}) {
-                my $root_key  = "$name:$node_id";
+        if (my $pending = delete $hash->{helper}{pending_config}{$msg_id}) {
+            my $node_id = ref($pending) eq 'HASH' ? $pending->{node_id} : $pending;
+            if (ref($decoded->{result}) eq 'HASH') {
+                my $root_key = "$name:$node_id";
                 my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
                 if ($root_hash) {
-                    MATTERDevice_Parse($root_hash, $payload);
+                    my %fresh = %{$decoded->{result}};
+                    if (ref($pending) eq 'HASH') {
+                        # Live events that arrived after the read was sent win
+                        # over an older snapshot, including its metadata reset.
+                        foreach my $path (keys %fresh) {
+                            delete $fresh{$path}
+                                if $path =~ m{^(\d+)/} &&
+                                   $pending->{changed_endpoints}{$1};
+                        }
+                    }
+                    MATTERDevice_Parse($root_hash, encode_json({
+                        message_id => $msg_id, result => \%fresh
+                    })) if keys %fresh;
                 }
             }
             return;
@@ -843,8 +1006,11 @@ sub MATTER_ParseMessage($$) {
         # start_listening and get_nodes both return a complete node list.
         my $cmd_type = delete $hash->{helper}{pending_command}{$msg_id};
         if ($cmd_type && ($cmd_type eq "get_nodes" || $cmd_type eq "start_listening")) {
+            my $started = delete $hash->{helper}{pending_snapshot_generation}{$msg_id};
             if (ref($decoded->{result}) eq 'ARRAY') {
-                MATTER_ProcessNodeList($hash, $decoded->{result}, $cmd_type);
+                my $suppress_missing = defined($started) &&
+                    $started != ($hash->{helper}{node_event_generation} // 0);
+                MATTER_ProcessNodeList($hash, $decoded->{result}, $cmd_type, $suppress_missing);
             } else {
                 my $details = ref($decoded->{error}) eq 'HASH' ? $decoded->{error}{message} : undef;
                 $details //= $decoded->{details} // 'missing or invalid node list';
@@ -894,7 +1060,7 @@ sub MATTER_ParseMessage($$) {
             if ($decoded->{result}) {
                 Log3 $name, 3, "MATTER: Wifi credentials set successfully on IO $name!";
             } else {
-                Log3 $name, 2, "MATTER: Setting Wifi credentials failed on IO $name: " . ($decoded->{error}{message} // "Unknown error");
+                Log3 $name, 2, "MATTER: Setting Wifi credentials failed on IO $name (server rejected request)";
             }
             return;
         }
@@ -938,7 +1104,7 @@ sub MATTER_ParseMessage($$) {
                 readingsEndUpdate($hash, 1);
                 Log3 $name, 3, "MATTER: Credentials set successfully on IO $name!";
             } else {
-                Log3 $name, 2, "MATTER: Getting credentials failed on IO $name: " . ($decoded->{error}{message} // "Unknown error");
+                Log3 $name, 2, "MATTER: Getting credentials failed on IO $name (server rejected request)";
             }
             return;
         }
