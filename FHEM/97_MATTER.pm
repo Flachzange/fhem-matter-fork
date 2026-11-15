@@ -13,7 +13,7 @@ use Data::Dumper;
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.6 15.11.2026";
+my $MATTER_version = "V0.7 15.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -594,8 +594,9 @@ sub MATTER_SetNodeStatus($$$) {
         next unless ($device->{TYPE} // '') eq 'MATTERDevice';
         next unless defined($device->{node_id}) && $device->{node_id} eq $node_id;
         next unless $device->{IODev} && $device->{IODev}{NAME} eq $io_name;
-        next if ReadingsVal($device->{NAME}, 'matter_status', '') eq $status;
-        readingsSingleUpdate($device, 'matter_status', $status, 1);
+        readingsSingleUpdate($device, 'matter_status', $status, 1)
+            if ReadingsVal($device->{NAME}, 'matter_status', '') ne $status;
+        MATTERDevice_UpdateDisplayState($device);
     }
 }
 
@@ -723,6 +724,7 @@ sub MATTER_ProcessNode($$) {
             my $value = $available ? 'true' : 'false';
             readingsSingleUpdate($root, 'available', $value, 1)
                 if ReadingsVal($root->{NAME}, 'available', '') ne $value;
+            MATTERDevice_UpdateDisplayState($root);
         }
     }
     if (ref($node->{attributes}) eq 'HASH') {
