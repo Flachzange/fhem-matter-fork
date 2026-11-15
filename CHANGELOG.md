@@ -8,6 +8,7 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-15  MATTERDevice: use node and endpoint IDs in DEF; automatically normalize legacy root-name definitions on load (save once afterward). Match endpoint ownership by IODev and node identity.
 - 2026-11-15  MATTERDevice: preserve FHEM's initial STATE placeholder so the statefile can restore the previous display state after restart.
 - 2026-11-15  MATTER IO: add commissionMode (network/auto) attribute for the default commissionCode mode; explicit mode arguments override it.
 - 2026-11-15  MATTER IO: expose correlated commissioning status, mode, node ID, duration and sanitized errors; mark lost connections as unknown outcome and serialize attempts per IO.

@@ -83,6 +83,19 @@ sub CommandDefine {
     if ($err) { delete $defs{$name}; return $err; }
     return undef;
 }
+# Model fhem.pl CommandModify: update DEF, call DefFn again and roll back
+# the definition on an error without replacing the existing device hash.
+sub CommandModify {
+    my (undef, $definition) = @_;
+    my ($name, @args) = split /\s+/, $definition;
+    return "Device missing" unless $defs{$name};
+    my $device = $defs{$name};
+    my $old_def = $device->{DEF};
+    $device->{DEF} = join(' ', @args);
+    my $err = MATTERDevice_Define($device, "$name MATTERDevice " . join(' ', @args));
+    $device->{DEF} = $old_def if $err;
+    return $err;
+}
 sub CommandAttr {
     my (undef, $command) = @_;
     my ($name, $key, $value) = split /\s+/, $command, 3;
@@ -170,6 +183,17 @@ MATTER_ProcessNodeList($defs{ioA}, [node(42, 'Hall Light')], 'start_listening');
 my $root = $defs{MATTER_Hall_Light};
 my $child = $defs{MATTER_Hall_Light_EP1};
 ok($root && $child, 'full snapshot creates root and endpoint');
+is($root->{DEF}, '42', 'root definition contains only the node ID');
+is($child->{DEF}, '42 1', 'endpoint definition contains no root FHEM name');
+my $legacy_define = CommandDefine(undef, 'Legacy_Endpoint MATTERDevice 42 9 Former_Root');
+is($legacy_define, undef, 'legacy three-argument endpoint DEF is accepted for migration');
+is($defs{Legacy_Endpoint}{DEF}, '42 9', 'old root name is removed from persisted DEF at define');
+is($defs{Legacy_Endpoint}{endpoint_id}, 9, 'migration retains endpoint identity');
+is($defs{Legacy_Endpoint}{node_id}, 42, 'migration retains node identity');
+ok(!exists $defs{Legacy_Endpoint}{device}, 'legacy root name is not retained as parent identity');
+is(CommandDelete(undef, 'Legacy_Endpoint'), undef, 'temporary legacy test device is removed');
+like(CommandDefine(undef, 'Invalid_Endpoint MATTERDevice 42 0') // '',
+     qr/wrong syntax/, 'explicit endpoint zero is rejected; roots omit endpoint ID');
 # FHEM's CommandDefine starts at STATE=???; its startup setstate restores a
 # persisted display state only while that placeholder is untouched.
 is($root->{STATE}, '???', 'root Define leaves default STATE for statefile restore');
@@ -288,6 +312,30 @@ is($defs{ManuallyRenamedRoot}, $root, 'renamed root reused by identity');
 is($defs{MATTER_Hall_Light_EP1}, $child, 'renamed root reuses existing endpoint');
 is($child->{device}, 'ManuallyRenamedRoot', 'endpoint parent internal updated after rename');
 
+# Confirming an unchanged DEF in FHEMWEB must not restore a stale parent name.
+my $child_before_modify = $child->{DEF};
+is(CommandModify(undef, "$child->{NAME} $child_before_modify"), undef,
+   'confirming the endpoint DEF accepts the two-ID format');
+is($child->{DEF}, '42 1', 'modify preserves the stable endpoint definition');
+ok(!exists $child->{device}, 'modify clears any cached display-only parent name');
+my $child_uuid = $child->{FUUID};
+my $child_io = $child->{IODev};
+my $child_readings = $child->{READINGS};
+is(CommandModify(undef, "$child->{NAME} 42 1 MATTER_Hall_Light"), undef,
+   'confirming a stale legacy DEF migrates it instead of reassigning the root');
+is($child->{DEF}, '42 1', 'legacy modify is normalized to node ID and endpoint ID');
+is($child->{FUUID}, $child_uuid, 'DEF migration preserves FUUID');
+is($child->{IODev}, $child_io, 'DEF migration preserves IODev');
+is($child->{READINGS}, $child_readings, 'DEF migration preserves readings');
+ok(!exists $child->{device}, 'legacy root name does not restore display parent');
+like(CommandModify(undef, "$child->{NAME} 42 1 MATTER_Hall_Light extra") // '',
+     qr/wrong syntax/, 'unrecognized extra DEF arguments remain invalid');
+is($child->{DEF}, $child_before_modify, 'invalid modify rolls back the DEF');
+MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'Metadata only'});
+is($child->{device}, 'ManuallyRenamedRoot',
+   'metadata-only discovery recovers display parent from node identity');
+is($defs{$child->{NAME}}, $child, 'reconfirmed endpoint does not get recreated');
+
 # Migration must work without any fresh endpoint attributes.
 delete $attr{MATTER_Hall_Light_EP1}{group};
 my $prior_devices = count_devices();
@@ -320,6 +368,16 @@ my $other_root = $defs{MATTER_Other_IO_light};
 ok($other_root, 'same numeric node ID may exist on another IODev');
 is($modules{MATTERDevice}{defptr}{'ioA:42'}, $root, 'other IO root registry restored after temporary AssignIoPort');
 is($modules{MATTERDevice}{defptr}{'ioB:42'}, $other_root, 'new IO root registry assigned');
+# The endpoint has the same node ID as an endpoint on ioB. After losing
+# its runtime IODev and parent display name, its persisted IODev attribute
+# must prevent reassignment to the wrong MATTER server.
+delete $child->{IODev};
+$child->{device} = $other_root->{NAME};
+MATTER_ProcessNode($defs{ioB}, node(42, 'Other IO light'));
+ok(!$child->{IODev}, 'other IO discovery cannot steal a child with a different IODev attribute');
+MATTER_ProcessNode($defs{ioA}, node(42, 'Hall Light'));
+is($child->{IODev}{NAME}, 'ioA',
+   'correct IO rebinds a child without trusting its previous root name');
 is($defs{MATTER_Other_IO_light_EP1}{IODev}{NAME}, 'ioB', 'new endpoint binds to matching IO');
 is($attr{MATTER_Other_IO_light}{group}, 'Matter Nodes',
     'different IO root also joins the administrative root group');
@@ -360,8 +418,11 @@ MATTER_ProcessNode($defs{ioA}, node(42, 'Hall Light'));
 is($root->{IODev}{NAME}, 'ioA', 'existing root restores configured IODev');
 is($defs{ManuallyRenamedRoot}, $root, 'rebind does not replace the root FUUID');
 delete $child->{IODev};
+$child->{device} = 'Nonexistent_Former_Root';
 MATTER_ProcessNode($defs{ioA}, node(42, 'Hall Light'));
 is($child->{IODev}{NAME}, 'ioA', 'existing endpoint restores configured IODev');
+is($child->{device}, 'ManuallyRenamedRoot',
+   'endpoint rebind ignores an obsolete display parent name');
 is($defs{MATTER_Hall_Light_EP1}, $child, 'rebind does not replace endpoint');
 
 # Failed FHEM IODev assignment must not leave a misbound autocreated device.
