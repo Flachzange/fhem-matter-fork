@@ -156,8 +156,6 @@ sub MATTER_Set {
         my $msg_id = MATTER_NextMessageId($hash);
         return "MATTER: Cannot allocate request ID" unless defined($msg_id);
         $hash->{helper}{pending_command}{$msg_id} = "get_nodes";
-        $hash->{helper}{pending_snapshot_generation}{$msg_id} =
-            $hash->{helper}{node_event_generation} // 0;
 
         my $payload = {
             message_id => $msg_id,
@@ -167,9 +165,16 @@ sub MATTER_Set {
         Log3 $name, 3, "MATTER: Requesting node list from server...";
         unless (MATTER_SendJsonCommand($hash, $payload)) {
             delete $hash->{helper}{pending_command}{$msg_id};
-            delete $hash->{helper}{pending_snapshot_generation}{$msg_id};
-            delete $hash->{helper}{pending_snapshot_touched}{$msg_id};
             return "MATTER: Cannot send discovery request on $name";
+        }
+        # Only the latest discovery snapshot may be applied. Supersede
+        # unanswered previous snapshots without adding another timeout.
+        foreach my $previous_id (keys %{$hash->{helper}{pending_command}}) {
+            next if $previous_id eq $msg_id;
+            my $previous = $hash->{helper}{pending_command}{$previous_id};
+            next unless $previous eq 'get_nodes' || $previous eq 'start_listening';
+            delete $hash->{helper}{pending_command}{$previous_id};
+            delete $hash->{helper}{pending_snapshot_touched}{$previous_id};
         }
         return undef;
     }
@@ -479,7 +484,6 @@ sub MATTER_Close($) {
     $hash->{BUF} = '';
     delete $hash->{helper}{pending_command};
     delete $hash->{helper}{pending_config};
-    delete $hash->{helper}{pending_snapshot_generation};
     delete $hash->{helper}{pending_snapshot_touched};
     delete $hash->{fhem}{helper}{pending_config};
     Log3 $name, 4, "[$name] Connection closed (was $previous)" if defined($previous);
@@ -616,8 +620,6 @@ sub MATTER_Read {
         InternalTimer(gettimeofday() + $MATTER_ping_interval,
                       'MATTER_Heartbeat', $hash, 0);
         $hash->{helper}{pending_command}{fhem_init_1} = 'start_listening';
-        $hash->{helper}{pending_snapshot_generation}{fhem_init_1} =
-            $hash->{helper}{node_event_generation} // 0;
         MATTER_SendJsonCommand($hash, { message_id => 'fhem_init_1', command => 'start_listening' });
     }
 
@@ -894,8 +896,36 @@ sub MATTER_ProcessNode($$) {
     return 1;
 }
 
-sub MATTER_ProcessNodeList($$$;$$) {
-    my ($hash, $nodes, $source, $suppress_missing, $skip_nodes) = @_;
+# Record only fields changed after a discovery request. Partial node_updated
+# events (for example availability-only) must not suppress unrelated endpoint
+# attributes from the older but otherwise useful full snapshot.
+sub MATTER_RecordSnapshotEvent {
+    my ($hash, $node_id, $event, $data) = @_;
+    foreach my $id (keys %{$hash->{helper}{pending_command} // {}}) {
+        my $command = $hash->{helper}{pending_command}{$id};
+        next unless $command eq 'get_nodes' || $command eq 'start_listening';
+        my $changed = ($hash->{helper}{pending_snapshot_touched}{$id}{$node_id} //= {});
+        if ($event eq 'node_removed') {
+            %$changed = (removed => 1);
+            next;
+        }
+        delete $changed->{removed};
+        next unless ref($data) eq 'HASH';
+        $changed->{available} = 1
+            if exists($data->{available}) &&
+               defined(MATTERDevice_NormalizeBoolean($data->{available}));
+        if (ref($data->{attributes}) eq 'HASH') {
+            foreach my $path (keys %{$data->{attributes}}) {
+                next unless $path =~ m{^\d+/\d+/\d+$} &&
+                    defined($data->{attributes}{$path});
+                $changed->{attributes}{$path} = 1;
+            }
+        }
+    }
+}
+
+sub MATTER_ProcessNodeList($$$;$) {
+    my ($hash, $nodes, $source, $touched) = @_;
     my $io_name = $hash->{NAME};
     my %present;
     # Validate the whole snapshot before performing any mutation.
@@ -907,11 +937,23 @@ sub MATTER_ProcessNodeList($$$;$$) {
         }
     }
     foreach my $node (@$nodes) {
-        $present{$node->{node_id}} = 1;
-        next if $skip_nodes && $skip_nodes->{$node->{node_id}};
-        MATTER_ProcessNode($hash, $node);
+        my $node_id = $node->{node_id};
+        $present{$node_id} = 1;
+        my $updated = $touched ? $touched->{$node_id} : undef;
+        next if $updated && $updated->{removed};
+        my $to_apply = $node;
+        if ($updated) {
+            my %filtered = %$node;
+            delete $filtered{available} if $updated->{available};
+            if ($updated->{attributes} && ref($filtered{attributes}) eq 'HASH') {
+                my %attributes = %{$filtered{attributes}};
+                delete @attributes{keys %{$updated->{attributes}}};
+                $filtered{attributes} = \%attributes;
+            }
+            $to_apply = \%filtered;
+        }
+        MATTER_ProcessNode($hash, $to_apply);
     }
-    return if $suppress_missing;
 
     # Full snapshots are authoritative; mark missing nodes without deleting FHEM devices.
     foreach my $device (values %defs) {
@@ -919,6 +961,9 @@ sub MATTER_ProcessNodeList($$$;$$) {
         next unless ($device->{endpoint_id} // 0) == 0;
         next unless $device->{IODev} && $device->{IODev}{NAME} eq $io_name;
         next if $present{$device->{node_id} // ''};
+        # A later event for this same node wins; events on other nodes
+        # must not suppress missing-node detection.
+        next if $touched && exists($touched->{$device->{node_id} // ''});
         MATTER_SetNodeStatus($hash, $device->{node_id}, 'removed');
     }
     Log3 $io_name, 3, 'MATTER: Synchronized ' . scalar(keys %present) . " nodes from $source";
@@ -952,21 +997,14 @@ sub MATTER_ParseMessage($$) {
         my $event = $decoded->{event};
         if (($event eq 'node_added' || $event eq 'node_updated') && ref($decoded->{data}) eq 'HASH') {
             my $node_id = $decoded->{data}{node_id};
-            if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
-                ++$hash->{helper}{node_event_generation};
-                for my $pending_id (keys %{$hash->{helper}{pending_snapshot_generation} // {}}) {
-                    $hash->{helper}{pending_snapshot_touched}{$pending_id}{$node_id} = 1;
-                }
-            }
+            MATTER_RecordSnapshotEvent($hash, $node_id, $event, $decoded->{data})
+                if defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/;
             MATTER_ProcessNode($hash, $decoded->{data});
             return;
         }
         if ($event eq 'node_removed') {
             if (defined($decoded->{data}) && !ref($decoded->{data}) && $decoded->{data} =~ /^\d+$/) {
-                ++$hash->{helper}{node_event_generation};
-                for my $pending_id (keys %{$hash->{helper}{pending_snapshot_generation} // {}}) {
-                    $hash->{helper}{pending_snapshot_touched}{$pending_id}{$decoded->{data}} = 1;
-                }
+                MATTER_RecordSnapshotEvent($hash, $decoded->{data}, $event);
                 MATTER_SetNodeStatus($hash, $decoded->{data}, 'removed');
                 Log3 $name, 3, "MATTER: Node $decoded->{data} removed from server; FHEM devices retained";
             }
@@ -980,9 +1018,25 @@ sub MATTER_ParseMessage($$) {
         if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
             my $path = $decoded->{data}[1];
             if (defined($path) && !ref($path) && $path =~ m{^(\d+)/(\d+)/(\d+)$}) {
-                foreach my $pending (values %{$hash->{helper}{pending_config} // {}}) {
-                    next unless ref($pending) eq 'HASH' && $pending->{node_id} eq $node_id;
-                    $pending->{changed_endpoints}{$1} = 1;
+                my ($endpoint, $cluster, $attribute) = ($1, $2, $3);
+                my $value = $decoded->{data}[2];
+                # Invalid live payloads cannot invalidate a valid read.
+                my $valid = defined($value);
+                $valid &&= defined(MATTERDevice_NormalizeBoolean($value))
+                    if $cluster == 6 && $attribute == 0;
+                $valid &&= !ref($value) && $value =~ /^\d+$/ && $value <= 254
+                    if $cluster == 8 && $attribute == 0;
+                $valid &&= ref($value) eq 'ARRAY'
+                    if $attribute >= 0xFFF8 && $attribute <= 0xFFFB;
+                $valid &&= !ref($value) && $value =~ /^\d+$/
+                    if $attribute == 0xFFFC || $attribute == 0xFFFD;
+                if ($valid) {
+                    foreach my $pending (values %{$hash->{helper}{pending_config} // {}}) {
+                        next unless ref($pending) eq 'HASH' &&
+                            $pending->{node_id} eq $node_id &&
+                            $pending->{endpoint_id} == $endpoint;
+                        $pending->{live_values}{$path} = $value;
+                    }
                 }
             }
             # Wir suchen das Root-Device (Endpoint 0) exakt passend zu DIESEM IO und DIESER Node!
@@ -1009,14 +1063,12 @@ sub MATTER_ParseMessage($$) {
                 my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
                 if ($root_hash) {
                     my %fresh = %{$decoded->{result}};
-                    if (ref($pending) eq 'HASH') {
-                        # Live events that arrived after the read was sent win
-                        # over an older snapshot, including its metadata reset.
-                        foreach my $path (keys %fresh) {
-                            delete $fresh{$path}
-                                if $path =~ m{^(\d+)/} &&
-                                   $pending->{changed_endpoints}{$1};
-                        }
+                    if (ref($pending) eq 'HASH' && $pending->{live_values}) {
+                        # Merge exactly the paths updated by a newer event.
+                        # Parsing one complete result also rebuilds the current
+                        # capability cache without losing the live metadata.
+                        @fresh{keys %{$pending->{live_values}}} =
+                            values %{$pending->{live_values}};
                     }
                     MATTERDevice_Parse($root_hash, encode_json({
                         message_id => $msg_id, result => \%fresh
@@ -1029,13 +1081,9 @@ sub MATTER_ParseMessage($$) {
         # start_listening and get_nodes both return a complete node list.
         my $cmd_type = delete $hash->{helper}{pending_command}{$msg_id};
         if ($cmd_type && ($cmd_type eq "get_nodes" || $cmd_type eq "start_listening")) {
-            my $started = delete $hash->{helper}{pending_snapshot_generation}{$msg_id};
             my $touched = delete $hash->{helper}{pending_snapshot_touched}{$msg_id};
             if (ref($decoded->{result}) eq 'ARRAY') {
-                my $suppress_missing = defined($started) &&
-                    $started != ($hash->{helper}{node_event_generation} // 0);
-                MATTER_ProcessNodeList($hash, $decoded->{result}, $cmd_type,
-                    $suppress_missing, $touched);
+                MATTER_ProcessNodeList($hash, $decoded->{result}, $cmd_type, $touched);
             } else {
                 my $details = ref($decoded->{error}) eq 'HASH' ? $decoded->{error}{message} : undef;
                 $details //= $decoded->{details} // 'missing or invalid node list';
@@ -1090,14 +1138,16 @@ sub MATTER_ParseMessage($$) {
             return;
         }
         elsif ($cmd_type && $cmd_type eq "get_all_credentials") {
-            # 1. Alle alten Readings mit dem entsprechenden Präfix sauber mit FHEM-Bordmitteln löschen
-            foreach my $key (keys %{$hash->{READINGS}}) {
-                if ($key =~ /^(wifi|thread)_/) {
-                    readingsDelete($hash, $key);
+            my $result = $decoded->{result};
+            if (ref($result) eq 'HASH' &&
+                (!exists($result->{wifi}) || ref($result->{wifi}) eq 'ARRAY') &&
+                (!exists($result->{thread}) || ref($result->{thread}) eq 'ARRAY')) {
+                # Delete old Readings only after validating the entire
+                # response envelope. A rejected request or malformed payload
+                # must not erase the last known credential inventory.
+                foreach my $key (keys %{$hash->{READINGS} // {}}) {
+                    readingsDelete($hash, $key) if $key =~ /^(?:wifi|thread)_/;
                 }
-            }
-            if ($decoded->{result}) {
-                my $result = $decoded->{result};
                 
                 readingsBeginUpdate($hash);
                 
@@ -1127,9 +1177,9 @@ sub MATTER_ParseMessage($$) {
                 }
                 
                 readingsEndUpdate($hash, 1);
-                Log3 $name, 3, "MATTER: Credentials set successfully on IO $name!";
+                Log3 $name, 3, "MATTER: Credential inventory updated on IO $name";
             } else {
-                Log3 $name, 2, "MATTER: Getting credentials failed on IO $name (server rejected request)";
+                Log3 $name, 2, "MATTER: Credentials request rejected or returned invalid data on IO $name";
             }
             return;
         }
