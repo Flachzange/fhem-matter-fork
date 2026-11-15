@@ -1147,9 +1147,24 @@ sub MATTER_ParseMessage($$) {
             if (ref($result) eq 'HASH' &&
                 (!exists($result->{wifi}) || ref($result->{wifi}) eq 'ARRAY') &&
                 (!exists($result->{thread}) || ref($result->{thread}) eq 'ARRAY')) {
-                # Delete old Readings only after validating the entire
-                # response envelope. A rejected request or malformed payload
-                # must not erase the last known credential inventory.
+                # Validate entries before deleting any old readings. Even a
+                # single malformed item must not destroy the last good list.
+                for my $type (qw(wifi thread)) {
+                    foreach my $entry (@{$result->{$type} // []}) {
+                        if (ref($entry) ne 'HASH') {
+                            Log3 $name, 2, "MATTER: Invalid $type credential entry on IO $name";
+                            return;
+                        }
+                        for my $field (qw(id ssid networkName extPanId)) {
+                            if (defined($entry->{$field}) && ref($entry->{$field})) {
+                                Log3 $name, 2, "MATTER: Invalid $type credential field on IO $name";
+                                return;
+                            }
+                        }
+                    }
+                }
+                # A rejected or malformed response must not erase the
+                # last known credential inventory.
                 foreach my $key (keys %{$hash->{READINGS} // {}}) {
                     readingsDelete($hash, $key) if $key =~ /^(?:wifi|thread)_/;
                 }
