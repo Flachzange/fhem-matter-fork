@@ -15,6 +15,7 @@ my %bulk_writes;
 my %single_writes;
 my $preferred_io = 'ioA';
 my $fail_io_for = '';
+my $reading_event_hook;
 
 sub Log3 { push @log, $_[2]; }
 sub AttrVal { return exists $attr{$_[0]}{$_[1]} ? $attr{$_[0]}{$_[1]} : $_[2]; }
@@ -26,6 +27,7 @@ sub readingsSingleUpdate {
     my ($device, $reading, $value) = @_;
     $single_writes{$device->{NAME}}{$reading}++;
     $device->{READINGS}{$reading} = { VAL => $value, TIME => 'test-time' };
+    $reading_event_hook->($device, $reading, $value) if $reading_event_hook;
 }
 sub readingsBeginUpdate { return; }
 sub readingsBulkUpdate {
@@ -33,6 +35,10 @@ sub readingsBulkUpdate {
     readingsSingleUpdate($_[0], $_[1], $_[2]);
 }
 sub readingsEndUpdate { return; }
+sub readingsDelete {
+    my ($device, $reading) = @_;
+    delete $device->{READINGS}{$reading};
+}
 sub RemoveInternalTimer {
     my ($owner, $callback) = @_;
     @timers = grep {
@@ -158,6 +164,9 @@ sub CommandRename {
     $defs{$new} = delete $defs{$old};
     $defs{$new}{NAME} = $new;
     $attr{$new} = delete $attr{$old} if exists $attr{$old};
+    # FHEM runs the device RenameFn before rewriting associatedWith references.
+    my $rename_fn = $modules{$defs{$new}{TYPE}}{RenameFn};
+    $rename_fn->($new, $old) if $rename_fn;
     for my $device (values %defs) {
         my $links = ReadingsVal($device->{NAME}, 'associatedWith', '');
         next unless $links =~ /\b\Q$old\E\b/;
@@ -522,7 +531,8 @@ is($defs{$old_child_name}, $child, 'endpoint retains identity after restoring it
 # Real TCP byte-stream behavior: HTTP upgrade followed by a split >64 KiB WS frame.
 my ($client, $server);
 socketpair($client, $server, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die "socketpair: $!";
-my $ws = { NAME => 'ioWS', TYPE => 'MATTER', helper => {},
+my $ws = { NAME => 'ioWS', TYPE => 'MATTER',
+    helper => { ws_expected_accept => 'synthetic-valid-accept' },
     ws_status => 'handshake', websocket => 0, BUF => '', CD => $client,
     FD => fileno($client), READINGS => {} };
 $defs{ioWS} = $ws;
@@ -534,7 +544,7 @@ ok(length($json) > 65535, 'fixture exercises 64-bit frame length');
 my $high = int(length($json) / 4294967296);
 my $low = length($json) % 4294967296;
 my $frame = pack('CCNN', 0x81, 127, $high, $low) . $json;
-my $wire = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n" . $frame;
+my $wire = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: synthetic-valid-accept\r\n\r\n" . $frame;
 while (length($wire)) {
     my $part = substr($wire, 0, 8192, '');
     my $n = syswrite($server, $part);
@@ -566,6 +576,24 @@ for my $i (0 .. $pong_len - 1) {
                           ord(substr($mask, $i % 4, 1)));
 }
 is($unmasked_body, 'abc', 'Pong echoes original ping payload');
+
+# TCP splitting and WebSocket fragmentation are different cases. A partial
+# FIN=0 JSON text frame must not be parsed until the continuation arrives.
+my $fragment_json = encode_json({
+    schema_version => 7, sdk_version => 'fragmented-message',
+    fabric_id => 'synthetic', bluetooth_enabled => JSON::false
+});
+my $half = int(length($fragment_json) / 2);
+my $fragment_first = pack('CC', 0x01, $half) . substr($fragment_json, 0, $half);
+my $fragment_last = pack('CC', 0x80, length($fragment_json) - $half)
+                  . substr($fragment_json, $half);
+syswrite($server, $fragment_first) == length($fragment_first) or die 'fragment first write failed';
+MATTER_Read($ws);
+is(ReadingsVal('ioWS', 'sdk_version', ''), '', 'partial WebSocket message does not publish telemetry');
+syswrite($server, $fragment_last) == length($fragment_last) or die 'fragment last write failed';
+MATTER_Read($ws);
+is(ReadingsVal('ioWS', 'sdk_version', ''), 'fragmented-message',
+   'continuation completes a fragmented WebSocket text message');
 
 # After the upgrade, exactly one heartbeat timer is active.
 is(scalar(grep { $_->{callback} eq 'MATTER_Heartbeat' && $_->{owner} eq $ws } @timers),
@@ -617,6 +645,22 @@ MATTER_Read($bad);
 is($bad->{ws_status}, 'disconnected', 'rejected HTTP upgrade does not become connected');
 is(scalar(@timers), 1, 'invalid upgrade schedules reconnect');
 close($bad_server);
+
+# A 101 status without a matching Sec-WebSocket-Accept is not authenticated
+# as the response to this client's handshake nonce.
+@timers = ();
+socketpair(my $bad_accept_client, my $bad_accept_peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+    or die 'bad accept socketpair';
+my $bad_accept = { NAME => 'badAccept', TYPE => 'MATTER',
+    helper => { ws_expected_accept => 'synthetic-valid-accept' },
+    ws_status => 'handshake', websocket => 0, BUF => '',
+    CD => $bad_accept_client, FD => fileno($bad_accept_client), READINGS => {} };
+$defs{badAccept} = $bad_accept;
+my $forged_upgrade = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: wrong-value\r\n\r\n";
+syswrite($bad_accept_peer, $forged_upgrade) == length($forged_upgrade) or die 'bad accept write failed';
+MATTER_Read($bad_accept);
+is($bad_accept->{ws_status}, 'disconnected', 'mismatched WebSocket accept hash is rejected');
+close($bad_accept_peer);
 
 @timers = ();
 socketpair(my $huge_client, my $huge_server, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die "socketpair: $!";
@@ -703,7 +747,7 @@ my $accepted = $listener->accept() or die "accept local WebSocket: $!";
 my $request;
 sysread($accepted, $request, 2048);
 like($request, qr{^GET /ws HTTP/1\.1\r\n}, 'nonblocking connect sent a complete HTTP upgrade');
-my $http101 = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n";
+my $http101 = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: $async->{helper}{ws_expected_accept}\r\n\r\n";
 syswrite($accepted, $http101) == length($http101) or die 'HTTP 101 write failed';
 MATTER_Read($async);
 is($async->{ws_status}, 'connected', 'successful upgrade finishes the async handshake');
@@ -730,8 +774,19 @@ my $disabled = {NAME => 'disableIO', TYPE => 'MATTER', READINGS => {},
 $defs{disableIO} = $disabled;
 $selectlist{disableIO} = $disabled;
 InternalTimer(31, 'MATTER_Heartbeat', $disabled, 0);
+my $reentered_connect = 0;
+$reading_event_hook = sub {
+    my ($device, $reading, $value) = @_;
+    return unless $device eq $disabled && $reading eq 'state' && $value eq 'disconnected';
+    ++$reentered_connect;
+    MATTER_Set($disabled, 'disableIO', 'connect');
+};
 is(CommandAttr(undef, 'disableIO disable 1'), undef,
    'disable=1 is accepted on a running MATTER IO');
+$reading_event_hook = undef;
+is($reentered_connect, 1, 'synchronous FHEM event subscriber reentered set connect');
+ok(!$disabled->{helper}{connect_attempts},
+   'reentrant connect cannot defeat a pending disable transition');
 like(join("\n", @log), qr/\[disableIO\] Disabled: connection closed, pending timers cancelled/,
      'disable transition and cleanup are logged');
 ok(!$disabled->{CD} && !exists($selectlist{disableIO}),
@@ -882,8 +937,19 @@ is(ReadingsVal('MATTER_Hall_Light_EP1', 'state', ''), $old_state,
    'null OnOff state is not incorrectly published as off');
 
 my @sent_requests;
+# Device commands require a connected transport; the stub simulates only
+# the successful accepted-send contract, not delivery or device execution.
+like(MATTERDevice_Set($child, $child->{NAME}, 'on') // '',
+     qr/No active WebSocket/, 'device set rejects disconnected IO without claiming success');
+socketpair(my $io_a_socket, my $io_a_peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+    or die 'connected IO test socketpair';
+$defs{ioA}{CD} = $io_a_socket;
+$defs{ioA}{FD} = fileno($io_a_socket);
+$defs{ioA}{websocket} = 1;
+$defs{ioA}{ws_status} = 'connected';
 $defs{ioA}{fhem}{helper}{sendWS} = sub {
     push @sent_requests, JSON::decode_json($_[0]);
+    return 1;
 };
 is(MATTERDevice_Set($child, $child->{NAME}, 'getConfig'), undef,
    'getConfig can be sent via current IODev');
@@ -897,6 +963,20 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'battery_percent', ''), 55,
    'read_attribute response is routed to the original endpoint');
+
+# A connected IO whose send callback rejects a frame must not return success
+# or leave a pending getConfig request behind.
+my $previous_sender = $defs{ioA}{fhem}{helper}{sendWS};
+$defs{ioA}{fhem}{helper}{sendWS} = sub { return 0 };
+my $pending_before_send_failure = scalar keys %{$defs{ioA}{helper}{pending_config} // {}};
+like(MATTERDevice_Set($child, $child->{NAME}, 'on') // '',
+     qr/Unable to send device command/, 'failed device send returns a FHEM error');
+like(MATTERDevice_Set($child, $child->{NAME}, 'getConfig') // '',
+     qr/Unable to send getConfig/, 'failed read send returns a FHEM error');
+is(scalar(keys %{$defs{ioA}{helper}{pending_config} // {}}),
+   $pending_before_send_failure, 'failed read leaves no dangling pending request');
+$defs{ioA}{fhem}{helper}{sendWS} = $previous_sender;
+
 ok(!exists $defs{ioA}{helper}{pending_config}{$read_request->{message_id}},
    'matched getConfig pending request is cleared');
 
@@ -922,11 +1002,19 @@ is($sent_requests[1]{args}{command_name}, 'MoveToHueAndSaturation',
 like(MATTERDevice_Set($child, $child->{NAME}, 'rgb', 'GG0000'),
      qr/^Usage: set /, 'malformed RGB color is rejected');
 is(scalar(@sent_requests), 0, 'invalid RGB sends no device command');
+$attr{$child->{NAME}}{max_brightness} = 0;
+is(MATTERDevice_MaxBrightness($child), 254,
+   'invalid zero maximum falls back without division by zero');
 $attr{$child->{NAME}}{max_brightness} = 200;
 ok(MATTERDevice_AttributeUsable($child, 8, 3),
    'legacy min/max attributes remain usable without AttributeList');
 ok(grep(/^brightness:slider,0,1,200$/, MATTERDevice_GetSetList($child)),
    'existing max_brightness remains in the brightness slider without metadata');
+MATTERDevice_Parse($root, encode_json({
+    node_id => 42, attributes => { '1/8/0' => 254 }
+}));
+is(ReadingsVal($child->{NAME}, 'pct', ''), 100,
+   'incoming device level above configured max is clamped to 100 percent');
 MATTERDevice_Parse($root, encode_json({
     node_id => 42, attributes => { '1/8/65531' => [0] }
 }));
@@ -1025,6 +1113,84 @@ is($attr{MATTER_TypeDisplay_EP10}{group}, 'Temperature sensor',
    'temperature endpoint has its own type group');
 is($attr{MATTER_TypeDisplay_EP11}{group}, 'Contact sensor',
    'live device type update adjusts an existing automatic group');
+
+# A read started before a live update must not overwrite the newer endpoint
+# state when the stale server response eventually arrives.
+@sent_requests = ();
+is(MATTERDevice_Set($child, $child->{NAME}, 'getConfig'), undef,
+   'getConfig starts tracked request before live telemetry');
+my $older_read = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [42, '1/6/0', JSON::false]
+}));
+is(ReadingsVal($child->{NAME}, 'state', ''), 'off', 'live state update applied');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $older_read, result => { '1/6/0' => JSON::true }
+}));
+is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
+   'late read_attribute snapshot cannot regress a newer live state');
+
+# Inputs without valid Matter boolean/numeric representations are ignored.
+MATTERDevice_Parse($root, encode_json({
+    node_id => 42, attributes => {
+        '1/6/0' => 'false',
+        '1/8/0' => 'not-a-number'
+    }
+}));
+is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
+   'string false is not interpreted as OnOff true');
+my $pct_before_invalid = ReadingsVal($child->{NAME}, 'pct', '');
+MATTERDevice_Parse($root, encode_json({
+    node_id => 42, attributes => { '1/8/0' => 'invalid' }
+}));
+is(ReadingsVal($child->{NAME}, 'pct', ''), $pct_before_invalid,
+   'malformed brightness cannot be converted to zero percent');
+my $no_hash_error = eval { MATTER_ParseMessage($defs{ioA}, '[]'); 1 };
+ok($no_hash_error, 'valid non-object JSON cannot crash the IO parser');
+
+# An unrelated attribute in a delayed read must still be imported.
+# A changed AcceptedCommandList must survive the full metadata reset, too.
+@sent_requests = ();
+is(MATTERDevice_Set($child, $child->{NAME}, 'getConfig'), undef,
+   'begin complete read while waiting for live telemetry');
+my $mixed_read = $sent_requests[-1]{message_id};
+like(MATTERDevice_Set($child, $child->{NAME}, 'getConfig') // '',
+     qr/getConfig already in progress/,
+     'duplicate endpoint read is rejected while the first is pending');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [42, '1/6/0', JSON::false]
+}));
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [42, '1/8/65529', [4]]
+}));
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $mixed_read,
+    result => {
+        '1/6/0' => JSON::true,    # stale on/off
+        '1/8/65529' => [0],      # stale command metadata
+        '1/47/12' => 132,        # independent, useful snapshot attribute
+    }
+}));
+is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
+   'new live on/off takes precedence over old read');
+is(ReadingsVal($child->{NAME}, 'battery_percent', ''), 66,
+   'independent battery attribute from late read still updates');
+ok(MATTERDevice_CommandAccepted($child, 8, 4),
+   'new live capability metadata survives rebuilding the read cache');
+ok(!MATTERDevice_CommandAccepted($child, 8, 0),
+   'stale command list cannot reintroduce an obsolete accepted command');
+@sent_requests = ();
+is(MATTERDevice_Set($child, $child->{NAME}, 'getConfig'), undef,
+   'completed read releases the per-endpoint concurrency guard');
+my $validity_read = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [42, '1/6/0', 'false']
+}));
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $validity_read, result => { '1/6/0' => JSON::true }
+}));
+is(ReadingsVal($child->{NAME}, 'state', ''), 'on',
+   'invalid live boolean does not supersede a valid snapshot value');
 
 # Power Source is a utility type, not a competing application device type.
 MATTERDevice_Parse($types_root, encode_json({
@@ -1586,5 +1752,198 @@ unlike($disconnected // '', qr/\Q$manual_code\E/,
 is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'interrupted',
    'failed send does not produce misleading running status');
 close($commission_server);
+
+# FHEM calls SetFn in list context. The second return value prevents DoSet
+# from synthesizing a plaintext password-bearing event on this device.
+socketpair(my $credential_socket, my $credential_peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+    or die 'credential socketpair';
+my $credential_io = {
+    NAME => 'credentialIO', TYPE => 'MATTER', READINGS => {}, helper => {},
+    CD => $credential_socket, websocket => 1, ws_status => 'connected'
+};
+$defs{credentialIO} = $credential_io;
+my ($wifi_result, $wifi_skip_event) = MATTER_Set(
+    $credential_io, 'credentialIO', 'setWifiCredentials',
+    'SyntheticSSID', 'SyntheticPassword'
+);
+is($wifi_result, undef, 'credential setter accepts a connected request');
+is($wifi_skip_event, 1, 'credential command suppresses FHEM synthetic set event');
+$credential_io->{READINGS}{wifi_7_ssid} = { VAL => 'PreviousSSID' };
+is(MATTER_Set($credential_io, 'credentialIO', 'getCredentials'), undef,
+   'request credential inventory for failure-preservation checks');
+my $invalid_credential_id = $credential_io->{helper}{next_message_id};
+my $credential_parse_ok = eval {
+    MATTER_ParseMessage($credential_io, encode_json({
+        message_id => $invalid_credential_id, result => []
+    }));
+    1;
+};
+ok($credential_parse_ok, 'unexpected credential array response cannot crash parser');
+is(ReadingsVal('credentialIO', 'wifi_7_ssid', ''), 'PreviousSSID',
+   'malformed credential response does not erase existing readings');
+is(MATTER_Set($credential_io, 'credentialIO', 'getCredentials'), undef,
+   'request credential inventory with invalid nested shape');
+my $invalid_nested_id = $credential_io->{helper}{next_message_id};
+MATTER_ParseMessage($credential_io, encode_json({
+    message_id => $invalid_nested_id, result => { wifi => 'unexpected' }
+}));
+is(ReadingsVal('credentialIO', 'wifi_7_ssid', ''), 'PreviousSSID',
+   'malformed nested credential list preserves existing readings');
+is(MATTER_Set($credential_io, 'credentialIO', 'getCredentials'), undef,
+   'request credential inventory with malformed item');
+my $invalid_item_id = $credential_io->{helper}{next_message_id};
+MATTER_ParseMessage($credential_io, encode_json({
+    message_id => $invalid_item_id,
+    result => { wifi => [{ id => 7, ssid => ['not-a-scalar'] }] }
+}));
+is(ReadingsVal('credentialIO', 'wifi_7_ssid', ''), 'PreviousSSID',
+   'malformed credential item cannot partially delete the previous inventory');
+is(MATTER_Set($credential_io, 'credentialIO', 'getCredentials'), undef,
+   'request valid updated credential inventory');
+my $valid_credential_id = $credential_io->{helper}{next_message_id};
+MATTER_ParseMessage($credential_io, encode_json({
+    message_id => $valid_credential_id,
+    result => { wifi => [{ id => 7, ssid => 'ReplacementSSID' }], thread => [] }
+}));
+is(ReadingsVal('credentialIO', 'wifi_7_ssid', ''), 'ReplacementSSID',
+   'valid credential inventory replaces the previous readings');
+MATTER_Close($credential_io);
+close($credential_peer);
+
+# FHEM renaming an IO does not automatically migrate its clients. Test both
+# the native callback and subsequent discovery without losing client identity.
+my $old_preferred_io = $preferred_io;
+$preferred_io = 'renameIO';
+$defs{renameIO} = {
+    NAME => 'renameIO', TYPE => 'MATTER', helper => {}, READINGS => {}
+};
+MATTER_ProcessNode($defs{renameIO}, node(778, 'Renamable'));
+my $rename_root = $defs{MATTER_Renamable};
+my $rename_child = $defs{MATTER_Renamable_EP1};
+ok($rename_root && $rename_child, 'IO rename fixture creates node and endpoint');
+# Explicit root IODev and auto-assigned endpoint IODev both need to survive.
+delete $attr{$rename_child->{NAME}}{IODev};
+$defs{renameIO}{FD} = 100;
+$selectlist{renameIO} = $defs{renameIO};
+is(CommandRename(undef, 'renameIO renamedIO'), undef, 'native FHEM IO rename succeeds');
+is(AttrVal($rename_root->{NAME}, 'IODev', ''), 'renamedIO',
+   'root IODev attribute follows renamed IO');
+is(AttrVal($rename_child->{NAME}, 'IODev', ''), 'renamedIO',
+   'endpoint without a prior IODev attribute gains durable new ownership');
+is($modules{MATTERDevice}{defptr}{'renamedIO:778'}, $rename_root,
+   'root defptr is indexed under new IO name');
+ok(!exists $modules{MATTERDevice}{defptr}{'renameIO:778'},
+   'old IO root key is removed');
+ok(!exists $selectlist{renameIO} && $selectlist{renamedIO} eq $defs{renamedIO},
+   'FHEM selectlist uses renamed IO key');
+my $before_rename_resync = count_devices();
+MATTER_ProcessNode($defs{renamedIO}, node(778, 'Renamable'));
+is(count_devices(), $before_rename_resync,
+   'rediscovery after IO rename preserves the original devices');
+$preferred_io = $old_preferred_io;
+delete $selectlist{renamedIO};
+
+# Request IDs are unique across all in-flight command and read namespaces.
+$defs{ioA}{helper}{next_message_id} = 15;
+$defs{ioA}{helper}{pending_command}{16} = 'get_nodes';
+$defs{ioA}{helper}{pending_config}{17} = { node_id => 42, created_at => $mock_time };
+is(MATTER_NextMessageId($defs{ioA}), 18,
+   'shared message ID allocator skips both pending request maps');
+delete $defs{ioA}{helper}{pending_command}{16};
+delete $defs{ioA}{helper}{pending_config}{17};
+
+# A complete snapshot cannot reverse structural events delivered after its
+# request, even if the snapshot contains the affected node.
+is(MATTER_Set($defs{ioA}, 'ioA', 'discover'), undef, 'tracked discovery is sent');
+my $snapshot_id = $defs{ioA}{helper}{next_message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_removed', data => 42
+}));
+is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'removed',
+   'newer node removal event is applied');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $snapshot_id, result => [node(42, 'OldNodeLabel')]
+}));
+is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'removed',
+   'late snapshot does not re-add node removed by a newer event');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_added', data => node(42, 'Hall Light')
+}));
+is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present',
+   'new node_added event restores node membership');
+
+# One partial node_updated cannot invalidate useful fields from an older
+# complete snapshot. Other missing nodes must still be marked removed.
+MATTER_ProcessNode($defs{ioA}, node(779, 'MissingInSnapshot'));
+my $snapshot_other_root = $defs{MATTER_MissingInSnapshot};
+ok($snapshot_other_root, 'separate node is present before the structural race');
+is(MATTER_Set($defs{ioA}, 'ioA', 'discover'), undef,
+   'discover starts a complete snapshot for multiple nodes');
+my $partial_snapshot_id = $defs{ioA}{helper}{next_message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_updated', data => { node_id => 42, available => JSON::false }
+}));
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_updated',
+    data => { node_id => 42, attributes => { '1/6/0' => JSON::false } }
+}));
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $partial_snapshot_id,
+    result => [{
+        node_id => 42, name => 'OldSnapshotName',
+        available => JSON::true,
+        attributes => { '1/6/0' => JSON::true, '1/47/12' => 154 }
+    }]
+}));
+is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'false',
+   'partial live availability overrides only matching snapshot field');
+is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
+   'partial live node attributes override only matching snapshot attribute');
+is(ReadingsVal($child->{NAME}, 'battery_percent', ''), 77,
+   'unrelated endpoint attribute remains available from full snapshot');
+is(ReadingsVal($snapshot_other_root->{NAME}, 'matter_status', ''), 'removed',
+   'event for first node does not suppress removal of unrelated missing node');
+
+# The latest explicit discovery supersedes an unresponsive earlier one,
+# keeping only one full snapshot request in flight.
+is(MATTER_Set($defs{ioA}, 'ioA', 'discover'), undef,
+   'first explicit discovery queued');
+my $superseded_id = $defs{ioA}{helper}{next_message_id};
+is(MATTER_Set($defs{ioA}, 'ioA', 'discover'), undef,
+   'newer discovery supersedes prior unanswered discovery');
+my $current_snapshot_id = $defs{ioA}{helper}{next_message_id};
+ok(!exists($defs{ioA}{helper}{pending_command}{$superseded_id}),
+   'superseded discovery does not accumulate an orphaned pending request');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $superseded_id, result => []
+}));
+is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present',
+   'response to superseded discovery is ignored');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $current_snapshot_id,
+    result => [node(42, 'Hall Light'), node(779, 'MissingInSnapshot')]
+}));
+is(ReadingsVal($snapshot_other_root->{NAME}, 'matter_status', ''), 'present',
+   'latest discovery resynchronizes an independently missing node');
+
+# Invalid live node metadata is not a reason to discard a valid attribute
+# from the snapshot; it was never published as a real device state.
+is(MATTER_Set($defs{ioA}, 'ioA', 'discover'), undef,
+   'start discovery before invalid live node attribute');
+my $valid_snapshot_id = $defs{ioA}{helper}{next_message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_updated',
+    data => { node_id => 42, attributes => { '1/6/0' => 'false' } }
+}));
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $valid_snapshot_id,
+    result => [{ node_id => 42, name => 'Hall Light',
+                 attributes => { '1/6/0' => JSON::true } },
+               node(779, 'MissingInSnapshot')]
+}));
+is(ReadingsVal($child->{NAME}, 'state', ''), 'on',
+   'invalid live node attribute does not hide a valid snapshot update');
+close($io_a_peer);
+MATTER_Close($defs{ioA});
 
 done_testing();

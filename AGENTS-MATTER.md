@@ -24,7 +24,7 @@
 - The Matter server owns its nodes and Matter fabric. The FHEM IO device owns the connection and dispatch; a root `MATTERDevice` represents endpoint 0, and endpoint children represent additional endpoints. Do not conflate node IDs, endpoint IDs, FHEM names, server labels, and stable device identity.
 - Current routing uses `$modules{MATTERDevice}{defptr}` keyed by IO name and node ID for root nodes, plus per-root endpoint references. Check this exact routing path, including multiple IO devices and stale references, before changing discovery, rebind, rename, or deletion behavior. Preserve user-defined device names, FUUIDs, readings, and attributes wherever possible.
 - `get_nodes` discovery and live `attribute_updated` events have different payload shapes and ordering. Validate `node_id`, endpoint/cluster/attribute paths, payload types, and the intended IO before routing or autocreating. An unknown node/event is not a reason to create or overwrite an unrelated existing FHEM device.
-- Keep autocreate collision handling and endpoint ownership explicit. Do not assume that the name derived from a remote node label is unique. When adding a room default, only set `room Matter` for **newly created** devices; do not override a manually chosen room. This is a desired enhancement, not a claim that the current module implements it.
+- Keep autocreate collision handling and endpoint ownership explicit. Do not assume that the name derived from a remote node label is unique. When adding a room default, only set `room Matter` for **newly created** devices; do not override a manually chosen room. New autocreated roots and endpoints already default to room `Matter`; this is implemented, not a pending enhancement.
 - Coordinated naming of all endpoints after renaming a root is a **proposed feature**, not existing guaranteed behavior. Before implementing it, define a stable root/endpoint naming contract and decide how manually renamed endpoints are protected. Do not rename unrelated devices by prefix alone.
 
 ## Capabilities, commands, readings
@@ -34,6 +34,35 @@
 - Preserve endpoint-specific values and update semantics. Never publish a command as confirmed hardware state without readback/event evidence. Do not collapse unknown, null, unsupported, stale, or unreachable status into `0`, `off`, or success.
 - Treat pending reads, live updates, discovery snapshots, and node availability as separate sources of evidence. Reconcile event order and freshness deliberately rather than overwriting newer readings with late responses.
 - Do not silently add mandatory support for device classes or clusters merely because the Matter specification defines them. Extend mappings with focused tests and verified device/server evidence.
+
+## Matter-specific regression reminders
+
+These are recurring Matter integration failures. General security, lifecycle,
+validation and test-fidelity rules are already in `AGENTS.md`; do not duplicate
+them here. For relevant changes, test both the intended protection **and** that
+unrelated valid data is still processed.
+
+- **IO identity and reentrancy:** An IO rename must preserve existing root and
+  endpoint identities, `IODev`, `defptr` and `%selectlist`, including after
+  discovery. Synchronous FHEM reading events cannot reopen a disabled IO.
+- **Request acceptance and secrets:** Distinguish socket queue acceptance from
+  server/device success. Reject disconnected/failed sends and correlate
+  message IDs. Prevent pairing codes and Wi-Fi passwords from entering FHEM's
+  synthetic `set` events as well as logs.
+- **Snapshot freshness without lost updates:** A delayed `getConfig` reply
+  must not overwrite a newer live attribute, but must retain unrelated
+  attributes and updated capability metadata. A partial `node_updated`
+  (such as `available` only) must not suppress the rest of a complete
+  discovery snapshot or removal of an *unrelated* missing node. Repeated
+  discovery requests must not grow unbounded pending state.
+- **Matter data integrity:** Reject invalid/null OnOff, level, metadata and
+  JSON shapes without manufacturing state changes; keep `pct` within 0–100
+  even when a device reports a level exceeding a configured maximum.
+  Malformed or rejected credential-list responses must preserve prior
+  credential readings.
+- **WebSocket correctness:** Distinguish split TCP reads from continuation
+  frames; check the HTTP accept key, FIN/control-frame rules, size limits
+  and cleanup on close. Verify these with independent protocol fixtures.
 
 ## Tests, review, and deployment
 

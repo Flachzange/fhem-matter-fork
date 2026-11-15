@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-15  MATTER IO/Device V0.14: preserve root/endpoint ownership on IO rename; suppress Wi-Fi password set events; reject invalid telemetry and disconnected commands; correlate requests; reconcile delayed reads and partial discovery events per attribute/node without discarding unrelated data; preserve credential readings on malformed replies; bound brightness percentages; validate WebSocket upgrade/fragmentation; simplify unused metadata and add focused regression tests.
+
 - 2026-11-15  MATTERDevice: show each endpoint's root through FHEM's native 'Probably associated with' links using persistent associatedWith readings; preserve user links and FHEM rename behavior.
 - 2026-11-15  MATTER IO: defer the initial TCP/WebSocket connection until FHEM's event loop starts, preventing handshake timeouts during configuration load; preserve immediate manual connect and existing reconnect behavior.
 - 2026-11-15  MATTERDevice: persist Descriptor DeviceTypeList IDs in the device_type_ids reading; restore endpoint type labels and automatic groups from FHEM's statefile without new Matter server data.

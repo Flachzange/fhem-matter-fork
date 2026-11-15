@@ -67,9 +67,9 @@ my %MATTER_CLUSTERS = (
             0x0000 => { name => "state", is_reading => 0, is_attribute => 0},
         },
         commands   => {
-            0x00   => { name => "Off",    set_list => "off:noArg" },
-            0x01   => { name => "On",     set_list => "on:noArg", forbidden_features => ["off_only"] },
-            0x02   => { name => "Toggle", set_list => "toggle:noArg", forbidden_features => ["off_only"] },
+            0x00   => { name => "Off" },
+            0x01   => { name => "On", forbidden_features => ["off_only"] },
+            0x02   => { name => "Toggle", forbidden_features => ["off_only"] },
             0x40   => { name => "OffWithEffect", set_list => "off_with_effect:textField", required_features => ["lighting"] },
             0x41   => { name => "OnWithRecallGlobalScene", set_list => "on_with_recall_global_scene:noArg", required_features => ["lighting"] },
             0x42   => { name => "OnWithTimedOff", set_list => "on_with_timed_off:textField", required_features => ["lighting"] },
@@ -92,15 +92,15 @@ my %MATTER_CLUSTERS = (
             0x4000 => { name => "startup_current_level", is_reading => 1, is_attribute => 0, required_features => ["lighting"] },
         },
         commands   => {
-            0x00   => { name => "MoveToLevel", set_list => "move_to_level:slider,0,1,254 textField" },
-            0x01   => { name => "Move", set_list => "move:up,down slider,0,1,254 textField" },
-            0x02   => { name => "Step", set_list => "step:up, down slider,0,1,254 textField" },
-            0x03   => { name => "Stop", set_list => "stop:textField" },
-            0x04   => { name => "MoveToLevelWithOnOff", set_list => "move_to_level:slider,0,1,254 textField" },
-            0x05   => { name => "MoveWithOnOff", set_list => "move:up,down slider,0,1,254 textField" },
-            0x06   => { name => "StepWithOnOff", set_list => "step:up, down slider,0,1,254 textField" },
-            0x07   => { name => "StopWithOnOff", set_list => "stop:textField" },
-            0x08   => { name => "MoveToClosestFrequency", set_list => "move_to_frequency:textField", required_features => ["frequency"] },
+            0x00   => { name => "MoveToLevel" },
+            0x01   => { name => "Move" },
+            0x02   => { name => "Step" },
+            0x03   => { name => "Stop" },
+            0x04   => { name => "MoveToLevelWithOnOff" },
+            0x05   => { name => "MoveWithOnOff" },
+            0x06   => { name => "StepWithOnOff" },
+            0x07   => { name => "StopWithOnOff" },
+            0x08   => { name => "MoveToClosestFrequency", required_features => ["frequency"] },
         }
     },
     0x0028 => {
@@ -232,8 +232,8 @@ my %MATTER_CLUSTERS = (
             0x0021 => { name => "language", is_reading => 1, is_attribute => 0 },
         },
         commands   => {
-            0x00   => { name => "LockDoor",   set_list => "lock:noArg" },
-            0x01   => { name => "UnlockDoor", set_list => "unlock:noArg" },
+            0x00   => { name => "LockDoor" },
+            0x01   => { name => "UnlockDoor" },
         },
     },
     0x0102 => {
@@ -271,11 +271,11 @@ my %MATTER_CLUSTERS = (
 
         },
         commands => {
-            0x00   => { name => "UpOrOpen", set_list => "on:noArg" },
-            0x01   => { name => "DownOrClose", set_list => "off:noArg" },
-            0x02   => { name => "StopMotion", set_list => "stop:noArg" },
-            0x05   => { name => "GoToLiftPercentage", set_list => "pct:slider,0,1,100", required_features => ["lift"] },
-            0x08   => { name => "GoToTiltPercentage", set_list => "tilt:slider,0,1,100", required_features => ["tilt"] },
+            0x00   => { name => "UpOrOpen" },
+            0x01   => { name => "DownOrClose" },
+            0x02   => { name => "StopMotion" },
+            0x05   => { name => "GoToLiftPercentage", required_features => ["lift"] },
+            0x08   => { name => "GoToTiltPercentage", required_features => ["tilt"] },
         },
     },
     0x0300 => {
@@ -367,6 +367,13 @@ sub MATTERDevice_Define($$) {
         Log3 $name, 3, "MATTERDevice: Migrated endpoint DEF to '$hash->{DEF}'; use save to persist";
     }
 
+    # CommandModify can reuse a root hash for a different identity.
+    if (($hash->{endpoint_id} // -1) == 0 && defined $hash->{node_id}) {
+        my $prior_io = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
+        my $key = "$prior_io:$hash->{node_id}";
+        delete $modules{MATTERDevice}{defptr}{$key}
+            if ($modules{MATTERDevice}{defptr}{$key} // '') eq $hash;
+    }
     $hash->{node_id} = $node_id;
     $hash->{endpoint_id} = $endpoint_id;
     # The root name is derived from IODev + node ID, never from the DEF.
@@ -385,7 +392,9 @@ sub MATTERDevice_Undef($$) {
 my ($hash, $arg) = @_;
     if (($hash->{node_id}) && ($hash->{endpoint_id} == 0)) {
         my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
-        delete $modules{MATTERDevice}{defptr}{"$io_name:$hash->{node_id}"};
+        my $key = "$io_name:$hash->{node_id}";
+        delete $modules{MATTERDevice}{defptr}{$key}
+            if ($modules{MATTERDevice}{defptr}{$key} // '') eq $hash;
     }
     return undef;
 }
@@ -397,6 +406,17 @@ sub MATTERDevice_SetAttributeIfNotExists($$$) {
         CommandAttr(undef, "$name $attr_name $val");
         Log3 $name, 4, "MATTERDevice: Auto-set attribute $attr_name = $val for $name";
     }
+}
+
+# Never interpret string "false" or malformed objects as Matter boolean true.
+sub MATTERDevice_NormalizeBoolean {
+    my ($value) = @_;
+    return undef unless defined $value;
+    return $value ? 1 : 0
+        if blessed($value) && ($value->isa('JSON::PP::Boolean') ||
+                               $value->isa('JSON::XS::Boolean'));
+    return $value + 0 if !ref($value) && $value =~ /\A[01]\z/;
+    return undef;
 }
 
 sub MATTERDevice_NormalizeMatterId($) {
@@ -449,19 +469,9 @@ sub MATTERDevice_CapabilityContains($$$$) {
     return exists($list->{$id}) ? 1 : 0;
 }
 
-sub MATTERDevice_CommandGenerated($$$) {
-    my ($hash, $cluster_id, $command_id) = @_;
-    return MATTERDevice_CapabilityContains($hash, $cluster_id, "generated_commands", $command_id);
-}
-
 sub MATTERDevice_CommandAccepted($$$) {
     my ($hash, $cluster_id, $command_id) = @_;
     return MATTERDevice_CapabilityContains($hash, $cluster_id, "accepted_commands", $command_id);
-}
-
-sub MATTERDevice_EventSupported($$$) {
-    my ($hash, $cluster_id, $event_id) = @_;
-    return MATTERDevice_CapabilityContains($hash, $cluster_id, "event_list", $event_id);
 }
 
 sub MATTERDevice_AttributeSupported($$$) {
@@ -578,6 +588,16 @@ sub MATTERDevice_CommandSupported($$$) {
     return 1;
 }
 
+# Keep brightness bounds consistent across controls, commands and readings.
+sub MATTERDevice_MaxBrightness {
+    my ($hash) = @_;
+    my $max = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
+        ? AttrVal($hash->{NAME}, 'max_brightness', 254) : 254;
+    return 254 unless defined($max) && !ref($max) &&
+        $max =~ /^\d+$/ && $max > 0 && $max <= 254;
+    return $max;
+}
+
 sub MATTERDevice_Set($$@) {
     my ($hash, $name, $cmd, @args) = @_;
 
@@ -586,7 +606,6 @@ sub MATTERDevice_Set($$@) {
     my $valid = 0;
 
     if ($cmd eq "?") {
-        my $list_str = join(" ", @setList);
         return "Unknown argument $cmd, choose one of $list_str";
     }
 
@@ -599,7 +618,6 @@ sub MATTERDevice_Set($$@) {
     }
 
     unless ($valid) {
-        my $list_str = join(" ", @setList);
         return "Unknown argument $cmd, choose one of $list_str";
     }
     
@@ -607,6 +625,22 @@ sub MATTERDevice_Set($$@) {
     my $level_payload = undef;
     my $node_id     = $hash->{node_id};
     my $endpoint_id = $hash->{endpoint_id} // 1;
+    my $io_hash = $hash->{IODev};
+    return "MATTER: No active WebSocket connection for $name"
+        unless $io_hash && $io_hash->{CD} && $io_hash->{websocket} &&
+            ($io_hash->{ws_status} // '') eq 'connected' &&
+            $io_hash->{fhem}{helper}{sendWS};
+
+    # Direct FHEM commands must not coerce malformed numeric arguments to zero.
+    if ($cmd =~ /^(?:brightness|pct|tilt|ct|frequency)$/) {
+        return "Usage: set $name $cmd <non-negative integer>"
+            unless @args == 1 && defined($args[0]) && $args[0] =~ /\A\d+\z/;
+        return "$cmd must be between 0 and 100" if ($cmd eq 'pct' || $cmd eq 'tilt') && $args[0] > 100;
+        return "Invalid brightness" if $cmd eq 'brightness' &&
+            $args[0] > MATTERDevice_MaxBrightness($hash);
+        return "Invalid color temperature" if $cmd eq 'ct' && (!$args[0] || $args[0] > 65534);
+        return "Invalid frequency" if $cmd eq 'frequency' && (!$args[0] || $args[0] > 65535);
+    }
 
     if ($cmd eq "on" || $cmd eq "off") {
         my $onoff_command_id = ($cmd eq "on") ? 0x01 : 0x00;
@@ -616,7 +650,7 @@ sub MATTERDevice_Set($$@) {
 
         if ($can_onoff) {
             $payload = {
-                message_id => int(rand(100000) + 1),
+                message_id => MATTER_NextMessageId($io_hash),
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
@@ -628,7 +662,7 @@ sub MATTERDevice_Set($$@) {
         }
         elsif ($can_wc) {
             $payload = {
-                message_id => int(rand(100000) + 1),
+                message_id => MATTER_NextMessageId($io_hash),
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
@@ -641,7 +675,7 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "toggle") {
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id     => $node_id,
@@ -678,7 +712,7 @@ sub MATTERDevice_Set($$@) {
         return "Unknown EffectVariant '$variant_name' for $effect_name" if (!exists($effect_variant{$effect_name}{$variant_name}));
 
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -694,7 +728,7 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "on_with_recall_global_scene") {
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -718,7 +752,7 @@ sub MATTERDevice_Set($$@) {
         return "offWaitTime must be between 0 and 65534 (0.1 s units)" if ($off_wait_time > 65534);
 
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -735,7 +769,7 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "stop") {
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -748,7 +782,7 @@ sub MATTERDevice_Set($$@) {
     elsif ($cmd eq "brightness") {
         my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -764,7 +798,7 @@ sub MATTERDevice_Set($$@) {
         if ($can_wc_pct) {
             my $position = $args[0] * 100;
             $payload = {
-                message_id => int(rand(100000) + 1),
+                message_id => MATTER_NextMessageId($io_hash),
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
@@ -775,12 +809,10 @@ sub MATTERDevice_Set($$@) {
                 }
             };
         } else {
-            my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-            ? AttrVal($name, "max_brightness", 254)
-            : 254;
+            my $max_level = MATTERDevice_MaxBrightness($hash);
             my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
             $payload = {
-                message_id => int(rand(100000) + 1),
+                message_id => MATTER_NextMessageId($io_hash),
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
@@ -795,7 +827,7 @@ sub MATTERDevice_Set($$@) {
     elsif ($cmd eq "tilt") {
         my $tilt = $args[0] * 100;
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -841,7 +873,7 @@ sub MATTERDevice_Set($$@) {
                 $y = 65279 if $y > 65279;
 
                 $payload = {
-                    message_id => int(rand(100000) + 1),
+                    message_id => MATTER_NextMessageId($io_hash),
                     command    => "device_command",
                     args       => {
                         node_id      => $node_id,
@@ -858,12 +890,10 @@ sub MATTERDevice_Set($$@) {
             my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
             my $can_level = $use_with_onoff || MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
             if ($can_level) {
-                my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-                    ? AttrVal($name, "max_brightness", 254)
-                    : 254;
+                my $max_level = MATTERDevice_MaxBrightness($hash);
                 my $level = int(($rgb_max / 255) * $max_level + 0.5);
                 $level_payload = {
-                    message_id => int(rand(100000) + 1),
+                    message_id => MATTER_NextMessageId($io_hash),
                     command    => "device_command",
                     args       => {
                         node_id      => $node_id,
@@ -895,12 +925,10 @@ sub MATTERDevice_Set($$@) {
             my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
             my $can_level = $use_with_onoff || MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
             if ($can_level) {
-                my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-                    ? AttrVal($name, "max_brightness", 254)
-                    : 254;
+                my $max_level = MATTERDevice_MaxBrightness($hash);
                 my $level = int($max * $max_level + 0.5);
                 $level_payload = {
-                    message_id => int(rand(100000) + 1),
+                    message_id => MATTER_NextMessageId($io_hash),
                     command    => "device_command",
                     args       => {
                         node_id      => $node_id,
@@ -913,7 +941,7 @@ sub MATTERDevice_Set($$@) {
             }
 
             $payload = {
-                message_id => int(rand(100000) + 1),
+                message_id => MATTER_NextMessageId($io_hash),
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
@@ -927,7 +955,7 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "ct") {
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -939,8 +967,7 @@ sub MATTERDevice_Set($$@) {
         };
     }
     elsif ($cmd eq "getConfig") {
-        my $ioHash = $hash->{IODev};
-        return "No IODev assigned to $name" if (!$ioHash || !$ioHash->{fhem}{helper}{sendWS});
+        my $ioHash = $io_hash; # Connection was already checked above.
 
         my @paths;
 
@@ -968,8 +995,30 @@ sub MATTERDevice_Set($$@) {
 
         # Als Bulk-Array an den Server schicken.
         if (@paths) {
-            my $msg_id = int(rand(100000) + 1);
-            $ioHash->{helper}{pending_config}{$msg_id} = $node_id;
+            my $pending_reads = ($ioHash->{helper}{pending_config} //= {});
+            foreach my $id (keys %$pending_reads) {
+                my $entry = $pending_reads->{$id};
+                if (ref($entry) eq 'HASH' &&
+                    gettimeofday() - ($entry->{created_at} // 0) > 120) {
+                    delete $pending_reads->{$id};
+                    next;
+                }
+                # Do not allow a second request for this endpoint to return
+                # an older configuration after a newer response was applied.
+                return "MATTER: getConfig already in progress for $name"
+                    if ref($entry) eq 'HASH' &&
+                       $entry->{node_id} eq $node_id &&
+                       $entry->{endpoint_id} == $endpoint_id;
+            }
+            return "MATTER: Too many pending read requests"
+                if scalar(keys %$pending_reads) >= 128;
+            my $msg_id = MATTER_NextMessageId($ioHash);
+            return "MATTER: Cannot allocate request ID" unless defined $msg_id;
+            $pending_reads->{$msg_id} = {
+                node_id => $node_id,
+                endpoint_id => int($endpoint_id),
+                created_at => gettimeofday()
+            };
 
             my $config_payload = {
                 message_id   => $msg_id,
@@ -980,7 +1029,10 @@ sub MATTERDevice_Set($$@) {
                 }
             };
             
-            $ioHash->{fhem}{helper}{sendWS}->(encode_json($config_payload));
+            unless ($ioHash->{fhem}{helper}{sendWS}->(encode_json($config_payload))) {
+                delete $pending_reads->{$msg_id};
+                return "MATTER: Unable to send getConfig on $name";
+            }
             Log3 $name, 3, "MATTERDevice: Wildcard getConfig triggered for node $node_id, endpoint $endpoint_id (" . scalar(@paths) . " paths queried).";
         }
 
@@ -988,7 +1040,7 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "frequency") {
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -1001,7 +1053,7 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "lock") {
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -1013,7 +1065,7 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "unlock") {
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -1028,8 +1080,10 @@ sub MATTERDevice_Set($$@) {
 
     if ($hash->{IODev} && $hash->{IODev}{fhem}{helper}{sendWS}) {
         my $sendWS = $hash->{IODev}{fhem}{helper}{sendWS};
-        $sendWS->(encode_json($level_payload)) if ($level_payload);
-        $sendWS->(encode_json($payload)) if ($payload);
+        return "MATTER: Unable to send brightness command on $name"
+            if $level_payload && !$sendWS->(encode_json($level_payload));
+        return "MATTER: Unable to send device command on $name"
+            if $payload && !$sendWS->(encode_json($payload));
     } else {
         return "No send function found in IODev for $name";
     }
@@ -1091,11 +1145,8 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     my $is_attribute = $attr_info->{is_attribute} // 0;
     my $transform = $attr_info->{transform};
 
-    # Bool-Handling für JSON (nur prüfen, wenn es überhaupt ein Objekt/Blessing ist)
-    if (ref($value) && blessed($value) && $value->isa('JSON::PP::Boolean')) {
-        $value = $value ? 1 : 0;
-    }
-
+    my $boolean = MATTERDevice_NormalizeBoolean($value);
+    $value = $boolean if blessed($value) && defined($boolean);
     return if !defined($value);
     if ($transform && ref($transform) eq 'CODE') {
         # Numeric transformations must not turn malformed values into zero.
@@ -1105,6 +1156,11 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         $value = $transform->($value);
         return if !defined($value);
     }
+    return if ref($value);
+    return if $cluster_id == 0x0006 && $attr_id == 0 &&
+              !defined(MATTERDevice_NormalizeBoolean($value));
+    return if $cluster_id == 0x0008 && $attr_id == 0 &&
+              ($value !~ /^\d+$/ || $value > 254);
 
     # Existing installations may depend on manually managed has_* attributes.
     my %legacy_features = (
@@ -1133,15 +1189,11 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
             MATTERDevice_SetAttributeIfNotExists($name, $attr_name, $value);
         }
         if ($attr_name eq "brightness") {
-            # Während getConfig wird der Capability-Cache vor dem Neuaufbau geleert.
-            # Attribute aus dem Result-Hash haben keine garantierte Reihenfolge. Solange
-            # AttributeList noch nicht verarbeitet wurde, den bereits bekannten Wert nutzen.
-            my $attribute_list = $hash->{helper}{capabilities}{0x0008}{attribute_list};
-            my $max_level = (
-                ref($attribute_list) ne 'HASH' ||
-                MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-            ) ? AttrVal($name, "max_brightness", 254) : 254;
-            my $pct_value = int(int($value) * 100 / $max_level);
+            # Metadata and user overrides are interpreted consistently with
+            # the set slider and outgoing LevelControl commands.
+            my $max_level = MATTERDevice_MaxBrightness($hash);
+            my $pct_value = int($value * 100 / $max_level);
+            $pct_value = 100 if $pct_value > 100;
             readingsBulkUpdate($hash, "pct", $pct_value);
         }
     }
@@ -1158,8 +1210,8 @@ sub MATTERDevice_Parse($ $) {
     my $name = $hash->{NAME};
 
     my $decoded = eval { decode_json($data) };
-    if ($@) {
-        Log3 $name, 3, "MATTERDevice: Parse JSON error: $@";
+    if ($@ || ref($decoded) ne 'HASH') {
+        Log3 $name, 3, "MATTERDevice: Invalid JSON object";
         return;
     }
 
@@ -1169,10 +1221,9 @@ sub MATTERDevice_Parse($ $) {
     my $update_available = sub {
         my ($available) = @_;
         return if $my_endpoint != 0;
-        return unless defined($available) &&
-            ((!ref($available) && $available =~ /^(?:0|1)$/) ||
-             ref($available) =~ /Boolean$/);
-        my $available_value = $available ? "true" : "false";
+        my $normalized = MATTERDevice_NormalizeBoolean($available);
+        return unless defined $normalized;
+        my $available_value = $normalized ? "true" : "false";
         readingsSingleUpdate($hash, "available", $available_value, 1)
             if ReadingsVal($name, 'available', '') ne $available_value;
         MATTERDevice_SyncNodeReadings($hash);
@@ -1186,15 +1237,16 @@ sub MATTERDevice_Parse($ $) {
             if ($cluster == 0x001D && $attr == 0x0003 && ref($val) eq 'ARRAY') {
                 Log3 $name, 3, "MATTERDevice: Found PartsList on node $hash->{node_id}, endpoints: " . join(", ", @{$val});
                 foreach my $child_ep (@{$val}) {
-                    # Nur Child anlegen, wenn es nicht der Root-Endpoint selbst ist
-                    if ($child_ep != $my_endpoint) {
+                    next unless defined($child_ep) && !ref($child_ep) && $child_ep =~ /^\d+$/;
+                    # Only root endpoints may create sibling endpoints.
+                    if ($my_endpoint == 0 && $child_ep != $my_endpoint) {
                         MATTERDevice_GetOrCreateChild($hash, $child_ep);
                     }
                 }
             }
             MATTERDevice_ProcessAttributeValue($hash, $cluster, $attr, $val);
         } else {
-            # Nur das Root-Device (oder valide Nodes) verteilen an Children weiter
+            return unless $my_endpoint == 0;
             my $childHash = MATTERDevice_GetOrCreateChild($hash, $ep);
             if ($childHash) {
                 MATTERDevice_ProcessAttributeValue($childHash, $cluster, $attr, $val);
@@ -1238,9 +1290,12 @@ sub MATTERDevice_Parse($ $) {
     # 3. LIVE UPDATES (event == 'attribute_updated')
     if (exists $decoded->{event} && $decoded->{event} eq 'attribute_updated' && ref($decoded->{data}) eq 'ARRAY') {
         my ($node_id, $attribute_path, $value) = @{$decoded->{data}};
-        if ($attribute_path =~ m{^(\d+)/(\d+)/(\d+)$}) {
+        return unless defined($node_id) && !ref($node_id) &&
+            $hash->{node_id} eq $node_id;
+        if (defined($attribute_path) && !ref($attribute_path) &&
+            $attribute_path =~ m{^(\d+)/(\d+)/(\d+)$}) {
             $route_attribute->($1, $2, $3, $value);
-            Log3 $name, 4, "MATTERDevice: Live update ($attribute_path) = $value";
+            Log3 $name, 4, "MATTERDevice: Live attribute update ($attribute_path)";
         }
         return;
     }
@@ -1291,9 +1346,7 @@ sub MATTERDevice_GetSetList($) {
         MATTERDevice_CommandSupported($hash, 0x0008, 0x04) ||
         MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
     if ($can_level) {
-        my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-            ? AttrVal($name, "max_brightness", 254)
-            : 254;
+        my $max_level = MATTERDevice_MaxBrightness($hash);
         $add->("brightness:slider,0,1,$max_level");
         $add->("pct:slider,0,1,100");
     }
@@ -1613,7 +1666,8 @@ sub MATTERDevice_GetOrCreateChild($$) {
 <p>A MATTERDevice represents a Matter node (root endpoint 0) or one of its
 additional endpoints. It uses the assigned MATTER IO device to receive attribute
 updates and send supported commands. The module preserves existing FHEM names,
-rooms and attributes during node synchronization. It does not override FHEM's
+rooms and attributes during node synchronization. Device set commands
+require an active IO WebSocket; a send failure is reported as an error. It does not override FHEM's
 initial STATE, allowing the normal statefile restoration at startup.</p>
 <ul>
   <li><b>Define:</b>
@@ -1678,8 +1732,9 @@ Decommissioned devices are retained in FHEM rather than automatically deleted.</
 <h3>MATTERDevice</h3>
 <p>Ein MATTERDevice repräsentiert einen Matter-Knoten (Root-Endpunkt 0) oder einen
 seiner weiteren Endpunkte. Über das zugeordnete MATTER-IO-Device empfängt es
-Attributänderungen und sendet unterstützte Befehle. Bei der Synchronisation
-bleiben bestehende Namen, Räume und Benutzerattribute erhalten. Der von FHEM
+Attributänderungen und sendet unterstützte Befehle. Ein Set-Befehl setzt
+eine aktive IO-WebSocket-Verbindung voraus; Sendefehler werden gemeldet.
+Bei der Synchronisation bleiben bestehende Namen, Räume und Benutzerattribute erhalten. Der von FHEM
 initial gesetzte STATE bleibt unverändert, damit das Statefile beim Neustart
 den gespeicherten Anzeigestatus wiederherstellen kann.</p>
 <ul>
