@@ -24,6 +24,9 @@ sub ReadingsVal {
 sub readingsSingleUpdate {
     my ($device, $reading, $value) = @_;
     $device->{READINGS}{$reading} = { VAL => $value, TIME => 'test-time' };
+    # The FHEM state Reading also drives the standard STATE presentation.
+    $device->{STATE} = $value if $reading eq 'state'
+        && !defined(AttrVal($device->{NAME}, 'stateFormat', undef));
 }
 sub readingsBeginUpdate { return; }
 sub readingsBulkUpdate {
@@ -157,7 +160,9 @@ like($unknown_attr_result // '', qr/unknown attribute/,
 
 sub node {
     my ($id, $name) = @_;
-    return { node_id => $id, name => $name, attributes => { '1/6/0' => JSON::true } };
+    return { node_id => $id, name => $name,
+             attributes => { '1/6/0' => JSON::true,
+                             '1/29/0' => [{ '0' => 0x0100, '1' => 1 }] } };
 }
 sub matter_devices {
     return grep { ($_->{TYPE} // '') eq 'MATTERDevice' } values %defs;
@@ -172,8 +177,8 @@ is($root->{IODev}{NAME}, 'ioA', 'root IODev is correct');
 is($child->{IODev}{NAME}, 'ioA', 'endpoint IODev is correct');
 is($attr{MATTER_Hall_Light}{room}, 'Matter', 'new root gets default room');
 is($attr{MATTER_Hall_Light_EP1}{room}, 'Matter', 'new endpoint gets default room');
-is($attr{MATTER_Hall_Light}{group}, 'Node 42 (ioA)', 'root gets automatic node group');
-is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)', 'endpoint shares node group');
+is($attr{MATTER_Hall_Light}{group}, 'Matter Nodes', 'root gets shared administrative group');
+is($attr{MATTER_Hall_Light_EP1}{group}, 'On/Off light', 'endpoint is grouped by the Descriptor device type');
 my $initial_html = MATTERDevice_FWDetail('WEB', 'MATTER_Hall_Light', 'Matter');
 like($initial_html, qr/href="\?detail=MATTER_Hall_Light_EP1"/,
     'root detail links to existing endpoint');
@@ -181,6 +186,15 @@ ok(!defined(MATTERDevice_FWDetail('WEB', 'MATTER_Hall_Light_EP1', 'Matter')),
     'endpoint detail does not show another endpoint overview');
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'state', ''), 'on', 'actual attribute path reaches endpoint');
 is($modules{MATTERDevice}{defptr}{'ioA:42'}, $root, 'root registered for owning IO');
+
+# Migrate only precisely matching legacy groups; preserve the existing room.
+$attr{MATTER_Hall_Light}{group} = 'Node 42 (ioA)';
+$attr{MATTER_Hall_Light_EP1}{group} = 'Node 42 (ioA)';
+$attr{MATTER_Hall_Light_EP1}{room} = 'EG Wohnzimmer';
+MATTER_ProcessNode($defs{ioA}, node(42, 'Hall Light'));
+is($attr{MATTER_Hall_Light}{group}, 'Matter Nodes', 'legacy root group is migrated');
+is($attr{MATTER_Hall_Light_EP1}{group}, 'On/Off light', 'legacy endpoint group is migrated');
+is($attr{MATTER_Hall_Light_EP1}{room}, 'EG Wohnzimmer', 'type grouping does not move a device');
 
 # Disabling autocreate must stop all new FHEM devices, without suppressing
 # updates on existing nodes/endpoints or changing the Matter server itself.
@@ -261,8 +275,8 @@ is($attr{MATTER_Hall_Light_EP1}{group}, 'My custom endpoint group',
     'custom endpoint group is not overwritten');
 delete $attr{MATTER_Hall_Light_EP1}{group};
 MATTER_ProcessNode($defs{ioA}, node(42, 'Still same node'));
-is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)',
-    'discovery backfills missing group on existing endpoint');
+is($attr{MATTER_Hall_Light_EP1}{group}, 'On/Off light',
+    'discovery restores a missing type group on an existing endpoint');
 
 delete $defs{MATTER_Hall_Light};
 $root->{NAME} = 'ManuallyRenamedRoot';
@@ -277,15 +291,15 @@ is($child->{device}, 'ManuallyRenamedRoot', 'endpoint parent internal updated af
 delete $attr{MATTER_Hall_Light_EP1}{group};
 my $prior_devices = count_devices();
 MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'Metadata only'});
-is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)',
-   'group is backfilled on an existing endpoint without an attribute map');
+is($attr{MATTER_Hall_Light_EP1}{group}, 'On/Off light',
+   'cached Descriptor type restores a missing group without new attributes');
 is(count_devices(), $prior_devices, 'group migration never recreates the endpoint');
 
 # Persisted IODev identifies the endpoint even when its runtime pointer is missing.
 delete $attr{MATTER_Hall_Light_EP1}{group};
 delete $child->{IODev};
 MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'No endpoint attributes'});
-is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)',
+is($attr{MATTER_Hall_Light_EP1}{group}, 'On/Off light',
    'configured IODev is sufficient to migrate an endpoint without runtime IODev');
 like(MATTERDevice_FWDetail('WEB', 'ManuallyRenamedRoot', 'Matter'),
      qr/MATTER_Hall_Light_EP1/, 'root detail also finds endpoint with configured IODev');
@@ -306,10 +320,10 @@ ok($other_root, 'same numeric node ID may exist on another IODev');
 is($modules{MATTERDevice}{defptr}{'ioA:42'}, $root, 'other IO root registry restored after temporary AssignIoPort');
 is($modules{MATTERDevice}{defptr}{'ioB:42'}, $other_root, 'new IO root registry assigned');
 is($defs{MATTER_Other_IO_light_EP1}{IODev}{NAME}, 'ioB', 'new endpoint binds to matching IO');
-is($attr{MATTER_Other_IO_light}{group}, 'Node 42 (ioB)',
-    'same node ID under another IO gets a different group');
-is($attr{MATTER_Other_IO_light_EP1}{group}, 'Node 42 (ioB)',
-    'other IO endpoint shares only its own group');
+is($attr{MATTER_Other_IO_light}{group}, 'Matter Nodes',
+    'different IO root also joins the administrative root group');
+is($attr{MATTER_Other_IO_light_EP1}{group}, 'On/Off light',
+    'other IO endpoint has the same type group');
 my $io_a_html = MATTERDevice_FWDetail('WEB', 'ManuallyRenamedRoot', 'Matter');
 unlike($io_a_html, qr/MATTER_Other_IO_light_EP1/,
     'root details exclude endpoints belonging to another IO');
@@ -317,12 +331,12 @@ unlike($io_a_html, qr/MATTER_Other_IO_light_EP1/,
 delete $attr{MATTER_Hall_Light_EP1}{group};
 delete $attr{MATTER_Other_IO_light_EP1}{group};
 MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'Metadata only'});
-is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)',
+is($attr{MATTER_Hall_Light_EP1}{group}, 'On/Off light',
    'only the matching IO endpoint is grouped during node reconciliation');
 ok(!exists($attr{MATTER_Other_IO_light_EP1}{group}),
    'a same-ID endpoint belonging to another IO is not modified');
 MATTER_ProcessNode($defs{ioB}, {node_id => 42, name => 'Metadata only'});
-is($attr{MATTER_Other_IO_light_EP1}{group}, 'Node 42 (ioB)',
+is($attr{MATTER_Other_IO_light_EP1}{group}, 'On/Off light',
    'second IO independently migrates its own endpoint');
 
 MATTER_ProcessNodeList($defs{ioA}, [], 'get_nodes');
@@ -360,13 +374,14 @@ $fail_io_for = '';
 MATTER_ProcessNode($defs{ioA}, {
     node_id => 42, name => 'Multi Outlet',
     attributes => { '3/6/0' => JSON::true, '1/6/0' => JSON::true,
-                    '2/6/0' => JSON::false },
+                    '2/6/0' => JSON::false,
+                    '2/29/0' => [{ '0' => 0x010A, '1' => 1 }] },
 });
 my $multiple_html = MATTERDevice_FWDetail('WEB', 'ManuallyRenamedRoot', 'Matter');
 like($multiple_html, qr/MATTER_Hall_Light_EP1.*ManuallyRenamedRoot_EP2.*ManuallyRenamedRoot_EP3/s,
     'endpoint links are ordered by numeric endpoint ID after root rename');
-is($attr{ManuallyRenamedRoot_EP2}{group}, 'Node 42 (ioA)',
-    'new endpoint created after root rename joins the correct node group');
+is($attr{ManuallyRenamedRoot_EP2}{group}, 'On/Off plug-in unit',
+    'new endpoint receives its own Descriptor type group');
 
 my $old_child_name = $child->{NAME};
 delete $defs{$old_child_name};
@@ -750,6 +765,8 @@ MATTER_ProcessNode($defs{ioA}, {
     },
 });
 my $types_root = $defs{MATTER_TypeDisplay};
+is($defs{MATTER_TypeDisplay_EP10}{STATE}, 'unknown',
+   'unknown reachability displays unknown rather than Initialized');
 my $type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
 like($type_html, qr/<tr><td>EP<\/td><td>Type<\/td><td>FHEM device<\/td><\/tr>/,
      'compact column labels use regular table cells');
@@ -795,6 +812,115 @@ MATTERDevice_Parse($types_root, encode_json({
 $type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
 like($type_html, qr/<td>11<\/td><td>Contact sensor<\/td>/,
      'live Descriptor update refreshes the endpoint type');
+is($attr{MATTER_TypeDisplay_EP1}{group}, 'On/Off plug-in unit',
+   'plug group uses its explicit Matter device type');
+is($attr{MATTER_TypeDisplay_EP10}{group}, 'Temperature sensor',
+   'temperature endpoint has its own type group');
+is($attr{MATTER_TypeDisplay_EP11}{group}, 'Contact sensor',
+   'live device type update adjusts an existing automatic group');
+
+# Power Source is a utility type, not a competing application device type.
+MATTERDevice_Parse($types_root, encode_json({
+    node_id => 88, attributes => {
+        '1/29/0' => [
+            { '0' => 0x0011, '1' => 1 },
+            { '0' => 0x0076, '1' => 1 },
+        ],
+    },
+}));
+is($attr{MATTER_TypeDisplay_EP1}{group}, 'Smoke CO Alarm',
+   'Power Source plus Smoke CO Alarm produces one alarm group');
+
+# Ambiguous functional types must not force an arbitrary group change.
+MATTERDevice_Parse($types_root, encode_json({
+    node_id => 88, attributes => {
+        '1/29/0' => [
+            { '0' => 0x0100, '1' => 1 },
+            { '0' => 0x010A, '1' => 1 },
+        ],
+    },
+}));
+is($attr{MATTER_TypeDisplay_EP1}{group}, 'Smoke CO Alarm',
+   'two application types do not trigger an arbitrary reassignment');
+
+# Unknown application types remain identifiable by their hexadecimal ID.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 89, name => 'Unknown type',
+    attributes => { '1/29/0' => [{ '0' => 0xF123, '1' => 1 }] },
+});
+is($attr{MATTER_Unknown_type_EP1}{group}, '0xF123',
+   'unknown application type has a stable hexadecimal group');
+
+# Matter Electrical Sensor is usable even though its spec category is Utility.
+# Technical bridge topology endpoints should not retain the legacy node group.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 190, name => 'Bridge grouping',
+    available => JSON::false,
+    attributes => {
+        '1/29/0' => [{ '0' => 0x000E, '1' => 1 }], # Aggregator
+        '10/29/0' => [{ '0' => 0x0013, '1' => 1 }], # Bridged Node
+        '11/29/0' => [{ '0' => 0x010A, '1' => 1 }], # On/Off plug
+        '11/6/0' => JSON::true,
+        '2/29/0' => [{ '0' => 0x0510, '1' => 1 }], # Electrical Sensor
+    },
+});
+is($attr{MATTER_Bridge_grouping}{group}, 'Matter Nodes',
+   'bridge root uses administrative root group');
+is($attr{MATTER_Bridge_grouping_EP1}{group}, 'Matter Infrastruktur',
+   'Aggregator has a structural grouping');
+is($attr{MATTER_Bridge_grouping_EP10}{group}, 'Matter Infrastruktur',
+   'Bridged Node has a structural grouping');
+is($attr{MATTER_Bridge_grouping_EP11}{group}, 'On/Off plug-in unit',
+   'bridge actuator remains a functional plug');
+is($attr{MATTER_Bridge_grouping_EP2}{group}, 'Electrical Sensor',
+   'Electrical Sensor has a functional group instead of 0x0510');
+
+$attr{MATTER_Bridge_grouping_EP1}{group} = 'Node 190 (ioA)';
+$attr{MATTER_Bridge_grouping_EP10}{group} = 'Node 190 (ioA)';
+MATTER_ProcessNode($defs{ioA}, { node_id => 190, name => 'Bridge grouping' });
+is($attr{MATTER_Bridge_grouping_EP1}{group}, 'Matter Infrastruktur',
+   'legacy Aggregator node group is migrated without new endpoint attributes');
+is($attr{MATTER_Bridge_grouping_EP10}{group}, 'Matter Infrastruktur',
+   'legacy Bridged Node group is migrated without new endpoint attributes');
+
+# The STATE fallback is a presentation of reported reachability, not the
+# device's on/off state or the Matter server's membership marker.
+is($defs{MATTER_Bridge_grouping}{STATE}, 'unavailable',
+   'root displays node reachability instead of Initialized');
+is($defs{MATTER_Bridge_grouping_EP2}{STATE}, 'unavailable',
+   'sensor without a state Reading displays unavailable');
+is($defs{MATTER_Bridge_grouping_EP1}{STATE}, 'unavailable',
+   'structural endpoint without a state Reading displays unavailable');
+is($defs{MATTER_Bridge_grouping_EP11}{STATE}, 'on',
+   'actual OnOff telemetry keeps precedence over fallback');
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 190, name => 'Bridge grouping', available => JSON::true,
+});
+is($defs{MATTER_Bridge_grouping_EP2}{STATE}, 'available',
+   'a reported node reconnection updates the sensor presentation');
+is($defs{MATTER_Bridge_grouping_EP11}{STATE}, 'on',
+   'reachability must not overwrite real on/off state');
+MATTER_SetNodeStatus($defs{ioA}, 190, 'removed');
+is($defs{MATTER_Bridge_grouping_EP2}{STATE}, 'removed',
+   'removed Matter membership overrides stale reachability in presentation');
+MATTER_SetNodeStatus($defs{ioA}, 190, 'present');
+is($defs{MATTER_Bridge_grouping_EP2}{STATE}, 'available',
+   'restored server membership recalculates the presentation');
+
+$attr{MATTER_Bridge_grouping_EP2}{stateFormat} = 'user-controlled';
+$defs{MATTER_Bridge_grouping_EP2}{STATE} = 'custom-presentation';
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 190, name => 'Bridge grouping', available => JSON::false,
+});
+is($defs{MATTER_Bridge_grouping_EP2}{STATE}, 'custom-presentation',
+   'user stateFormat remains authoritative');
+is(ReadingsVal('MATTER_Bridge_grouping_EP2', 'available', ''), 'false',
+   'node availability still updates with a custom stateFormat');
+delete $attr{MATTER_Bridge_grouping_EP2}{stateFormat};
+MATTER_ProcessNode($defs{ioA}, { node_id => 190, name => 'Bridge grouping' });
+is($defs{MATTER_Bridge_grouping_EP2}{STATE}, 'unavailable',
+   'removing custom stateFormat restores the built-in reachability fallback');
+
 
 MATTERDevice_Parse($types_root, encode_json({
     result => {'10/29/0' => [{deviceType => '0x0307', revision => 1}]},

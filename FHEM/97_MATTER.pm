@@ -13,7 +13,7 @@ use Data::Dumper;
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.5 15.11.2026";
+my $MATTER_version = "V0.7 15.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -594,8 +594,9 @@ sub MATTER_SetNodeStatus($$$) {
         next unless ($device->{TYPE} // '') eq 'MATTERDevice';
         next unless defined($device->{node_id}) && $device->{node_id} eq $node_id;
         next unless $device->{IODev} && $device->{IODev}{NAME} eq $io_name;
-        next if ReadingsVal($device->{NAME}, 'matter_status', '') eq $status;
-        readingsSingleUpdate($device, 'matter_status', $status, 1);
+        readingsSingleUpdate($device, 'matter_status', $status, 1)
+            if ReadingsVal($device->{NAME}, 'matter_status', '') ne $status;
+        MATTERDevice_UpdateDisplayState($device);
     }
 }
 
@@ -710,7 +711,7 @@ sub MATTER_ProcessNode($$) {
         Log3 $io_name, 3, "MATTER: Created root device $device_name for node $node_id";
     }
     $modules{MATTERDevice}{defptr}{$root_key} = $root;
-    MATTERDevice_EnsureNodeGroup($root);
+    MATTERDevice_EnsureTypeGroup($root);
 
     # Apply the reported node availability before endpoint creation to avoid
     # briefly inheriting an outdated value during discovery.
@@ -723,6 +724,7 @@ sub MATTER_ProcessNode($$) {
             my $value = $available ? 'true' : 'false';
             readingsSingleUpdate($root, 'available', $value, 1)
                 if ReadingsVal($root->{NAME}, 'available', '') ne $value;
+            MATTERDevice_UpdateDisplayState($root);
         }
     }
     if (ref($node->{attributes}) eq 'HASH') {
@@ -730,7 +732,7 @@ sub MATTER_ProcessNode($$) {
     }
     # Synchronize already defined endpoints even without endpoint attributes.
     foreach my $child (MATTERDevice_NodeChildren($root)) {
-        MATTERDevice_EnsureNodeGroup($child);
+        MATTERDevice_EnsureTypeGroup($child);
     }
     MATTERDevice_SyncNodeReadings($root);
     MATTER_SetNodeStatus($hash, $node_id, 'present');
