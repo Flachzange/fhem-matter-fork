@@ -1130,6 +1130,23 @@ is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'success',
    'QR response reports success');
 is(ReadingsVal('commissionIO', 'commissioning_node_id', ''), 123,
    'QR response reports new node ID');
+
+# Legacy server error envelopes must also be sanitized in event-visible readings.
+@log = ();
+is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode', $manual_code),
+   undef, 'another request may start after QR commissioning succeeded');
+my $legacy_request = $read_ws_json->($commission_server);
+$mock_time += 2;
+MATTER_ParseMessage($commission_io, encode_json({
+    message_id => $legacy_request->{message_id},
+    error => { message => "Legacy server failure for code $manual_code" }
+}));
+is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'failed',
+   'legacy error response reports failure');
+like(ReadingsVal('commissionIO', 'commissioning_error', ''), qr/\[code redacted\]/,
+   'legacy error reading redacts setup code');
+unlike(join("\n", @log), qr/\Q$manual_code\E/,
+   'legacy error log redacts setup code');
 unlike(join("\n", @log), qr/\Q$qr_code\E/,
    'QR code is absent from FHEM logs');
 unlike(join("\n", @log), qr/\Q$qr_code\E/,
