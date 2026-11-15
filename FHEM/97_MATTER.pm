@@ -13,7 +13,7 @@ use Data::Dumper;
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.3 14.11.2026";
+my $MATTER_version = "V0.4 15.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -126,8 +126,21 @@ sub MATTER_Set {
         return "Invalid Matter pairing code; expected 11/21 digits or an MT: QR code"
             unless $valid_manual || $valid_qr;
 
-        my $msg_id = int(rand(100000) + 1);
+        # One in-flight attempt per IO keeps status and result unambiguous.
+        return "MATTER: Commissioning already in progress on $name"
+            if $hash->{helper}{commissioning_active};
+        return "MATTER: No active WebSocket connection for commissioning on $name"
+            unless $hash->{CD} && $hash->{websocket} &&
+                ($hash->{ws_status} // '') eq 'connected';
+
+        my $msg_id;
+        do { $msg_id = int(rand(100000) + 1); }
+            while exists($hash->{helper}{pending_command}{$msg_id}) ||
+                  exists($hash->{helper}{pending_config}{$msg_id});
         $hash->{helper}{pending_command}{$msg_id} = "commission";
+        $hash->{helper}{commissioning_active} = {
+            message_id => $msg_id, mode => $mode, started_at => gettimeofday()
+        };
 
         my $payload = {
             message_id => $msg_id,
@@ -138,6 +151,7 @@ sub MATTER_Set {
             }
         };
 
+        MATTER_CommissioningReadings($hash, 'running', $mode, '', '', '');
         Log3 $name, 3, "MATTER: Commissioning requested (mode=$mode; BLE " .
             ($mode eq 'auto' ? "allowed" : "disabled") . ")";
         MATTER_SendJsonCommand($hash, $payload);
@@ -210,6 +224,24 @@ sub MATTER_Set {
         my @cList = keys %MATTER_sets;
         return "Unknown argument $opt, choose one of " . join(" ", @cList);
     }
+}
+
+# Commissioning status is independent of the IO's connection state.
+sub MATTER_CommissioningReadings {
+    my ($hash, $status, $mode, $node_id, $duration, $error) = @_;
+    readingsBeginUpdate($hash);
+    readingsBulkUpdate($hash, 'commissioning_status', $status);
+    readingsBulkUpdate($hash, 'commissioning_mode', $mode);
+    readingsBulkUpdate($hash, 'commissioning_node_id', $node_id);
+    readingsBulkUpdate($hash, 'commissioning_duration', $duration);
+    readingsBulkUpdate($hash, 'commissioning_error', $error);
+    readingsEndUpdate($hash, 1);
+}
+
+sub MATTER_CommissioningDuration {
+    my ($started_at) = @_;
+    my $elapsed = gettimeofday() - $started_at;
+    return $elapsed > 0 ? int($elapsed + 0.5) : 0;
 }
 
 sub MATTER_Attr {
@@ -325,6 +357,13 @@ sub MATTER_Close($) {
     my ($hash) = @_;
     my $name = $hash->{NAME};
     my $previous = $hash->{CD} ? ($hash->{ws_status} // 'unknown') : undef;
+
+    # If the link ends before a response, the server may still complete.
+    if (my $active = delete $hash->{helper}{commissioning_active}) {
+        MATTER_CommissioningReadings($hash, 'interrupted', $active->{mode}, '',
+            MATTER_CommissioningDuration($active->{started_at}),
+            'Connection lost before commissioning result; outcome unknown');
+    }
 
     # No retry/heartbeat/handshake timer survives closing or undefining a device.
     RemoveInternalTimer($hash);
@@ -805,18 +844,35 @@ sub MATTER_ParseMessage($$) {
         # A transport-accepted request is not a successful commission; only
         # the correlated server response confirms the operation.
         if ($cmd_type && $cmd_type eq "commission") {
+            my $active = $hash->{helper}{commissioning_active};
+            return unless $active && $active->{message_id} eq $msg_id;
+            delete $hash->{helper}{commissioning_active};
+            my $duration = MATTER_CommissioningDuration($active->{started_at});
             if ($decoded->{result}) {
+                my $node_id = ref($decoded->{result}) eq 'HASH'
+                    ? $decoded->{result}{node_id} : undef;
+                $node_id = '' unless defined($node_id) && !ref($node_id) &&
+                    $node_id =~ /^\d+$/;
+                MATTER_CommissioningReadings($hash, 'success', $active->{mode},
+                    $node_id, $duration, '');
                 Log3 $name, 3, "MATTER: Device successfully commissioned on IO $name; waiting for node_added event";
             } else {
                 my $details = ref($decoded->{error}) eq 'HASH'
                     ? $decoded->{error}{message} : undef;
                 $details //= $decoded->{details};
                 $details = "Unknown error" unless defined($details) && !ref($details);
-                # Server diagnostics may repeat the setup code; never log it.
+                # Sanitize both the log and the event-visible error reading.
                 $details =~ s/MT:[0-9A-Z.\-]+/[QR code redacted]/gi;
                 $details =~ s/(?<![0-9])[0-9]{8,21}(?![0-9])/[code redacted]/g;
                 $details =~ s/[\x00-\x1f\x7f]/ /g;
                 $details = substr($details, 0, 320);
+                my $reason = $decoded->{reason};
+                if (defined($reason) && !ref($reason) &&
+                    $reason =~ /^(?:not-discovered|passcode-mismatch|invalid-payload|attestation-rejected|timeout|other)$/) {
+                    $details = "$reason: $details";
+                }
+                MATTER_CommissioningReadings($hash, 'failed', $active->{mode},
+                    '', $duration, $details);
                 Log3 $name, 2, "MATTER: Commissioning failed on IO $name: $details";
             }
             return;
@@ -902,7 +958,12 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
       BLE discovery (including a connected BLE proxy) when enabled on the Matter server.
       The server selects the transport and uses its stored Thread/Wi-Fi credentials.
       The setup code is not written to module logs; the synthetic FHEM
-      set event is suppressed. Command input/history remains sensitive.</li>
+      set event is suppressed. Command input/history remains sensitive.
+      The IO reports <code>commissioning_status</code> (running/success/failed/interrupted),
+      <code>commissioning_mode</code>, <code>commissioning_node_id</code>,
+      <code>commissioning_duration</code> (seconds) and <code>commissioning_error</code>.
+      One commissioning request can be active per IO. On connection loss
+      the result is unknown; no BLE/PASE intermediate progress is exposed.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Configure or inspect available
       network credentials (do not expose secrets in logs).</li>
   <li><b>Attribute disable:</b> Disable or enable the IO connection. Setting
@@ -948,7 +1009,12 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
       aktiviert ist. Der Server wählt den Transport und verwendet seine gespeicherten
       Thread-/WLAN-Zugangsdaten. Der Setup-Code wird nicht im Modul-Log
       ausgegeben; das automatische FHEM-set-Event wird unterdrückt.
-      Kommandoeingabe und -verlauf bleiben vertraulich zu behandeln.</li>
+      Kommandoeingabe und -verlauf bleiben vertraulich zu behandeln.
+      Der IO meldet <code>commissioning_status</code> (running/success/failed/interrupted),
+      <code>commissioning_mode</code>, <code>commissioning_node_id</code>,
+      <code>commissioning_duration</code> (Sekunden) und <code>commissioning_error</code>.
+      Pro IO ist nur ein Vorgang gleichzeitig aktiv. Bei Verbindungsabbruch
+      ist das Ergebnis unbekannt; einzelne BLE-/PASE-Phasen meldet der Server nicht.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Netzwerkzugangsdaten
       konfigurieren bzw. auslesen.</li>
   <li><b>Attribut disable:</b> IO-Verbindung deaktivieren oder aktivieren.
