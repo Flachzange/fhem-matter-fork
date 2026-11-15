@@ -1419,9 +1419,10 @@ sub MATTERDevice_NodeChildren($) {
     } values %defs;
 }
 
-# Mirror only node-wide readings, using the same IODev/node membership as the
-# endpoint link list. Newly created children can be updated individually.
-# Missing values and unchanged values must not create endpoint events.
+# Synchronize node-wide readings and the native FHEMWEB root association,
+# using the same IODev/node membership as the endpoint link list. Newly
+# created children can be updated individually. Missing or unchanged values
+# must not create endpoint events.
 sub MATTERDevice_SyncNodeReadings($;$) {
     my ($root, $only_child) = @_;
     return unless $root && ($root->{endpoint_id} // 0) == 0;
@@ -1438,6 +1439,16 @@ sub MATTERDevice_SyncNodeReadings($;$) {
             next if defined($previous) && $previous eq $value;
             push @changes, [$reading, $value];
         }
+
+        # FHEM's getPawList() uses the persistent associatedWith reading to
+        # render "Probably associated with" links. Retain other user links.
+        # FHEM CommandRename() updates these references when a root is renamed.
+        my $links = ReadingsVal($child->{NAME}, 'associatedWith', '');
+        my %linked = map { $_ => 1 } grep { length($_) } split(/[ ,]+/, $links);
+        my $root_name = $root->{NAME};
+        push @changes, ['associatedWith', length($links) ? "$links $root_name" : $root_name]
+            unless $linked{$root_name};
+
         next unless @changes;
         readingsBeginUpdate($child);
         readingsBulkUpdate($child, $_->[0], $_->[1]) foreach @changes;
@@ -1632,6 +1643,10 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
       its endpoints if reported. <code>available=true/false</code> describes
       node reachability, not individual endpoint functionality. Unchanged
       values do not generate repeated endpoint events.</li>
+  <li><b>Reading associatedWith:</b> Endpoints reference their current root
+      through FHEM's native <code>Probably associated with</code> navigation.
+      User-added associations are preserved. FHEM updates the reference when
+      the root device is renamed; no additional HTML navigation is needed.</li>
   <li><b>Capabilities:</b> Supported set commands use the Matter
       <code>AcceptedCommandList</code>, <code>FeatureMap</code> and other cluster
       metadata when available. Existing <code>has_*</code> values remain a fallback;
@@ -1696,6 +1711,10 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
       weitergegeben. <code>available=true/false</code> beschreibt die
       Erreichbarkeit des Knotens, nicht die Funktion einzelner Endpunkte.
       Unveränderte Werte erzeugen keine weiteren Endpoint-Events.</li>
+  <li><b>Reading associatedWith:</b> Endpunkte verlinken ihren aktuellen
+      Root-Knoten über FHEMs nativen Bereich <code>Probably associated with</code>.
+      Manuell ergänzte Zuordnungen bleiben erhalten. Beim Umbenennen des Roots
+      aktualisiert FHEM die Referenz automatisch; zusätzliches HTML ist nicht nötig.</li>
   <li><b>Capabilities:</b> Unterstützte Set-Befehle werden nach Möglichkeit
       anhand der Matter-Metadaten wie <code>AcceptedCommandList</code> und
       <code>FeatureMap</code> bestimmt. Vorhandene <code>has_*</code>-Attribute
