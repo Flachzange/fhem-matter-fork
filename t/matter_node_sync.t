@@ -35,6 +35,10 @@ sub readingsBulkUpdate {
     readingsSingleUpdate($_[0], $_[1], $_[2]);
 }
 sub readingsEndUpdate { return; }
+sub readingsDelete {
+    my ($device, $reading) = @_;
+    delete $device->{READINGS}{$reading};
+}
 sub RemoveInternalTimer {
     my ($owner, $callback) = @_;
     @timers = grep {
@@ -1862,8 +1866,8 @@ is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present',
 # One partial node_updated cannot invalidate useful fields from an older
 # complete snapshot. Other missing nodes must still be marked removed.
 MATTER_ProcessNode($defs{ioA}, node(779, 'MissingInSnapshot'));
-my $other_root = $defs{MATTER_MissingInSnapshot};
-ok($other_root, 'separate node is present before the structural race');
+my $snapshot_other_root = $defs{MATTER_MissingInSnapshot};
+ok($snapshot_other_root, 'separate node is present before the structural race');
 is(MATTER_Set($defs{ioA}, 'ioA', 'discover'), undef,
    'discover starts a complete snapshot for multiple nodes');
 my $partial_snapshot_id = $defs{ioA}{helper}{next_message_id};
@@ -1888,7 +1892,7 @@ is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
    'partial live node attributes override only matching snapshot attribute');
 is(ReadingsVal($child->{NAME}, 'battery_percent', ''), 77,
    'unrelated endpoint attribute remains available from full snapshot');
-is(ReadingsVal($other_root->{NAME}, 'matter_status', ''), 'removed',
+is(ReadingsVal($snapshot_other_root->{NAME}, 'matter_status', ''), 'removed',
    'event for first node does not suppress removal of unrelated missing node');
 
 # The latest explicit discovery supersedes an unresponsive earlier one,
@@ -1910,7 +1914,7 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $current_snapshot_id,
     result => [node(42, 'Hall Light'), node(779, 'MissingInSnapshot')]
 }));
-is(ReadingsVal($other_root->{NAME}, 'matter_status', ''), 'present',
+is(ReadingsVal($snapshot_other_root->{NAME}, 'matter_status', ''), 'present',
    'latest discovery resynchronizes an independently missing node');
 close($io_a_peer);
 MATTER_Close($defs{ioA});
