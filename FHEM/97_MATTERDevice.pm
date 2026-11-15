@@ -427,14 +427,14 @@ sub MATTERDevice_Define($$) {
     # The root name is derived from IODev + node ID, never from the DEF.
     delete $hash->{device};
     
+    # NotifyFn is registered module-wide; limit all devices, including
+    # endpoints, to global events rather than the entire FHEM event stream.
+    $hash->{NOTIFYDEV} = 'global';
     if ($endpoint_id == 0) {
         AssignIoPort($hash);
         my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
         $modules{MATTERDevice}{defptr}{"$io_name:$node_id"} = $hash;
-        $hash->{NOTIFYDEV} = 'global';
         MATTERDevice_SetRootState($hash, 'unknown') if $init_done;
-    } else {
-        delete $hash->{NOTIFYDEV};
     }
     Log3 $name, 3, "MATTERDevice: Defined node_id $node_id for $name";
     return undef;
