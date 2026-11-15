@@ -219,6 +219,10 @@ MATTER_ProcessNodeList($defs{ioA}, [node(42, 'Hall Light')], 'start_listening');
 my $root = $defs{MATTER_Hall_Light};
 my $child = $defs{MATTER_Hall_Light_EP1};
 ok($root && $child, 'full snapshot creates root and endpoint');
+is($modules{MATTERDevice}{NotifyFn}, 'MATTERDevice_Notify',
+   'Matter devices register lifecycle notifications');
+is($root->{NOTIFYDEV}, 'global', 'root listens only to FHEM global lifecycle events');
+is($child->{NOTIFYDEV}, 'global', 'endpoint notification overhead is also limited to global events');
 ok(!exists($attr{MATTER_Hall_Light}{stateFormat}),
    'new root does not need a stateFormat attribute');
 ok(!exists($attr{MATTER_Hall_Light_EP1}{stateFormat}),
