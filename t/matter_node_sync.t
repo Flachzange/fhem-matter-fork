@@ -1916,6 +1916,24 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 is(ReadingsVal($snapshot_other_root->{NAME}, 'matter_status', ''), 'present',
    'latest discovery resynchronizes an independently missing node');
+
+# Invalid live node metadata is not a reason to discard a valid attribute
+# from the snapshot; it was never published as a real device state.
+is(MATTER_Set($defs{ioA}, 'ioA', 'discover'), undef,
+   'start discovery before invalid live node attribute');
+my $valid_snapshot_id = $defs{ioA}{helper}{next_message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_updated',
+    data => { node_id => 42, attributes => { '1/6/0' => 'false' } }
+}));
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $valid_snapshot_id,
+    result => [{ node_id => 42, name => 'Hall Light',
+                 attributes => { '1/6/0' => JSON::true } },
+               node(779, 'MissingInSnapshot')]
+}));
+is(ReadingsVal($child->{NAME}, 'state', ''), 'on',
+   'invalid live node attribute does not hide a valid snapshot update');
 close($io_a_peer);
 MATTER_Close($defs{ioA});
 
