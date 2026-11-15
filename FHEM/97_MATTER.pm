@@ -102,7 +102,9 @@ sub MATTER_Rename {
         next unless ($device->{TYPE} // '') eq 'MATTERDevice';
         my $configured = AttrVal($device->{NAME}, 'IODev', '');
         next unless (($device->{IODev} // '') eq $hash) || $configured eq $old;
-        if ($configured eq $old) {
+        if ($configured eq $old || (!$configured && ($device->{IODev} // '') eq $hash)) {
+            # A previously auto-assigned client needs an explicit new IODev
+            # name so restart cannot silently select a different Matter IO.
             my $error = CommandAttr(undef, "$device->{NAME} IODev $new");
             Log3 $new, 2, "MATTER: Cannot update IODev for $device->{NAME}: $error" if $error;
         }
