@@ -1007,6 +1007,11 @@ ok(MATTERDevice_AttributeUsable($child, 8, 3),
 ok(grep(/^brightness:slider,0,1,200$/, MATTERDevice_GetSetList($child)),
    'existing max_brightness remains in the brightness slider without metadata');
 MATTERDevice_Parse($root, encode_json({
+    node_id => 42, attributes => { '1/8/0' => 254 }
+}));
+is(ReadingsVal($child->{NAME}, 'pct', ''), 100,
+   'incoming device level above configured max is clamped to 100 percent');
+MATTERDevice_Parse($root, encode_json({
     node_id => 42, attributes => { '1/8/65531' => [0] }
 }));
 ok(!MATTERDevice_AttributeUsable($child, 8, 3),
@@ -1139,6 +1144,49 @@ is(ReadingsVal($child->{NAME}, 'pct', ''), $pct_before_invalid,
 my $no_hash_error = eval { MATTER_ParseMessage($defs{ioA}, '[]'); 1 };
 ok($no_hash_error, 'valid non-object JSON cannot crash the IO parser');
 
+# An unrelated attribute in a delayed read must still be imported.
+# A changed AcceptedCommandList must survive the full metadata reset, too.
+@sent_requests = ();
+is(MATTERDevice_Set($child, $child->{NAME}, 'getConfig'), undef,
+   'begin complete read while waiting for live telemetry');
+my $mixed_read = $sent_requests[-1]{message_id};
+like(MATTERDevice_Set($child, $child->{NAME}, 'getConfig') // '',
+     qr/getConfig already in progress/,
+     'duplicate endpoint read is rejected while the first is pending');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [42, '1/6/0', JSON::false]
+}));
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [42, '1/8/65529', [4]]
+}));
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $mixed_read,
+    result => {
+        '1/6/0' => JSON::true,    # stale on/off
+        '1/8/65529' => [0],      # stale command metadata
+        '1/47/12' => 132,        # independent, useful snapshot attribute
+    }
+}));
+is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
+   'new live on/off takes precedence over old read');
+is(ReadingsVal($child->{NAME}, 'battery_percent', ''), 66,
+   'independent battery attribute from late read still updates');
+ok(MATTERDevice_CommandAccepted($child, 8, 4),
+   'new live capability metadata survives rebuilding the read cache');
+ok(!MATTERDevice_CommandAccepted($child, 8, 0),
+   'stale command list cannot reintroduce an obsolete accepted command');
+@sent_requests = ();
+is(MATTERDevice_Set($child, $child->{NAME}, 'getConfig'), undef,
+   'completed read releases the per-endpoint concurrency guard');
+my $validity_read = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [42, '1/6/0', 'false']
+}));
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $validity_read, result => { '1/6/0' => JSON::true }
+}));
+is(ReadingsVal($child->{NAME}, 'state', ''), 'on',
+   'invalid live boolean does not supersede a valid snapshot value');
 
 # Power Source is a utility type, not a competing application device type.
 MATTERDevice_Parse($types_root, encode_json({
@@ -1716,6 +1764,36 @@ my ($wifi_result, $wifi_skip_event) = MATTER_Set(
 );
 is($wifi_result, undef, 'credential setter accepts a connected request');
 is($wifi_skip_event, 1, 'credential command suppresses FHEM synthetic set event');
+$credential_io->{READINGS}{wifi_7_ssid} = { VAL => 'PreviousSSID' };
+is(MATTER_Set($credential_io, 'credentialIO', 'getCredentials'), undef,
+   'request credential inventory for failure-preservation checks');
+my $invalid_credential_id = $credential_io->{helper}{next_message_id};
+my $credential_parse_ok = eval {
+    MATTER_ParseMessage($credential_io, encode_json({
+        message_id => $invalid_credential_id, result => []
+    }));
+    1;
+};
+ok($credential_parse_ok, 'unexpected credential array response cannot crash parser');
+is(ReadingsVal('credentialIO', 'wifi_7_ssid', ''), 'PreviousSSID',
+   'malformed credential response does not erase existing readings');
+is(MATTER_Set($credential_io, 'credentialIO', 'getCredentials'), undef,
+   'request credential inventory with invalid nested shape');
+my $invalid_nested_id = $credential_io->{helper}{next_message_id};
+MATTER_ParseMessage($credential_io, encode_json({
+    message_id => $invalid_nested_id, result => { wifi => 'unexpected' }
+}));
+is(ReadingsVal('credentialIO', 'wifi_7_ssid', ''), 'PreviousSSID',
+   'malformed nested credential list preserves existing readings');
+is(MATTER_Set($credential_io, 'credentialIO', 'getCredentials'), undef,
+   'request valid updated credential inventory');
+my $valid_credential_id = $credential_io->{helper}{next_message_id};
+MATTER_ParseMessage($credential_io, encode_json({
+    message_id => $valid_credential_id,
+    result => { wifi => [{ id => 7, ssid => 'ReplacementSSID' }], thread => [] }
+}));
+is(ReadingsVal('credentialIO', 'wifi_7_ssid', ''), 'ReplacementSSID',
+   'valid credential inventory replaces the previous readings');
 MATTER_Close($credential_io);
 close($credential_peer);
 
@@ -1780,6 +1858,60 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present',
    'new node_added event restores node membership');
+
+# One partial node_updated cannot invalidate useful fields from an older
+# complete snapshot. Other missing nodes must still be marked removed.
+MATTER_ProcessNode($defs{ioA}, node(779, 'MissingInSnapshot'));
+my $other_root = $defs{MATTER_MissingInSnapshot};
+ok($other_root, 'separate node is present before the structural race');
+is(MATTER_Set($defs{ioA}, 'ioA', 'discover'), undef,
+   'discover starts a complete snapshot for multiple nodes');
+my $partial_snapshot_id = $defs{ioA}{helper}{next_message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_updated', data => { node_id => 42, available => JSON::false }
+}));
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_updated',
+    data => { node_id => 42, attributes => { '1/6/0' => JSON::false } }
+}));
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $partial_snapshot_id,
+    result => [{
+        node_id => 42, name => 'OldSnapshotName',
+        available => JSON::true,
+        attributes => { '1/6/0' => JSON::true, '1/47/12' => 154 }
+    }]
+}));
+is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'false',
+   'partial live availability overrides only matching snapshot field');
+is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
+   'partial live node attributes override only matching snapshot attribute');
+is(ReadingsVal($child->{NAME}, 'battery_percent', ''), 77,
+   'unrelated endpoint attribute remains available from full snapshot');
+is(ReadingsVal($other_root->{NAME}, 'matter_status', ''), 'removed',
+   'event for first node does not suppress removal of unrelated missing node');
+
+# The latest explicit discovery supersedes an unresponsive earlier one,
+# keeping only one full snapshot request in flight.
+is(MATTER_Set($defs{ioA}, 'ioA', 'discover'), undef,
+   'first explicit discovery queued');
+my $superseded_id = $defs{ioA}{helper}{next_message_id};
+is(MATTER_Set($defs{ioA}, 'ioA', 'discover'), undef,
+   'newer discovery supersedes prior unanswered discovery');
+my $current_snapshot_id = $defs{ioA}{helper}{next_message_id};
+ok(!exists($defs{ioA}{helper}{pending_command}{$superseded_id}),
+   'superseded discovery does not accumulate an orphaned pending request');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $superseded_id, result => []
+}));
+is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present',
+   'response to superseded discovery is ignored');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $current_snapshot_id,
+    result => [node(42, 'Hall Light'), node(779, 'MissingInSnapshot')]
+}));
+is(ReadingsVal($other_root->{NAME}, 'matter_status', ''), 'present',
+   'latest discovery resynchronizes an independently missing node');
 close($io_a_peer);
 MATTER_Close($defs{ioA});
 
