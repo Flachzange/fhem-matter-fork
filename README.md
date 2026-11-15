@@ -109,7 +109,7 @@ The [`testing` branch](https://github.com/Flachzange/fhem-matter-fork/tree/testi
 **Breaking change in testing V0.10 (endpoint DEF):** Old endpoint definitions containing a root FHEM name, such as `18 11 MATTER_MatterDevice_18`, are **not supported**. Before installing this version or restarting FHEM with it, convert existing endpoints while the previous module version is still loaded. Existing devices must have an explicit `IODev` attribute (autocreated endpoints already have one); correct any missing assignment before migration. In the **FHEM command line**, run this once to rewrite all MATTERDevice endpoint DEFs in place, preserving each device's name, FUUID, readings and attributes:
 
 ```text
-{ join("\n", map { $_->{NAME}.": ".(fhem("modify ".$_->{NAME}." ".$_->{node_id}." ".$_->{endpoint_id}) || "OK") } grep { ($_->{TYPE}//"") eq "MATTERDevice" && ($_->{endpoint_id}//0) > 0 } values %defs) }
+{ join("\n", map { $_->{NAME}.": ".(AttrVal($_->{NAME},"IODev","") eq "" ? "ERROR: missing IODev attribute" : (fhem("modify ".$_->{NAME}." ".$_->{node_id}." ".$_->{endpoint_id}) || "OK")) } grep { ($_->{TYPE}//"") eq "MATTERDevice" && ($_->{endpoint_id}//0) > 0 } values %defs) }
 ```
 
 Then persist the modified definitions, **before updating**:
