@@ -214,7 +214,17 @@ sub MATTER_Set {
         MATTER_CommissioningReadings($hash, 'running', $mode, '', '', '');
         Log3 $name, 3, "MATTER: Commissioning requested (mode=$mode; BLE " .
             ($mode eq 'auto' ? "allowed" : "disabled") . ")";
-        MATTER_SendJsonCommand($hash, $payload);
+        unless (MATTER_SendJsonCommand($hash, $payload)) {
+            # A synchronous FHEM event may have closed the socket after the
+            # preflight check. Do not leave a running request with no send.
+            if (my $active = delete $hash->{helper}{commissioning_active}) {
+                delete $hash->{helper}{pending_command}{$msg_id};
+                MATTER_CommissioningReadings($hash, 'interrupted', $mode, '',
+                    MATTER_CommissioningDuration($active->{started_at}),
+                    'Commissioning could not be sent; outcome unknown');
+            }
+            return "MATTER: Unable to send commissioning request on $name";
+        }
         # FHEM's DoSet would otherwise synthesize a "set commissionCode <code>"
         # event and expose the setup code to event consumers and DbLog.
         return wantarray ? (undef, 1) : undef;
