@@ -1148,6 +1148,12 @@ sub MATTER_ParseMessage($$) {
                             ($root_hash->{helper}{availability_epoch} // 0) !=
                             $pending->{availability_epoch};
                     }
+                    # A newer manual read or live report can complete command
+                    # discovery while this automatic read is still pending.
+                    # Never let its older reply replace already usable metadata.
+                    return if ref($pending) eq 'HASH' &&
+                        $pending->{capability_only} &&
+                        !MATTERDevice_NeedsCapabilityRefresh($root_hash);
                     my %fresh = %{$decoded->{result}};
                     if (ref($pending) eq 'HASH' && $pending->{live_values}) {
                         # A later live report supersedes the matching read path.
