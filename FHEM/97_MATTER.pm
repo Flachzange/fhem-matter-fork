@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.18 17.11.2026";
+my $MATTER_version = "V0.19 17.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -500,6 +500,7 @@ sub MATTER_Close($) {
         my $owner = $device->{IODev};
         next unless $owner ? $owner eq $hash
                            : AttrVal($device->{NAME}, 'IODev', '') eq $name;
+        delete $device->{helper}{capability_refresh};
         MATTERDevice_SetRootState($device, 'unknown');
     }
     # A server reconnect invalidates old OTA offers even if no update request
@@ -1109,7 +1110,9 @@ sub MATTER_ParseMessage($$) {
                 foreach my $pending (values %{$hash->{helper}{pending_config} // {}}) {
                     next unless ref($pending) eq 'HASH' &&
                         $pending->{node_id} eq $node_id &&
-                        $pending->{endpoint_id} == $endpoint;
+                        (($pending->{all_endpoints} // 0) ||
+                         (defined($pending->{endpoint_id}) &&
+                          $pending->{endpoint_id} == $endpoint));
                     $pending->{live_values}{$path} = $decoded->{data}[2];
                 }
             }
@@ -1136,18 +1139,43 @@ sub MATTER_ParseMessage($$) {
                 my $root_key = "$name:$node_id";
                 my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
                 if ($root_hash) {
+                    # Replies from another availability generation or a
+                    # replaced root cannot revive obsolete metadata.
+                    if (ref($pending) eq 'HASH') {
+                        return if defined($pending->{root_fuuid}) &&
+                            ($root_hash->{FUUID} // '') ne $pending->{root_fuuid};
+                        return if defined($pending->{availability_epoch}) &&
+                            ($root_hash->{helper}{availability_epoch} // 0) !=
+                            $pending->{availability_epoch};
+                    }
+                    # A newer manual read or live report can complete command
+                    # discovery while this automatic read is still pending.
+                    # Never let its older reply replace already usable metadata.
+                    return if ref($pending) eq 'HASH' &&
+                        $pending->{capability_only} &&
+                        !MATTERDevice_NeedsCapabilityRefresh($root_hash);
                     my %fresh = %{$decoded->{result}};
                     if (ref($pending) eq 'HASH' && $pending->{live_values}) {
-                        # Merge exactly the paths updated by a newer event.
-                        # Parsing one complete result also rebuilds the current
-                        # capability cache without losing the live metadata.
+                        # A later live report supersedes the matching read path.
                         for my $path (keys %{$pending->{live_values}}) {
                             $fresh{$path} = $pending->{live_values}{$path};
                         }
                     }
-                    MATTERDevice_Parse($root_hash, encode_json({
-                        message_id => $msg_id, result => \%fresh
-                    })) if keys %fresh;
+                    if (ref($pending) eq 'HASH' &&
+                        (($pending->{capability_only} // 0) ||
+                         $root_hash->{helper}{quarantine_snapshots})) {
+                        # A correlated read can restore command metadata,
+                        # never stale on/off, brightness or sensor values.
+                        MATTERDevice_ApplyCapabilityMetadata(
+                            $root_hash, \%fresh,
+                            $pending->{all_endpoints} ? undef :
+                                $pending->{endpoint_id}
+                        ) if keys %fresh;
+                    } else {
+                        MATTERDevice_Parse($root_hash, encode_json({
+                            message_id => $msg_id, result => \%fresh
+                        })) if keys %fresh;
+                    }
                 }
             }
             return;

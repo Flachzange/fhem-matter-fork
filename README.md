@@ -242,14 +242,27 @@ engine.
   update or manufacturer's own update repository is implied. Status
   `update requested` is not proof of installation; the matching new
   software version or OTA device reports are needed.
-- When the server reports `available=false`, device attribute and capability
-  snapshots do not overwrite the current FHEM readings or local manual edits.
-  After an offline/online transition, new individual `attribute_updated`
-  reports are accepted; cached snapshots remain quarantined because the
-  server WebSocket API does not guarantee their freshness. Existing endpoint
-  identities, IO membership, associations and root reachability continue to
-  be maintained. This conservative policy can leave rarely reporting
-  attributes unchanged until the device sends a fresh report.
+- When the server reports `available=false`, cached device attributes and
+  capability snapshots do not overwrite FHEM readings or local edits.
+  After an offline/online transition, live `attribute_updated` reports are
+  accepted, while unrequested cached device-state snapshots remain quarantined.
+  **Exception for command discovery:** FHEM checks whether known endpoints
+  are missing command or write-attribute metadata. Only when needed, it
+  requests the global Matter command/attribute/feature metadata after online
+  recovery, without reading physical device states. Known complete metadata
+  is reused without another request. Incomplete or failed requests can be
+  retried on later events, at least 15 seconds apart and at most three times
+  per recovery period; there is no periodic polling or timer. A matched
+  response may restore setters but cannot overwrite `state`, brightness,
+  battery, sensor values or other device readings. `set <endpoint> getConfig` is also available while the
+  node is online and quarantined; in that case only its global capability
+  metadata is used. An offline node rejects `getConfig`, and replies issued
+  before an intervening offline/online transition are ignored. The server
+  supplies its current advertised command model; FHEM cannot guarantee that
+  these metadata were re-interviewed from the physical device. Existing
+  endpoint identity, associations, IO ownership and reachability continue to
+  synchronize. Rarely reporting physical attributes can remain unchanged
+  until the device sends a fresh live report.
 
 ## Device-class hardware validation
 
