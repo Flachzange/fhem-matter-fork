@@ -2121,7 +2121,8 @@ is(ReadingsVal('MATTER_SensorProbe_EP4', 'illuminance', ''), 1000,
 # Issue #31: repeated identical switch events must not be lost.
 MATTER_ProcessNode($defs{ioA}, {
     node_id => 3100, name => 'SwitchProbe', available => JSON::true,
-    attributes => { '1/59/0' => 0, '1/29/0' => [{ '0' => 0x000F, '1' => 1 }] }
+    attributes => { '1/59/0' => 0, '1/29/0' => [{ '0' => 0x000F, '1' => 1 }],
+                    '2/59/0' => 0, '2/29/0' => [{ '0' => 0x000F, '1' => 1 }] }
 });
 @direct_events = ();
 for (1 .. 2) {
@@ -2596,4 +2597,40 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 is(MATTERDevice_Set($therm, $therm->{NAME}, 'mode', 'heat'), undef,
    'write is available again once previous command is acknowledged');
+
+# Review against additional fhempy regression scenarios.
+is(ReadingsVal('MATTER_SensorProbe_EP1', 'state', ''), 'open',
+   'contact sensor exposes a native FHEM state in addition to contact');
+is(ReadingsVal('MATTER_SensorProbe_EP5', 'state', ''), 'nomotion',
+   'occupancy endpoint exposes standard motion/nomotion state');
+my $stray_name = 'MATTER_SwitchProbe_EP999';
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_event',
+    data => { node_id => 3100, endpoint_id => 999,
+              cluster_id => 59, event_id => 3, data => {} }
+}));
+ok(!exists($defs{$stray_name}),
+   'unadvertised Switch event endpoints do not autocreate devices');
+is(ReadingsVal($dr->{NAME}, 'thread_device_type', ''), 'FTD',
+   'Thread router role implies a full Thread device');
+is(CommandAttr(undef, 'MATTER_DiagnosticsProbe diagnostics 1'), undef,
+   'diagnostics can be re-enabled for later reports');
+MATTERDevice_Parse($dr, encode_json({
+    node_id => 3500,
+    attributes => {'0/53/7' => [
+        {'0' => 'router', '6' => -72, '5' => 2, '13' => JSON::false},
+        {'0' => 'child', '6' => -30, '5' => 3, '13' => JSON::true}
+    ]}
+}));
+is(ReadingsVal($dr->{NAME}, 'thread_neighbors', ''), 2,
+   'parent/child neighbors counted');
+is(ReadingsVal($dr->{NAME}, 'rssi', ''), -72,
+   'child signal never replaces router-link RSSI');
+is(ReadingsVal($dr->{NAME}, 'lqi', ''), 2,
+   'link quality belongs to best router, not strongest child');
+MATTERDevice_Parse($dr, encode_json({
+    node_id => 3500, attributes => {'1/62/42' => 'private'}
+}));
+ok(!defined(ReadingsVal($dep->{NAME}, 'raw_1_62_42', undef)),
+   'sensitive credential cluster excluded even with rawReadings enabled');
 done_testing();

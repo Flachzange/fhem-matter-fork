@@ -1521,6 +1521,10 @@ sub MATTERDevice_UpdateNetworkDiagnostics {
                          2 => 'sleepy_end_device', 3 => 'end_device',
                          4 => 'reed', 5 => 'router', 6 => 'leader');
             $readings{thread_role} = $roles{$value} if exists $roles{$value};
+            my %types = (2 => 'MTD', 3 => 'MTD or FTD',
+                         4 => 'FTD', 5 => 'FTD', 6 => 'FTD');
+            $readings{thread_device_type} = $types{$value}
+                if exists $types{$value};
         } elsif ($attr == 2 && defined($value) && !ref($value) &&
                  length($value) <= 128) {
             $readings{thread_network} = $value;
@@ -1788,6 +1792,17 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         }
     }
 
+    if (($hash->{endpoint_id} // 0) == 0 &&
+        $cluster_id == 42 && $attr_id == 3 &&
+        defined($value) && !ref($value) &&
+        $value =~ /^\d+$/ && $value <= 100 &&
+        $hash->{helper}{firmware_update_in_flight}) {
+        my $state = ReadingsVal($name, 'ota_update_state', '');
+        readingsSingleUpdate($hash, 'firmware_update',
+                             "$state $value%", 1)
+            if $state eq 'downloading' || $state eq 'installing';
+    }
+
     # ICD capability comes from endpoint-zero metadata, not a get_icd_state
     # probe during discovery. Do not conflate a sleeping ICD with offline.
     # Process shared global attributes once, then derive ICD properties from
@@ -1889,6 +1904,12 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     elsif (defined($attr_name)) {
         if ($is_reading) {
             readingsBulkUpdate($hash, $attr_name, $value);
+            # FHEM's native state also represents standard binary sensor
+            # endpoints. This is device telemetry, never a command echo.
+            if (($hash->{endpoint_id} // 0) > 0 &&
+                $attr_name =~ /^(?:contact|water_leak|rain|motion)$/) {
+                readingsBulkUpdate($hash, 'state', $value);
+            }
         }
         if ($is_attribute) {
             MATTERDevice_SetAttributeIfNotExists($name, $attr_name, $value);
@@ -2049,7 +2070,11 @@ sub MATTERDevice_Parse($ $) {
                      $count == 3 ? 'triple' : $count . 'x';
         }
         return unless defined $value;
-        my $child = MATTERDevice_GetOrCreateChild($hash, $ep);
+        # Unknown event endpoints cannot create devices. Discovery and the
+        # Descriptor PartsList own endpoint identity, not transient events.
+        my ($child) = grep {
+            ($_->{endpoint_id} // 0) == $ep
+        } MATTERDevice_NodeChildren($hash);
         return unless $child;
         readingsSingleUpdate($child, 'button', $value, 0);
         DoTrigger($child->{NAME}, "button: $value");
