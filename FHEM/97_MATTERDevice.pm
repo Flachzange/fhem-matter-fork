@@ -498,25 +498,9 @@ sub MATTERDevice_Initialize($) {
     $hash->{FW_detailFn} = "MATTERDevice_FWDetail";
     $hash->{FW_deviceOverview} = 1; # Keep FHEMWEB DeviceOverview above the endpoint links.
     $hash->{AttrList} = "IODev " .
-                        "has_lighting:0,1 " .
-                        "has_color:0,1 " .
-                        "has_onoff:0,1 " .
-                        "has_level:0,1 " .
                         "dimRate:slider,1,1,254 " .
                         "diagnostics:0,1 " .
                         "rawReadings:0,1 " .
-                        "has_ct:0,1 " .
-                        "has_hue:0,1 " .
-                        "has_saturation:0,1 " .
-                        "has_xy:0,1 " .
-                        "has_frequency:0,1 " .
-                        "has_wc:0,1 " .
-                        "has_position_lift:0,1 " .
-                        "has_position_tilt:0,1 " .
-                        "has_lock:0,1 " .
-                        "has_pin:0,1 " .
-                        "has_rfid:0,1 " .
-                        "has_user:0,1 " .
                         "color_temp_min " .
                         "color_temp_max " .
                         "min_brightness " .
@@ -782,36 +766,12 @@ sub MATTERDevice_AttributeUsable($$$) {
 # Ein FHEM-Command gilt nur dann als verfügbar, wenn der Matter-Server ihn
 # tatsächlich in AcceptedCommandList meldet und die für diesen Command
 # hinterlegten FeatureMap-Bedingungen erfüllt sind.
+# A device command is available only if the endpoint's actual Matter
+# AcceptedCommandList advertises it. Reported values or retired has_* flags
+# never constitute permission to send a command.
 sub MATTERDevice_CommandSupported($$$) {
     my ($hash, $cluster_id, $command_id) = @_;
-    my %legacy = (
-        0x0006 => { 0x00 => 'has_onoff', 0x01 => 'has_onoff', 0x02 => 'has_onoff',
-                    0x40 => 'has_lighting', 0x41 => 'has_lighting', 0x42 => 'has_lighting' },
-        0x0008 => { 0x00 => 'has_level', 0x04 => 'has_level', 0x08 => 'has_frequency' },
-        0x0101 => { 0x00 => 'has_lock', 0x01 => 'has_lock' },
-        0x0102 => { 0x00 => 'has_wc', 0x01 => 'has_wc', 0x02 => 'has_wc',
-                    0x05 => 'has_position_lift', 0x08 => 'has_position_tilt' },
-        0x0300 => { 0x06 => 'has_hue', 0x07 => 'has_xy', 0x0A => 'has_ct' },
-    );
-    my $flag = $legacy{$cluster_id}{$command_id};
-    my $override = $flag ? AttrVal($hash->{NAME}, $flag, undef) : undef;
-    # Explicit has_*=0 remains authoritative even when the server advertises
-    # a command. An explicit 1 alone never invents a missing advertised command.
-    return 0 if defined($override) && $override eq '0';
-
-    my $accepted = $hash->{helper}{capabilities}{$cluster_id}{accepted_commands};
-    if (ref($accepted) ne 'HASH') {
-        # Prior releases also allowed an explicit has_color flag for RGB.
-        # Without hue/XY metadata, that flag selected hue/saturation unless XY
-        # was explicitly enabled.
-        if ($cluster_id == 0x0300 && $command_id == 0x06 &&
-            !defined($override) && AttrVal($hash->{NAME}, 'has_color', 0) &&
-            !AttrVal($hash->{NAME}, 'has_xy', 0)) {
-            return 1;
-        }
-        return defined($override) && $override ? 1 : 0;
-    }
-    return 0 if (!MATTERDevice_CommandAccepted($hash, $cluster_id, $command_id));
+    return 0 unless MATTERDevice_CommandAccepted($hash, $cluster_id, $command_id);
 
     my $cluster = $MATTER_CLUSTERS{$cluster_id};
     return 1 if (!$cluster || ref($cluster->{commands}) ne 'HASH');
@@ -1888,17 +1848,6 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     return if $cluster_id == 0x0008 && $attr_id == 0 &&
               ($value !~ /^\d+$/ || $value > 254);
 
-    # Existing installations may depend on manually managed has_* attributes.
-    my %legacy_features = (
-        '6/0'   => 'has_onoff', '8/0'   => 'has_level', '8/4'   => 'has_frequency',
-        '258/0' => 'has_wc',    '258/3' => 'has_position_lift',
-        '258/4' => 'has_position_tilt', '257/0' => 'has_lock',
-        '768/0' => 'has_hue',   '768/1' => 'has_saturation',
-        '768/3' => 'has_xy',    '768/4' => 'has_xy', '768/7' => 'has_ct',
-    );
-    my $legacy_flag = $legacy_features{"$cluster_id/$attr_id"};
-    MATTERDevice_SetAttributeIfNotExists($name, $legacy_flag, 1) if $legacy_flag;
-
     readingsBeginUpdate($hash);
 
     # Spezieller Fall: OnOff State mappen
@@ -2532,9 +2481,13 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
   <li><b>Set:</b> Depending on the reported capabilities:
       <code>on</code>, <code>off</code>, <code>brightness</code>, <code>ct</code>,
       <code>rgb</code>, <code>getConfig</code> and supported device-specific commands.</li>
-  <li><b>Attributes:</b> <code>has_onoff</code>, <code>has_level</code>,
-      <code>has_ct</code>, <code>has_xy</code> and other capability flags;
-      existing user overrides are respected.</li>
+  <li><b>Attributes:</b> <code>IODev</code>, opt-in
+      <code>diagnostics</code> / <code>rawReadings</code>, dimming
+      <code>dimRate</code> and separately supported physical limits.
+      Retired <code>has_*</code> settings are ignored; they are neither
+      generated nor automatically removed from stored FHEM configurations.
+      Remove saved legacy flags manually before restarting with this version:
+      FHEM may reject undeclared attribute lines when restoring a configuration.</li>
   <li><b>Offline attribute protection:</b> No cached device attributes or capability
 metadata are imported when the root reports <code>available=false</code>.
 After recovery, only new live attribute events are accepted while stale
@@ -2572,10 +2525,12 @@ untouched. The Matter server cache is not modified.</li>
       through FHEM's native <code>Probably associated with</code> navigation.
       User-added associations are preserved. FHEM updates the reference when
       the root device is renamed; no additional HTML navigation is needed.</li>
-  <li><b>Capabilities:</b> Supported set commands use the Matter
-      <code>AcceptedCommandList</code>, <code>FeatureMap</code> and other cluster
-      metadata when available. Existing <code>has_*</code> values remain a fallback;
-      manually setting a feature flag to <code>0</code> disables that control.</li>
+  <li><b>Capabilities:</b> Set commands require a matching endpoint
+      <code>AcceptedCommandList</code> entry and applicable
+      <code>FeatureMap</code> / <code>ClusterRevision</code> constraints.
+      Until command metadata arrives, controls are not inferred from values,
+      cluster presence or retired <code>has_*</code> settings. A saved
+      <code>has_*=0</code> no longer disables a reported command.</li>
   <li><b>New readings:</b> PowerSource, SmokeCO alarm, CO concentration, electrical
       power and cumulative energy clusters, where the server supplies the
       corresponding attributes.</li>
@@ -2678,9 +2633,14 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
   <li><b>Set:</b> Abhängig von den Fähigkeiten z. B. <code>on</code>,
       <code>off</code>, <code>brightness</code>, <code>ct</code>,
       <code>rgb</code>, <code>getConfig</code> und weitere Gerätebefehle.</li>
-  <li><b>Attribute:</b> <code>has_onoff</code>, <code>has_level</code>,
-      <code>has_ct</code>, <code>has_xy</code> und weitere Fähigkeitsattribute;
-      vorhandene Benutzervorgaben werden nicht überschrieben.</li>
+  <li><b>Attribute:</b> <code>IODev</code>, optionale
+      <code>diagnostics</code> / <code>rawReadings</code>,
+      <code>dimRate</code> und separate Gerätegrenzwerte.
+      Alte <code>has_*</code>-Attribute werden ignoriert, nicht mehr erzeugt
+      und nicht automatisch aus gespeicherten FHEM-Konfigurationen gelöscht.
+      Vor dem Neustart mit dieser Version sollten gespeicherte Legacy-Attribute
+      manuell entfernt werden, da FHEM unbekannte Attribute beim Laden der
+      Konfiguration ablehnen kann.</li>
   <li><b>Offline-Attributsperre:</b> Bei <code>available=false</code> werden
 keine zwischengespeicherten Geräteattribute oder Capability-Metadaten aus
 Matter übernommen. Nach Wiederherstellung werden neue Live-Attribute
@@ -2719,11 +2679,13 @@ Manuelle lokale Reading-Änderungen bleiben erhalten.</li>
       Root-Knoten über FHEMs nativen Bereich <code>Probably associated with</code>.
       Manuell ergänzte Zuordnungen bleiben erhalten. Beim Umbenennen des Roots
       aktualisiert FHEM die Referenz automatisch; zusätzliches HTML ist nicht nötig.</li>
-  <li><b>Capabilities:</b> Unterstützte Set-Befehle werden nach Möglichkeit
-      anhand der Matter-Metadaten wie <code>AcceptedCommandList</code> und
-      <code>FeatureMap</code> bestimmt. Vorhandene <code>has_*</code>-Attribute
-      bleiben als Fallback erhalten; ein manuelles <code>0</code> deaktiviert
-      die jeweilige Funktion.</li>
+  <li><b>Capabilities:</b> Set-Befehle erfordern einen passenden Eintrag in
+      der <code>AcceptedCommandList</code> des jeweiligen Endpunkts sowie
+      gegebenenfalls <code>FeatureMap</code>- und
+      <code>ClusterRevision</code>-Bedingungen. Solange die Metadaten fehlen,
+      werden keine Befehle aus Einzelwerten oder alten <code>has_*</code>-
+      Einstellungen abgeleitet. Gespeicherte <code>has_*=0</code>-Werte
+      sperren keine gemeldeten Befehle mehr.</li>
   <li><b>Weitere Readings:</b> PowerSource, SmokeCO-Alarm,
       Kohlenmonoxidkonzentration, elektrische Leistung und kumulierte Energie,
       soweit die Geräte die jeweiligen Attribute liefern.</li>
