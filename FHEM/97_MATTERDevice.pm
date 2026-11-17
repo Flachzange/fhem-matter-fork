@@ -1765,6 +1765,23 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
       power and cumulative energy clusters, where the server supplies the
       corresponding attributes.</li>
 </ul>
+<h4>Hardware validation status</h4>
+<p>The following classes are implemented but have no class-wide hardware validation
+recorded in this repository. <strong>untested</strong> refers to missing documented
+physical-device verification, not missing source or automated tests. Even testing
+one model cannot establish support for all models sharing the cluster.</p>
+<table><tr><th>Device class</th><th>Matter cluster</th><th>Hardware status</th></tr>
+<tr><td>OnOff lights / on-off plugs</td><td>OnOff, LevelControl</td><td><strong>untested</strong></td></tr>
+<tr><td>Color / color-temperature lights</td><td>ColorControl</td><td><strong>untested</strong></td></tr>
+<tr><td>Window coverings / blinds</td><td>WindowCovering</td><td><strong>untested</strong></td></tr>
+<tr><td>Door locks</td><td>DoorLock</td><td><strong>untested</strong></td></tr>
+<tr><td>Battery / power sources</td><td>PowerSource</td><td><strong>untested</strong></td></tr>
+<tr><td>Smoke / carbon-monoxide alarms</td><td>SmokeCoAlarm</td><td><strong>untested</strong></td></tr>
+<tr><td>Electrical metering</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>untested</strong></td></tr>
+<tr><td>Air quality / CO concentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>untested</strong></td></tr>
+</table>
+<p>Actual hardware evidence must identify the model, firmware, endpoint, validated
+readings and commands before a row can be narrowed or upgraded to tested.</p>
 <p>Root nodes use the administrative FHEMWEB group <code>Matter Nodes</code>.
 Functional endpoints are grouped by their single non-structural Matter
 <code>Descriptor.DeviceTypeList</code> type (for example
@@ -1848,6 +1865,24 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
       Kohlenmonoxidkonzentration, elektrische Leistung und kumulierte Energie,
       soweit die Geräte die jeweiligen Attribute liefern.</li>
 </ul>
+<h4>Hardware-Teststatus</h4>
+<p>Die folgenden Geräteklassen sind implementiert, aber es liegt im Repository
+kein klassenweiter Hardware-Nachweis vor. <strong>ungetestet</strong> bedeutet:
+keine dokumentierte Prüfung am realen Gerät; es bedeutet nicht, dass Code oder
+automatisierte Tests fehlen. Ein getestetes Modell belegt nicht alle Modelle
+mit demselben Matter-Cluster.</p>
+<table><tr><th>Geräteklasse</th><th>Matter-Cluster</th><th>Hardwarestatus</th></tr>
+<tr><td>Schaltbare Leuchten / Steckdosen</td><td>OnOff, LevelControl</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Farb-/Farbtemperaturleuchten</td><td>ColorControl</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Rollläden / Jalousien</td><td>WindowCovering</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Türschlösser</td><td>DoorLock</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Batterien / Stromversorgung</td><td>PowerSource</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Rauch-/CO-Warnmelder</td><td>SmokeCoAlarm</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Elektrische Messwerte</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Luftqualität / CO-Konzentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>ungetestet</strong></td></tr>
+</table>
+<p>Vor einer Änderung des Teststatus müssen Modell, Firmware, Endpunkt sowie
+tatsächlich geprüfte Readings und Befehle nachvollziehbar dokumentiert sein.</p>
 <p>Root-Knoten erhalten die Verwaltungsgruppe <code>Matter Nodes</code>.
 Funktionale Endpunkte werden nach ihrem eindeutigen, nicht-strukturellen
 Matter-Gerätetyp aus <code>Descriptor.DeviceTypeList</code> gruppiert

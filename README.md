@@ -201,6 +201,15 @@ MATTERDevice attributes include `IODev`, legacy capability overrides (for exampl
 - **Thermostats:** device types can be displayed, but thermostat-control commands are not implemented.
 - **Transport:** the FHEM IO supports an IPv4 WebSocket connection without built-in TLS or authentication; the network boundary and security requirements are described above.
 
+## Device-class hardware validation
+
+The German and English commandref in `97_MATTERDevice.pm` explicitly marks device
+classes without recorded end-to-end verification as **ungetestet / untested**.
+This means the class is implemented but not independently verified on actual
+hardware in this repository. Unit tests and protocol capability metadata do
+not by themselves establish physical-device compatibility. Document tested
+models, firmware and specific functions before changing that label.
+
 ## Development and tests
 
 `prove -v t/matter_node_sync.t` runs modeled FHEM callback tests and WebSocket socketpair tests (including fragmented TCP delivery, large frames, node identity, capability handling, commissioning and endpoint synchronization). `.github/workflows/perl-tests.yml` runs those Perl tests in CI. The suite tests module behavior against simulated peers, not physical device behavior.

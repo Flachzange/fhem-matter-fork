@@ -1273,6 +1273,11 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
       Re-enabling autocreate allows missing devices to be created on subsequent
       discovery/events.</li>
 </ul>
+<p><b>Hardware test status:</b> IP / BLE-assisted commissioning and credential
+operations depend on the external Matter server and BLE proxy. Their variants
+are <strong>untested</strong> in this repository unless a specific real-device
+commissioning path has separately documented hardware evidence. Automated
+WebSocket tests do not replace end-to-end hardware verification.</p>
 <p>Newly created logical devices default to room <code>Matter</code>; existing FHEM
 names, rooms and user attributes are retained. A removed node is marked with
 <code>matter_status=removed</code> rather than deleted. This status describes node
@@ -1339,6 +1344,11 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
       Aktivieren können fehlende Devices beim nächsten Abgleich oder Event
       angelegt werden.</li>
 </ul>
+<p><b>Hardware-Teststatus:</b> IP-/BLE-Commissioning und Zugangsdatenoperationen
+hängen vom externen Matter-Server und ggf. vom BLE-Proxy ab. Diese Varianten
+gelten ohne dokumentierten, gerätespezifischen Hardwaretest als
+<strong>ungetestet</strong>. Automatisierte WebSocket-Tests ersetzen
+keinen End-to-End-Test an echter Hardware.</p>
 <p>Neue logische Geräte erhalten standardmäßig den Raum <code>Matter</code>.
 Vorhandene Namen, Räume und Benutzerattribute bleiben unverändert. Entfernte
 Nodes werden mit <code>matter_status=removed</code> markiert und nicht automatisch
