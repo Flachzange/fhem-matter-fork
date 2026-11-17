@@ -2483,12 +2483,10 @@ my @second_recovery = grep {
     ($_->{command} // '') eq 'read_attribute' &&
     ($_->{args}{node_id} // 0) == 2700
 } @sent_requests;
-is(scalar(@second_recovery), 1,
-   'another offline/online cycle triggers one new metadata request');
-MATTER_ParseMessage($defs{ioA}, encode_json({
-    message_id => $second_recovery[0]{message_id},
-    result => { '1/6/65529' => [0, 1, 2] }
-}));
+is(scalar(@second_recovery), 0,
+   'another offline/online cycle does not re-read already known commands');
+ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($offline_child)),
+   'the existing verified command metadata remains usable after recovery');
 MATTER_ParseMessage($defs{ioA}, encode_json({
     event => 'attribute_updated', data => [2700, '1/6/0', JSON::true]
 }));
@@ -2534,6 +2532,151 @@ ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($boot_child)),
    'On setter returns after offline startup without has_* fallback');
 is(ReadingsVal($boot_child->{NAME}, 'state', ''), 'off',
    'offline-start recovery preserves manually corrected device state');
+
+# Known command metadata survives a temporary outage. Do not read it again
+# just because the server publishes another availability=true snapshot.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2702, name => 'KnownCapabilitiesProbe', available => JSON::true,
+    attributes => {
+        '1/6/0' => JSON::true,
+        '1/6/65529' => [0, 1, 2],
+    },
+});
+my $known_root = $defs{MATTER_KnownCapabilitiesProbe};
+my $known_child = $defs{MATTER_KnownCapabilitiesProbe_EP1};
+ok(MATTERDevice_CommandAccepted($known_child, 6, 1),
+   'known capability fixture has a valid accepted command list');
+MATTER_ProcessNode($defs{ioA}, { node_id => 2702, available => JSON::false });
+readingsSingleUpdate($known_child, 'state', 'off', 1);
+@sent_requests = ();
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2702, available => JSON::true,
+    attributes => { '1/6/0' => JSON::true }
+});
+ok(!grep({ ($_->{command} // '') eq 'read_attribute' &&
+             ($_->{args}{node_id} // 0) == 2702 } @sent_requests),
+   'already known command metadata needs no additional read');
+ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($known_child)),
+   'known On control remains available without refresh');
+is(ReadingsVal($known_child->{NAME}, 'state', ''), 'off',
+   'avoiding metadata read does not release physical state quarantine');
+
+# A missing FeatureMap for an advertised feature-dependent command is still
+# missing metadata, even though AcceptedCommandList already exists.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2705, name => 'PartialFeatureProbe', available => JSON::true,
+    attributes => {
+        '1/768/0' => 30,
+        '1/768/65529' => [6],
+    },
+});
+my $feature_root = $defs{MATTER_PartialFeatureProbe};
+my $feature_child = $defs{MATTER_PartialFeatureProbe_EP1};
+MATTER_ProcessNode($defs{ioA}, {node_id => 2705, available => JSON::false});
+@sent_requests = ();
+MATTER_ProcessNode($defs{ioA}, {node_id => 2705, available => JSON::true});
+my @feature_reads = grep {
+    ($_->{command} // '') eq 'read_attribute' &&
+    ($_->{args}{node_id} // 0) == 2705
+} @sent_requests;
+is(scalar(@feature_reads), 1,
+   'missing FeatureMap triggers recovery even with a known command list');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $feature_reads[0]{message_id},
+    result => { '1/768/65532' => 1 }
+}));
+ok(grep(/^rgb:/, MATTERDevice_GetSetList($feature_child)),
+   'recovered FeatureMap unlocks the advertised Hue command');
+
+# A matched but empty response is not a completed recovery. Only later
+# events, with cooldown and a per-availability-epoch bound, can retry.
+my $time_before_recovery = $mock_time;
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2703, name => 'RetryProbe', available => JSON::false,
+    attributes => { '1/6/0' => JSON::true },
+});
+my $retry_child = $defs{MATTER_RetryProbe_EP1};
+@sent_requests = ();
+MATTER_ProcessNode($defs{ioA}, {node_id => 2703, available => JSON::true});
+my @retry_reads = grep {
+    ($_->{command} // '') eq 'read_attribute' &&
+    ($_->{args}{node_id} // 0) == 2703
+} @sent_requests;
+is(scalar(@retry_reads), 1,
+   'first recovery attempt is issued once');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $retry_reads[0]{message_id}, result => {}
+}));
+MATTER_ProcessNode($defs{ioA}, {node_id => 2703, available => JSON::true});
+is(scalar(grep { ($_->{command} // '') eq 'read_attribute' &&
+                ($_->{args}{node_id} // 0) == 2703 } @sent_requests), 1,
+   'an immediate repeated event cannot bypass the read cooldown');
+$mock_time += 16;
+MATTER_ProcessNode($defs{ioA}, {node_id => 2703, available => JSON::true});
+@retry_reads = grep {
+    ($_->{command} // '') eq 'read_attribute' &&
+    ($_->{args}{node_id} // 0) == 2703
+} @sent_requests;
+is(scalar(@retry_reads), 2,
+   'later online event retries incomplete command metadata');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $retry_reads[-1]{message_id}, result => {}
+}));
+$mock_time += 16;
+MATTER_ProcessNode($defs{ioA}, {node_id => 2703, available => JSON::true});
+@retry_reads = grep {
+    ($_->{command} // '') eq 'read_attribute' &&
+    ($_->{args}{node_id} // 0) == 2703
+} @sent_requests;
+is(scalar(@retry_reads), 3, 'a third attempt is the upper bound');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $retry_reads[-1]{message_id}, result => {}
+}));
+$mock_time += 16;
+MATTER_ProcessNode($defs{ioA}, {node_id => 2703, available => JSON::true});
+is(scalar(grep { ($_->{command} // '') eq 'read_attribute' &&
+                ($_->{args}{node_id} // 0) == 2703 } @sent_requests), 3,
+   'subsequent online events do not bypass the attempt limit');
+is(MATTERDevice_Set($retry_child, $retry_child->{NAME}, 'getConfig'),
+   undef, 'manual getConfig remains usable after automatic attempt budget');
+my $manual_retry_id = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $manual_retry_id,
+    result => { '1/6/65529' => [0, 1, 2] }
+}));
+ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($retry_child)),
+   'manual getConfig repairs metadata after bounded automatic retries');
+
+# A transport-send failure does not count as a successful read, and a
+# future event can retry without stale pending_config records.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2704, name => 'SendFailureProbe', available => JSON::false,
+    attributes => { '1/6/0' => JSON::true },
+});
+my $failure_child = $defs{MATTER_SendFailureProbe_EP1};
+my $recovery_sender = $defs{ioA}{fhem}{helper}{sendWS};
+$defs{ioA}{fhem}{helper}{sendWS} = sub { return 0 };
+MATTER_ProcessNode($defs{ioA}, {node_id => 2704, available => JSON::true});
+ok(!grep({ ref($_) eq 'HASH' && ($_->{node_id} // -1) == 2704 }
+         values %{$defs{ioA}{helper}{pending_config} // {}}),
+   'failed metadata send leaves no pending request');
+$defs{ioA}{fhem}{helper}{sendWS} = $recovery_sender;
+@sent_requests = ();
+$mock_time += 16;
+MATTER_ProcessNode($defs{ioA}, {node_id => 2704, available => JSON::true});
+my @failure_retry = grep {
+    ($_->{command} // '') eq 'read_attribute' &&
+    ($_->{args}{node_id} // 0) == 2704
+} @sent_requests;
+is(scalar(@failure_retry), 1,
+   'later event retries a previously failed metadata send');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $failure_retry[0]{message_id},
+    result => { '1/6/65529' => [0, 1, 2] }
+}));
+ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($failure_child)),
+   'successful retry restores the missing On command');
+$mock_time = $time_before_recovery;
 
 # Issue #35: explicit opt-in diagnostic and raw visibility.
 MATTER_ProcessNode($defs{ioA}, {
