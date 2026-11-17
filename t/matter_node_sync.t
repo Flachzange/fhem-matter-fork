@@ -10,6 +10,8 @@ use vars qw(%defs %attr %modules %selectlist $readingFnAttributes $init_done);
 BEGIN { $INC{'HttpUtils.pm'} = 1; } # No FHEM network stack is needed by these simulated callbacks.
 
 my @log;
+my @direct_events;
+sub DoTrigger { push @direct_events, [@_]; }
 my @timers;
 my %bulk_writes;
 my %single_writes;
@@ -1015,6 +1017,10 @@ is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'online',
    'malformed availability never alters valid native root state');
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'available', ''), 'true',
    'node-level availability is mirrored to the existing endpoint');
+# Independent subsequent callback tests model a separately proven fresh
+# re-interview. The offline quarantine tests below exercise the persistent
+# protection; merely observing available=true does not clear it in production.
+delete $root->{helper}{quarantine_snapshots};
 
 MATTERDevice_Parse($root, encode_json({
     node_id => 42,
@@ -1332,7 +1338,7 @@ is($attr{MATTER_Unknown_type_EP1}{group}, '0xF123',
 # Technical bridge topology endpoints should not retain the legacy node group.
 MATTER_ProcessNode($defs{ioA}, {
     node_id => 190, name => 'Bridge grouping',
-    available => JSON::false,
+    available => JSON::true,
     attributes => {
         '1/29/0' => [{ '0' => 0x000E, '1' => 1 }], # Aggregator
         '10/29/0' => [{ '0' => 0x0013, '1' => 1 }], # Bridged Node
@@ -1522,13 +1528,14 @@ is(ReadingsVal($metadata_ep1->{NAME}, 'available', ''), 'true',
 # Same node ID under another MATTER IO must remain isolated.
 $preferred_io = 'ioA';
 MATTER_ProcessNode($defs{ioB}, {
-    node_id => 95, name => 'OtherMetadataNode', available => JSON::false,
+    node_id => 95, name => 'OtherMetadataNode', available => JSON::true,
     attributes => {'0/40/3' => 'Other Model', '1/6/0' => JSON::true},
 });
 my $other_metadata_ep = $defs{MATTER_OtherMetadataNode_EP1};
 ok($other_metadata_ep, 'a second IO may have the same Matter node ID');
 is(ReadingsVal($other_metadata_ep->{NAME}, 'model', ''), 'Other Model',
    'same-ID endpoint on another IO keeps its own model');
+MATTER_ProcessNode($defs{ioB}, {node_id => 95, available => JSON::false});
 is(ReadingsVal($other_metadata_ep->{NAME}, 'available', ''), 'false',
    'same-ID endpoint on another IO keeps its own availability');
 MATTER_ParseMessage($defs{ioA}, encode_json({
@@ -1545,13 +1552,16 @@ is(ReadingsVal($other_metadata_ep->{NAME}, 'available', ''), 'false',
 # autocreate=0 still allows metadata changes on already defined endpoints.
 is(CommandAttr(undef, 'ioA autocreate 0'), undef,
    'autocreate can be disabled during metadata synchronization');
+# The metadata update below represents another independently fresh interview,
+# not a cached replay after the preceding offline->online transition.
+delete $metadata_root->{helper}{quarantine_snapshots};
 MATTER_ProcessNode($defs{ioA}, {
-    node_id => 95, name => 'MetadataNode', available => JSON::false,
+    node_id => 95, name => 'MetadataNode', available => JSON::true,
     attributes => {'0/40/3' => 'Synthetic Model E', '4/6/0' => JSON::true},
 });
 is(ReadingsVal($metadata_ep1->{NAME}, 'model', ''), 'Synthetic Model E',
    'existing endpoint model updates with autocreate disabled');
-is(ReadingsVal($metadata_ep2->{NAME}, 'available', ''), 'false',
+is(ReadingsVal($metadata_ep2->{NAME}, 'available', ''), 'true',
    'existing endpoint availability updates with autocreate disabled');
 ok(!$defs{MATTER_MetadataNode_EP4},
    'mirroring node metadata cannot create an endpoint when autocreate is disabled');
@@ -1565,7 +1575,7 @@ delete $metadata_ep2->{IODev};
 MATTER_ProcessNode($defs{ioA}, {node_id => 95, name => 'MetadataNode'});
 is(ReadingsVal($metadata_ep2->{NAME}, 'model', ''), 'Synthetic Model E',
    'attribute-free discovery restores model on an existing endpoint');
-is(ReadingsVal($metadata_ep2->{NAME}, 'available', ''), 'false',
+is(ReadingsVal($metadata_ep2->{NAME}, 'available', ''), 'true',
    'attribute-free discovery restores availability on an existing endpoint');
 is(CommandAttr(undef, 'MATTER_MetadataNode_EP2 IODev ioA'), undef,
    'test restores the endpoint runtime IODev pointer');
@@ -2003,10 +2013,10 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'false',
    'partial live availability overrides only matching snapshot field');
-is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
-   'partial live node attributes override only matching snapshot attribute');
-is(ReadingsVal($child->{NAME}, 'battery_percent', ''), 77,
-   'unrelated endpoint attribute remains available from full snapshot');
+is(ReadingsVal($child->{NAME}, 'state', ''), 'on',
+   'partial node data does not import cached OnOff while the node is offline');
+is(ReadingsVal($child->{NAME}, 'battery_percent', ''), 66,
+   'unrelated battery data is retained from earlier live reports');
 is(ReadingsVal($snapshot_other_root->{NAME}, 'matter_status', ''), 'removed',
    'event for first node does not suppress removal of unrelated missing node');
 
@@ -2048,8 +2058,613 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
                node(779, 'MissingInSnapshot')]
 }));
 is(ReadingsVal($child->{NAME}, 'state', ''), 'on',
-   'invalid live node attribute does not hide a valid snapshot update');
+   'a valid snapshot remains usable in a separately recovered online scenario');
 close($io_a_peer);
 MATTER_Close($defs{ioA});
 
+
+# Issue #30 - standard sensor clusters; descriptor-before-attribute ordering.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 3000, name => 'SensorProbe', available => JSON::true,
+    attributes => {
+        '1/69/0' => JSON::true,
+        '1/29/0' => [{ '0' => 0x0015, '1' => 1 }],
+        '2/1026/0' => 2234,
+        '2/29/0' => [{ '0' => 0x0302, '1' => 1 }],
+        '3/1029/0' => 4350,
+        '3/29/0' => [{ '0' => 0x0307, '1' => 1 }],
+        '4/1024/0' => 30001,
+        '4/29/0' => [{ '0' => 0x0106, '1' => 1 }],
+        '5/1030/0' => 1,
+        '5/29/0' => [{ '0' => 0x0107, '1' => 1 }],
+        '6/69/0' => JSON::true,
+        '6/29/0' => [{ '0' => 0x0043, '1' => 1 }],
+        '7/69/0' => JSON::false,
+        '7/29/0' => [{ '0' => 0x0044, '1' => 1 }],
+    },
+});
+is(ReadingsVal('MATTER_SensorProbe_EP1', 'contact', ''), 'closed',
+   'contact sensor true means closed');
+is(ReadingsVal('MATTER_SensorProbe_EP2', 'temperature', ''), 22.34,
+   'temperature centidegrees become Celsius');
+is(ReadingsVal('MATTER_SensorProbe_EP3', 'humidity', ''), 43.5,
+   'humidity centipercent converts to percent');
+is(ReadingsVal('MATTER_SensorProbe_EP4', 'illuminance', ''), 1000,
+   'logarithmic Matter illuminance becomes lux');
+is(ReadingsVal('MATTER_SensorProbe_EP5', 'motion', ''), 'motion',
+   'occupancy bitmask sets motion');
+is(ReadingsVal('MATTER_SensorProbe_EP6', 'water_leak', ''), 'leak',
+   'water-leak type maps true to leak');
+is(ReadingsVal('MATTER_SensorProbe_EP7', 'rain', ''), 'dry',
+   'rain type maps false to dry');
+MATTERDevice_Parse($defs{MATTER_SensorProbe}, encode_json({
+    node_id => 3000, attributes => {
+        '1/69/0' => JSON::false,
+        '2/1026/0' => -32768,
+        '3/1029/0' => 65535,
+        '4/1024/0' => 65535,
+        '5/1030/0' => 0,
+    }
+}));
+is(ReadingsVal('MATTER_SensorProbe_EP1', 'contact', ''), 'open',
+   'contact false means open');
+is(ReadingsVal('MATTER_SensorProbe_EP5', 'motion', ''), 'nomotion',
+   'occupancy zero means nomotion');
+is(ReadingsVal('MATTER_SensorProbe_EP2', 'temperature', ''), 22.34,
+   'temperature invalid sentinel leaves old value');
+is(ReadingsVal('MATTER_SensorProbe_EP3', 'humidity', ''), 43.5,
+   'humidity invalid sentinel leaves old value');
+is(ReadingsVal('MATTER_SensorProbe_EP4', 'illuminance', ''), 1000,
+   'illuminance invalid sentinel leaves old value');
+
+
+# Issue #31: repeated identical switch events must not be lost.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 3100, name => 'SwitchProbe', available => JSON::true,
+    attributes => { '1/59/0' => 0, '1/29/0' => [{ '0' => 0x000F, '1' => 1 }],
+                    '2/59/0' => 0, '2/29/0' => [{ '0' => 0x000F, '1' => 1 }] }
+});
+@direct_events = ();
+for (1 .. 2) {
+    MATTER_ParseMessage($defs{ioA}, encode_json({
+        event => 'node_event',
+        data => { node_id => 3100, endpoint_id => 1, cluster_id => 59,
+                  event_id => 3, data => {} }
+    }));
+}
+is(ReadingsVal('MATTER_SwitchProbe_EP1', 'button', ''), 'short',
+   'Matter short release produces button short');
+is(scalar(@direct_events), 2,
+   'two identical button values emit two explicit FHEM events');
+is($direct_events[0][1], 'button: short',
+   'button event is suitable for notify/DOIF');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_event',
+    data => { node_id => 3100, endpoint_id => 2, cluster_id => 59,
+              event_id => 6, data => { totalNumberOfPressesCounted => 2 } }
+}));
+is(ReadingsVal('MATTER_SwitchProbe_EP2', 'button', ''), 'double',
+   'second endpoint receives double-press event');
+my $before_invalid = scalar(@direct_events);
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_event',
+    data => { node_id => 3100, endpoint_id => 2, cluster_id => 59,
+              event_id => 6, data => { totalNumberOfPressesCounted => 'bad' } }
+}));
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_event',
+    data => { node_id => 3100, endpoint_id => 2, cluster_id => 51,
+              event_id => 3, data => {} }
+}));
+is(scalar(@direct_events), $before_invalid,
+   'invalid event payload and unrelated clusters cause no button events');
+
+
+# Issue #32: pressure and concentration clusters use specified units.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 3200, name => 'EnvironmentProbe', available => JSON::true,
+    attributes => {
+        '1/1027/0' => 1013, # 10 * 101.3 kPa -> 1013 hPa
+        '2/1037/0' => 650,
+        '2/1037/8' => 0, # ppm
+        '3/1066/0' => 12.5,
+        '3/1066/8' => 4, # ug/m3
+        '4/1070/0' => 3.5,
+        '4/1070/8' => 1, # ppb
+    },
+});
+is(ReadingsVal('MATTER_EnvironmentProbe_EP1', 'pressure', ''), 1013,
+   'pressure MeasuredValue is displayed in hPa');
+is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2', ''), 650,
+   'CO2 measured value is preserved');
+is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2_unit', ''), 'ppm',
+   'CO2 unit is advertised, not guessed');
+is(ReadingsVal('MATTER_EnvironmentProbe_EP3', 'pm25', ''), 12.5,
+   'PM2.5 measurement handles decimal values');
+is(ReadingsVal('MATTER_EnvironmentProbe_EP3', 'pm25_unit', ''), 'ug/m3',
+   'PM2.5 microgram-per-cubic-metre unit');
+is(ReadingsVal('MATTER_EnvironmentProbe_EP4', 'tvoc_unit', ''), 'ppb',
+   'TVOC unit is independent of CO2 unit');
+MATTERDevice_Parse($defs{MATTER_EnvironmentProbe}, encode_json({
+    node_id => 3200, attributes => {
+        '1/1027/0' => -32768,
+        '2/1037/0' => -5,
+        '2/1037/8' => 255,
+    }
+}));
+is(ReadingsVal('MATTER_EnvironmentProbe_EP1', 'pressure', ''), 1013,
+   'pressure null sentinel leaves previous reading');
+is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2', ''), 650,
+   'negative concentrations are ignored');
+is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2_unit', ''), 'ppm',
+   'unknown units do not overwrite a valid known unit');
+
+
+# The earlier transport tests close ioA deliberately. Restore a modeled
+# active connection for the new set-command fixtures.
+socketpair(my $feature_socket, my $feature_peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+    or die 'feature socketpair';
+$defs{ioA}{CD} = $feature_socket;
+$defs{ioA}{websocket} = 1;
+$defs{ioA}{ws_status} = 'connected';
+$defs{ioA}{fhem}{helper}{sendWS} = sub {
+    push @sent_requests, JSON::decode_json($_[0]);
+    return 1;
+};
+
+# Issue #34: native LevelControl move, step and stop.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 3400, name => 'DimProbe', available => JSON::true,
+    attributes => {
+        '1/8/65529' => [1, 2, 3],
+        '1/8/65531' => [0],
+        '1/8/0' => 100,
+    },
+});
+my $dim = $defs{MATTER_DimProbe_EP1};
+ok(grep(/^dim_up:noArg$/, MATTERDevice_GetSetList($dim)),
+   'native Move is offered when accepted');
+ok(grep(/^dim_stop:noArg$/, MATTERDevice_GetSetList($dim)),
+   'native Stop is offered when accepted');
+@sent_requests = ();
+is(MATTERDevice_Set($dim, $dim->{NAME}, 'dim_up'), undef,
+   'native dim up command accepted');
+is($sent_requests[-1]{args}{command_name}, 'Move',
+   'native Move rather than repeated pct command');
+is($sent_requests[-1]{args}{payload}{rate}, 30,
+   'continuous dimming defaults to rate 30');
+is($sent_requests[-1]{args}{payload}{moveMode}, 0,
+   'dim_up uses MoveMode Up');
+is(CommandAttr(undef, $dim->{NAME} . ' dimRate 60'), undef,
+   'device-specific dimRate can be configured');
+@sent_requests = ();
+is(MATTERDevice_Set($dim, $dim->{NAME}, 'dim_down'), undef,
+   'native dim down command accepted');
+is($sent_requests[-1]{args}{payload}{rate}, 60,
+   'the following dim command uses the changed rate');
+is($sent_requests[-1]{args}{payload}{moveMode}, 1,
+   'dim_down uses MoveMode Down');
+is(MATTERDevice_Set($dim, $dim->{NAME}, 'dim_step_up'), undef,
+   'native step command accepted');
+is($sent_requests[-1]{args}{command_name}, 'Step',
+   'step uses native LevelControl Step');
+is(MATTERDevice_Set($dim, $dim->{NAME}, 'dim_stop'), undef,
+   'native stop command accepted');
+is($sent_requests[-1]{args}{command_name}, 'Stop',
+   'dim_stop uses native Stop and no timer');
+
+
+# Issue #33: Thermostat, FanControl, Identify and structured writes.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 3300, name => 'HVACProbe', available => JSON::true,
+    attributes => {
+        '1/513/65531' => [0, 18, 28],
+        '1/513/0' => 2250,
+        '1/513/18' => 2100,
+        '1/513/28' => 4,
+        '2/514/65531' => [0, 2, 3],
+        '2/514/0' => 2,
+        '2/514/2' => 55,
+        '2/514/3' => 53,
+        '3/3/65529' => [0],
+        '3/3/0' => 0,
+    }
+});
+my $therm = $defs{MATTER_HVACProbe_EP1};
+my $fan = $defs{MATTER_HVACProbe_EP2};
+my $identify = $defs{MATTER_HVACProbe_EP3};
+is(ReadingsVal($therm->{NAME}, 'measured-temp', ''), 22.5,
+   'thermostat measured temperature is centidegrees to Celsius');
+is(ReadingsVal($therm->{NAME}, 'desired-temp', ''), 21,
+   'thermostat heating setpoint is scaled');
+is(ReadingsVal($therm->{NAME}, 'mode', ''), 'heat',
+   'thermostat mode is decoded');
+is(ReadingsVal($fan->{NAME}, 'fan_mode', ''), 'medium',
+   'fan mode is decoded');
+is(ReadingsVal($fan->{NAME}, 'fan_pct', ''), 53,
+   'fan current percentage is read separately from setting');
+ok(grep(/^desired-temp:/, MATTERDevice_GetSetList($therm)),
+   'thermostat setpoint offered if advertised in AttributeList');
+ok(grep(/^fan_pct:/, MATTERDevice_GetSetList($fan)),
+   'fan setting offered if advertised');
+ok(grep(/^identify:noArg$/, MATTERDevice_GetSetList($identify)),
+   'Identify offered if command is accepted');
+@sent_requests = ();
+is(MATTERDevice_Set($therm, $therm->{NAME}, 'desired-temp', '21.5'), undef,
+   'thermostat setpoint accepts decimal value');
+is($sent_requests[-1]{command}, 'write_attribute',
+   'thermostat writes through the Matter server');
+is($sent_requests[-1]{args}{attribute_path}, '1/513/18',
+   'thermostat uses OccupiedHeatingSetpoint');
+is($sent_requests[-1]{args}{value}, 2150,
+   'temperature write uses centidegrees');
+is(ReadingsVal($therm->{NAME}, 'desired-temp', ''), 21,
+   'outgoing set does not optimistically overwrite measured reading');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $sent_requests[-1]{message_id}, result => undef
+}));
+is(MATTERDevice_Set($fan, $fan->{NAME}, 'fan_mode', 'high'), undef,
+   'fan mode is set with native attribute write');
+is($sent_requests[-1]{args}{value}, 3,
+   'fan high maps to native enum value 3');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $sent_requests[-1]{message_id}, result => undef
+}));
+is(MATTERDevice_Set($identify, $identify->{NAME}, 'identify'), undef,
+   'Identify command accepted');
+is($sent_requests[-1]{args}{command_name}, 'Identify',
+   'native Identify command used');
+is($sent_requests[-1]{args}{payload}{identifyTime}, 15,
+   'Identify lasts 15 seconds');
+like(MATTERDevice_Set($fan, $fan->{NAME}, 'fan_pct', '300') // '',
+   qr/between 0 and 100/, 'invalid fan target is rejected');
+
+
+# Issue #27: cache quarantine is node-wide, preserves manual edits and all
+# device-derived metadata; recovery accepts only fresh individual reports.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2700, name => 'OfflineProbe', available => JSON::true,
+    attributes => {
+        '1/6/0' => JSON::true,
+        '1/47/12' => 154,
+        '1/29/0' => [{ '0' => 0x0100, '1' => 1 }],
+    },
+});
+my $offline_root = $defs{MATTER_OfflineProbe};
+my $offline_child = $defs{MATTER_OfflineProbe_EP1};
+is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'on',
+   'pre-outage state is known online');
+MATTER_ProcessNode($defs{ioA}, { node_id => 2700, available => JSON::false });
+readingsSingleUpdate($offline_child, 'state', 'off', 1);
+readingsSingleUpdate($offline_child, 'battery_percent', 10, 1);
+my $old_type = ReadingsVal($offline_child->{NAME}, 'device_type_ids', '');
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2700, available => JSON::false,
+    attributes => {
+        '1/6/0' => JSON::true,
+        '1/47/12' => 160,
+        '1/29/0' => [{ '0' => 0x010A, '1' => 1 }],
+        '1/8/65529' => [1, 2, 3],
+    },
+});
+is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
+   'cached offline OnOff does not overwrite manual correction');
+is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
+   'cached offline power source does not overwrite manual correction');
+is(ReadingsVal($offline_child->{NAME}, 'device_type_ids', ''), $old_type,
+   'cached offline device types are not adopted');
+ok(!MATTERDevice_CommandAccepted($offline_child, 8, 1),
+   'cached offline command metadata is not adopted');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [2700, '1/6/0', JSON::true]
+}));
+is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
+   'individual update is ignored while explicitly offline');
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2700, available => JSON::true,
+    attributes => { '1/6/0' => JSON::true, '1/47/12' => 190 },
+});
+is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
+   'availability true with cached snapshot cannot overwrite manual state');
+is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
+   'cached battery remains quarantined after available true');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [2700, '1/6/0', JSON::true]
+}));
+is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'on',
+   'new live report releases state for its specific attribute');
+is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
+   'unreported battery still preserves its manual value');
+is(ReadingsVal($offline_root->{NAME}, 'state', ''), 'online',
+   'root availability remains independent from endpoint state');
+
+
+# Issue #35: explicit opt-in diagnostic and raw visibility.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 3500, name => 'DiagnosticsProbe', available => JSON::true,
+    attributes => {
+        '0/53/0' => 15, '0/53/1' => 5, '0/53/2' => 'Mesh',
+        '0/53/7' => [{'0' => 'abcd', '6' => -50, '5' => 3, '13' => JSON::false}],
+        '0/54/4' => -67, '1/987/3' => 42,
+    }
+});
+my $dr = $defs{MATTER_DiagnosticsProbe};
+my $dep = $defs{MATTER_DiagnosticsProbe_EP1};
+ok(!defined(ReadingsVal($dr->{NAME}, 'thread_role', undef)),
+   'no default diagnostic readings');
+ok(!defined(ReadingsVal($dep->{NAME}, 'raw_1_987_3', undef)),
+   'unmapped data not published by default');
+is(CommandAttr(undef, 'MATTER_DiagnosticsProbe diagnostics 1'), undef,
+   'diagnostics opt-in accepted');
+is(CommandAttr(undef, 'MATTER_DiagnosticsProbe_EP1 rawReadings 1'), undef,
+   'raw opt-in accepted');
+MATTERDevice_Parse($dr, encode_json({
+    node_id => 3500, attributes => {
+        '0/53/0' => 15, '0/53/1' => 5, '0/53/2' => 'Mesh',
+        '0/53/7' => [{'0' => 'abcd', '6' => -50, '5' => 3, '13' => JSON::false}],
+        '0/54/4' => -67, '1/987/3' => 42,
+    }
+}));
+is(ReadingsVal($dr->{NAME}, 'thread_role', ''), 'router',
+   'Thread role maps to router');
+is(ReadingsVal($dr->{NAME}, 'thread_neighbors', ''), 1,
+   'neighbor table count');
+is(ReadingsVal($dr->{NAME}, 'rssi', ''), -50,
+   'best router RSSI');
+is(ReadingsVal($dr->{NAME}, 'lqi', ''), 3,
+   'best router LQI');
+is(ReadingsVal($dr->{NAME}, 'wifi_rssi', ''), -67,
+   'Wi-Fi RSSI');
+is(ReadingsVal($dep->{NAME}, 'raw_1_987_3', ''), 42,
+   'unmapped scalar exposed explicitly');
+is(CommandAttr(undef, 'MATTER_DiagnosticsProbe diagnostics 0'), undef,
+   'disable diagnostics');
+MATTERDevice_Parse($dr, encode_json({
+    node_id => 3500, attributes => {'0/54/4' => -62}
+}));
+is(ReadingsVal($dr->{NAME}, 'wifi_rssi', ''), -67,
+   'disable stops updating diagnostics without deleting old data');
+
+# Issue #28: passive ICD detection, LIT gating, explicit ICD query and
+# asynchronous correlation. Never infer awake status from availability.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2800, name => 'IcdProbe', available => JSON::true,
+    attributes => {
+        '0/40/21' => 0x01040000,
+        '0/70/65532' => 5, # Check-In and Long Idle Time features
+        '0/70/8' => 1,
+        '0/70/0' => 3600,
+    }
+});
+my $icd = $defs{MATTER_IcdProbe};
+is(ReadingsVal($icd->{NAME}, 'icd_supported', ''), 'true',
+   'ICD presence is announced passively');
+is(ReadingsVal($icd->{NAME}, 'icd_lit_supported', ''), 'true',
+   'Matter 1.4 and LIT bit both required');
+is(ReadingsVal($icd->{NAME}, 'icd_operating_mode', ''), 'LIT',
+   'current LIT mode is distinct from LIT capability');
+is(ReadingsVal($icd->{NAME}, 'icd_idle_mode_duration', ''), 3600,
+   'idle duration is retained');
+is(CommandAttr(undef, 'ioA autocreate 1'), undef,
+   'IO remains assignable during ICD tests');
+readingsSingleUpdate($defs{ioA}, 'schema_version', 12, 0);
+ok(grep(/^icdRegister:noArg$/, MATTERDevice_GetSetList($icd)),
+   'ICD registration set is gated by check-in feature and server schema');
+@sent_requests = ();
+like(MATTERDevice_Get($icd, $icd->{NAME}, 'icdState'),
+     qr/requested/, 'ICD Get acknowledges an asynchronous server request');
+is($sent_requests[-1]{command}, 'get_icd_state',
+   'dedicated controller-side ICD API');
+my $icd_req = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $icd_req,
+    result => {
+        supported => JSON::true, lit_supported => JSON::true,
+        registered => JSON::true, operating_mode => 'LIT',
+        awake => JSON::false, available => JSON::true,
+        next_expected_checkin => 1735689600000,
+    }
+}));
+is(ReadingsVal($icd->{NAME}, 'icd_awake', ''), 'false',
+   'sleeping ICD is recorded as awake false');
+is(ReadingsVal($icd->{NAME}, 'icd_controller_available', ''), 'true',
+   'controller availability is independent of awake');
+is(ReadingsVal($icd->{NAME}, 'state', ''), 'online',
+   'sleeping ICD never forces root offline');
+is(ReadingsVal($icd->{NAME}, 'icd_registered', ''), 'true',
+   'registration is confirmed only from correlated response');
+@sent_requests = ();
+is(MATTERDevice_Set($icd, $icd->{NAME}, 'icdRegister'), undef,
+   'explicit ICD administrative command accepted');
+is($sent_requests[-1]{command}, 'register_icd',
+   'server remains responsible for ICD registration');
+
+# Issue #36: server-backed, strictly manual OTA.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 3600, name => 'OtaProbe', available => JSON::true,
+    attributes => {
+        '0/42/2' => 1, '0/42/3' => 0,
+        '0/40/9' => 100, '0/40/10' => '1.0.0',
+    }
+});
+my $ota = $defs{MATTER_OtaProbe};
+ok(grep(/^checkFirmwareUpdate:noArg$/, MATTERDevice_GetSetList($ota)),
+   'OTA root exposes explicit manual firmware check');
+ok(!grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
+   'no firmware install without server-approved version');
+@sent_requests = ();
+is(MATTERDevice_Set($ota, $ota->{NAME}, 'checkFirmwareUpdate'), undef,
+   'server firmware check request accepted');
+is($sent_requests[-1]{command}, 'check_node_update',
+   'server does the actual update discovery');
+my $cid = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $cid,
+    result => {software_version => 101, software_version_string => '1.0.1'}
+}));
+is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'available',
+   'available firmware comes from server response');
+is(ReadingsVal($ota->{NAME}, 'firmware_update_version', ''), '1.0.1',
+   'server-confirmed version label shown');
+ok(grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
+   'firmware install enabled after actual update discovery');
+@sent_requests = ();
+is(MATTERDevice_Set($ota, $ota->{NAME}, 'updateFirmware'), undef,
+   'manual firmware installation request accepted');
+is($sent_requests[-1]{command}, 'update_node',
+   'Matter server performs OTA installation');
+is($sent_requests[-1]{args}{software_version}, 101,
+   'only confirmed software version sent');
+my $uid = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $uid, result => undef
+}));
+is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'update requested',
+   'server acknowledgement is not successful installation');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [3600, '0/42/2', 4]
+}));
+is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'downloading',
+   'device OTA Requestor progress received');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [3600, '0/40/9', 101]
+}));
+is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'installed',
+   'installation requires matching new reported software version');
+
+# A second operation for the same node cannot race the first response.
+@sent_requests = ();
+my $pending_icd_query = MATTERDevice_Get($icd, $icd->{NAME}, 'icdState');
+like($pending_icd_query, qr/pending/, 'in-flight ICD operations are serialized');
+# Clear pending administrative request through its matched server response.
+my ($current_icd_request) = grep {
+    ref($defs{ioA}{helper}{pending_command}{$_}) eq 'HASH' &&
+    ($defs{ioA}{helper}{pending_command}{$_}{node_id} // '') == 2800
+} keys %{$defs{ioA}{helper}{pending_command}};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $current_icd_request, result => {
+        supported => JSON::true, registered => JSON::true,
+    }
+})) if defined $current_icd_request;
+
+# A reported version equal to the installed version is not an update.
+@sent_requests = ();
+is(MATTERDevice_Set($ota, $ota->{NAME}, 'checkFirmwareUpdate'), undef,
+   'can check again after the previous OTA command completed');
+my $same_version_id = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $same_version_id,
+    result => { software_version => 101, software_version_string => '1.0.1' }
+}));
+is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'up to date',
+   'already installed firmware is not offered as a newer update');
+ok(!grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
+   'no install action for the already installed firmware');
+
+# Review #33: asynchronous thermostat writes are correlated, not reported
+# successful merely because FHEM accepted an outgoing WebSocket frame.
+@sent_requests = ();
+is(MATTERDevice_Set($therm, $therm->{NAME}, 'desired-temp', '20.5'), undef,
+   'another thermostat write is queued');
+my $write_id = $sent_requests[-1]{message_id};
+ok(exists($defs{ioA}{helper}{pending_command}{$write_id}),
+   'write request is held until matching server response');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $write_id,
+    error_code => 1,
+    error => { message => 'attribute is not writable' }
+}));
+like(ReadingsVal($therm->{NAME}, 'lastError', ''),
+     qr/not writable/, 'server rejected write is visible on the FHEM device');
+is(ReadingsVal($therm->{NAME}, 'desired-temp', ''), 21,
+   'failed write never changes the physical reported setpoint');
+@sent_requests = ();
+is(MATTERDevice_Set($therm, $therm->{NAME}, 'desired-temp', '20.5'), undef,
+   'write may be retried explicitly');
+my $write_ok_id = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $write_ok_id, result => undef
+}));
+is(ReadingsVal($therm->{NAME}, 'lastError', ''), 'none',
+   'server-confirmed write clears the prior error');
+is(ReadingsVal($therm->{NAME}, 'desired-temp', ''), 21,
+   'server acknowledgement is still not new device telemetry');
+
+# End-to-end request discipline: do not accept another write before the
+# controller has replied to the previous attribute write.
+@sent_requests = ();
+is(MATTERDevice_Set($therm, $therm->{NAME}, 'mode', 'cool'), undef,
+   'first thermostat mode write queued');
+my $first_mode_id = $sent_requests[-1]{message_id};
+like(MATTERDevice_Set($therm, $therm->{NAME}, 'mode', 'heat') // '',
+     qr/already pending/, 'concurrent write to same node is rejected');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $first_mode_id, result => undef
+}));
+is(MATTERDevice_Set($therm, $therm->{NAME}, 'mode', 'heat'), undef,
+   'write is available again once previous command is acknowledged');
+
+# Review against additional fhempy regression scenarios.
+is(ReadingsVal('MATTER_SensorProbe_EP1', 'state', ''), 'open',
+   'contact sensor exposes a native FHEM state in addition to contact');
+is(ReadingsVal('MATTER_SensorProbe_EP5', 'state', ''), 'nomotion',
+   'occupancy endpoint exposes standard motion/nomotion state');
+my $stray_name = 'MATTER_SwitchProbe_EP999';
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_event',
+    data => { node_id => 3100, endpoint_id => 999,
+              cluster_id => 59, event_id => 3, data => {} }
+}));
+ok(!exists($defs{$stray_name}),
+   'unadvertised Switch event endpoints do not autocreate devices');
+is(ReadingsVal($dr->{NAME}, 'thread_device_type', ''), 'FTD',
+   'Thread router role implies a full Thread device');
+is(CommandAttr(undef, 'MATTER_DiagnosticsProbe diagnostics 1'), undef,
+   'diagnostics can be re-enabled for later reports');
+MATTERDevice_Parse($dr, encode_json({
+    node_id => 3500,
+    attributes => {'0/53/7' => [
+        {'0' => 'router', '6' => -72, '5' => 2, '13' => JSON::false},
+        {'0' => 'child', '6' => -30, '5' => 3, '13' => JSON::true}
+    ]}
+}));
+is(ReadingsVal($dr->{NAME}, 'thread_neighbors', ''), 2,
+   'parent/child neighbors counted');
+is(ReadingsVal($dr->{NAME}, 'rssi', ''), -72,
+   'child signal never replaces router-link RSSI');
+is(ReadingsVal($dr->{NAME}, 'lqi', ''), 2,
+   'link quality belongs to best router, not strongest child');
+MATTERDevice_Parse($dr, encode_json({
+    node_id => 3500, attributes => {'1/62/42' => 'private'}
+}));
+ok(!defined(ReadingsVal($dep->{NAME}, 'raw_1_62_42', undef)),
+   'sensitive credential cluster excluded even with rawReadings enabled');
+
+# Review #36: an empty firmware offer and a failed check invalidate the
+# prior version, never leaving an unsafe install command available.
+@sent_requests = ();
+is(MATTERDevice_Set($ota, $ota->{NAME}, 'checkFirmwareUpdate'), undef,
+   'new manual check after previous result');
+my $none_id = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $none_id, result => undef
+}));
+is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'none reported',
+   'a null update response means none reported, not up to date forever');
+is(ReadingsVal($ota->{NAME}, 'firmware_update_version', ''), 'none',
+   'outdated firmware offer label is cleared');
+ok(!grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
+   'no install set after null result');
+@sent_requests = ();
+is(MATTERDevice_Set($ota, $ota->{NAME}, 'checkFirmwareUpdate'), undef,
+   'firmware check can be retried explicitly');
+my $failure_id = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $failure_id,
+    error_code => 1, error => { message => 'DCL unavailable' }
+}));
+like(ReadingsVal($ota->{NAME}, 'firmware_update', ''), qr/DCL unavailable/,
+   'server lookup failure is visible in firmware_update');
+ok(!grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
+   'lookup errors do not leave a stale install action');
 done_testing();

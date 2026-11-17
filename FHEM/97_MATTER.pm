@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.16 15.11.2026";
+my $MATTER_version = "V0.17 17.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -482,6 +482,9 @@ sub MATTER_Close($) {
     $hash->{websocket} = 0;
     $hash->{ws_status} = 'disconnected';
     $hash->{BUF} = '';
+    my @incomplete_node_ops = grep {
+        ref($_) eq 'HASH' && ($_->{type} // '') eq 'node_operation'
+    } values %{$hash->{helper}{pending_command} // {}};
     delete $hash->{helper}{pending_command};
     delete $hash->{helper}{pending_config};
     delete $hash->{helper}{pending_snapshot_touched};
@@ -498,6 +501,28 @@ sub MATTER_Close($) {
         next unless $owner ? $owner eq $hash
                            : AttrVal($device->{NAME}, 'IODev', '') eq $name;
         MATTERDevice_SetRootState($device, 'unknown');
+    }
+    # A server reconnect invalidates old OTA offers even if no update request
+    # was pending. Installing a version requires a fresh server check.
+    for my $dev (values %defs) {
+        next unless ($dev->{TYPE} // '') eq 'MATTERDevice' &&
+                    ($dev->{endpoint_id} // 0) == 0 &&
+                    $dev->{IODev} && $dev->{IODev} eq $hash;
+        if (exists($dev->{helper}{firmware_available})) {
+            delete $dev->{helper}{firmware_available};
+            readingsSingleUpdate($dev, 'firmware_update', 'unknown (server disconnected)', 1)
+                if ReadingsVal($dev->{NAME}, 'firmware_update', '') eq 'available';
+        }
+    }
+    for my $op (@incomplete_node_ops) {
+        my $device = $defs{$op->{name}};
+        next unless $device && ($device->{FUUID} // '') eq ($op->{fuuid} // '') &&
+                    $device->{IODev} && $device->{IODev} eq $hash;
+        my $reading = ($op->{operation} // '') =~ /icd/ ?
+                      'icd_request' :
+                      ($op->{operation} // '') eq 'write_attribute' ?
+                      'lastError' : 'firmware_update';
+        readingsSingleUpdate($device, $reading, 'interrupted (outcome unknown)', 1);
     }
     if ($active) {
         MATTER_CommissioningReadings($hash, 'interrupted', $active->{mode}, '',
@@ -521,6 +546,23 @@ sub MATTER_Heartbeat($) {
     my ($hash) = @_;
     return unless $hash->{CD} && ($hash->{ws_status} // '') eq 'connected';
 
+    # Reject timed-out asynchronous node operations; late replies are ignored.
+    for my $id (keys %{$hash->{helper}{pending_command} // {}}) {
+        my $p = $hash->{helper}{pending_command}{$id};
+        next unless ref($p) eq 'HASH' &&
+                    ($p->{type} // '') eq 'node_operation';
+        next unless gettimeofday() - ($p->{started_at} // 0) >
+                    ($p->{timeout} // 120);
+        delete $hash->{helper}{pending_command}{$id};
+        my $owner = $defs{$p->{name}};
+        next unless $owner && ($owner->{FUUID} // '') eq ($p->{fuuid} // '') &&
+                    $owner->{IODev} && $owner->{IODev} eq $hash;
+        my $reading = ($p->{operation} // '') =~ /icd/ ?
+                      'icd_request' :
+                      ($p->{operation} // '') eq 'write_attribute' ?
+                      'lastError' : 'firmware_update';
+        readingsSingleUpdate($owner, $reading, 'timeout (outcome unknown)', 1);
+    }
     if (defined($hash->{helper}{pending_pong})) {
         Log3 $hash->{NAME}, 2, "[$hash->{NAME}] WebSocket pong timeout after $MATTER_pong_timeout seconds; reconnecting";
         MATTER_Reconnect($hash);
@@ -1032,6 +1074,21 @@ sub MATTER_ParseMessage($$) {
             MATTER_ProcessNode($hash, $decoded->{data});
             return;
         }
+        if ($event eq 'node_event' && ref($decoded->{data}) eq 'HASH') {
+            my $data = $decoded->{data};
+            my ($node_id, $endpoint, $cluster, $event_id) =
+                @{$data}{qw(node_id endpoint_id cluster_id event_id)};
+            if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/ &&
+                defined($endpoint) && !ref($endpoint) && $endpoint =~ /^\d+$/ &&
+                $endpoint > 0 &&
+                defined($cluster) && !ref($cluster) && $cluster =~ /^\d+$/ &&
+                $cluster == 0x003B &&
+                defined($event_id) && !ref($event_id) && $event_id =~ /^\d+$/) {
+                my $root = $modules{MATTERDevice}{defptr}{"$name:$node_id"};
+                MATTERDevice_Parse($root, $payload) if $root;
+            }
+            return;
+        }
         if ($event eq 'node_removed') {
             if (defined($decoded->{data}) && !ref($decoded->{data}) && $decoded->{data} =~ /^\d+$/) {
                 MATTER_RecordSnapshotEvent($hash, $decoded->{data}, $event);
@@ -1098,6 +1155,17 @@ sub MATTER_ParseMessage($$) {
         
         # start_listening and get_nodes both return a complete node list.
         my $cmd_type = delete $hash->{helper}{pending_command}{$msg_id};
+        if (ref($cmd_type) eq 'HASH' &&
+            ($cmd_type->{type} // '') eq 'node_operation') {
+            my $owner = $defs{$cmd_type->{name}};
+            if ($owner && ($owner->{TYPE} // '') eq 'MATTERDevice' &&
+                ($owner->{FUUID} // '') eq ($cmd_type->{fuuid} // '') &&
+                ($owner->{node_id} // '') eq ($cmd_type->{node_id} // '') &&
+                $owner->{IODev} && $owner->{IODev} eq $hash) {
+                MATTERDevice_HandleNodeOperation($owner, $cmd_type, $decoded);
+            }
+            return;
+        }
         if ($cmd_type && ($cmd_type eq "get_nodes" || $cmd_type eq "start_listening")) {
             my $touched = delete $hash->{helper}{pending_snapshot_touched}{$msg_id};
             if (ref($decoded->{result}) eq 'ARRAY') {
@@ -1273,6 +1341,11 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
       Re-enabling autocreate allows missing devices to be created on subsequent
       discovery/events.</li>
 </ul>
+<p><b>Hardware test status:</b> IP / BLE-assisted commissioning and credential
+operations depend on the external Matter server and BLE proxy. Their variants
+are <strong>untested</strong> in this repository unless a specific real-device
+commissioning path has separately documented hardware evidence. Automated
+WebSocket tests do not replace end-to-end hardware verification.</p>
 <p>Newly created logical devices default to room <code>Matter</code>; existing FHEM
 names, rooms and user attributes are retained. A removed node is marked with
 <code>matter_status=removed</code> rather than deleted. This status describes node
@@ -1339,6 +1412,11 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
       Aktivieren können fehlende Devices beim nächsten Abgleich oder Event
       angelegt werden.</li>
 </ul>
+<p><b>Hardware-Teststatus:</b> IP-/BLE-Commissioning und Zugangsdatenoperationen
+hängen vom externen Matter-Server und ggf. vom BLE-Proxy ab. Diese Varianten
+gelten ohne dokumentierten, gerätespezifischen Hardwaretest als
+<strong>ungetestet</strong>. Automatisierte WebSocket-Tests ersetzen
+keinen End-to-End-Test an echter Hardware.</p>
 <p>Neue logische Geräte erhalten standardmäßig den Raum <code>Matter</code>.
 Vorhandene Namen, Räume und Benutzerattribute bleiben unverändert. Entfernte
 Nodes werden mit <code>matter_status=removed</code> markiert und nicht automatisch

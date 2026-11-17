@@ -28,6 +28,8 @@ my %MATTER_DEVICE_TYPE_LABELS = (
     0x000F => "Generic switch",
     0x0013 => "Bridged node",
     0x0015 => "Contact sensor",
+    0x0043 => "Water leak detector",
+    0x0044 => "Rain sensor",
     0x0016 => "Root node",
     0x002B => "Fan",
     0x002C => "Air quality sensor",
@@ -56,8 +58,26 @@ my %MATTER_DEVICE_TYPE_LABELS = (
 # (0x0510) is a Matter utility type too, but does represent a useful measurement endpoint.
 my %MATTER_STRUCTURAL_DEVICE_TYPES = map { $_ => 1 } (0x000E, 0x0011, 0x0012, 0x0013, 0x0014, 0x0016);
 
+# Explicit Matter MeasurementUnitEnum values. Never assume that a
+# concentration reading represents ppm without an accompanying unit.
+sub MATTERDevice_ConcentrationUnit {
+    my ($value) = @_;
+    my %units = (0 => 'ppm', 1 => 'ppb', 2 => 'ppt', 3 => 'mg/m3',
+                 4 => 'ug/m3', 5 => 'ng/m3', 6 => 'particles/m3',
+                 7 => 'Bq/m3', 8 => 'dBpm', 9 => 'particles/ft3');
+    return undef if !defined($value) || ref($value) ||
+                    $value !~ /^\d+$/;
+    return $units{$value};
+}
+
 # Zentrale Definition der vom FHEM-Modul fachlich unterstützten Cluster, Attribute und Commands
 my %MATTER_CLUSTERS = (
+    0x0003 => {
+        name       => "Identify",
+        commands   => {
+            0x00 => { name => "Identify" },
+        },
+    },
     0x0006 => {
         name       => "OnOff",
         features   => {
@@ -113,7 +133,9 @@ my %MATTER_CLUSTERS = (
             0x0003 => { name => "model", is_reading => 1, is_attribute => 0 },
             0x0008 => { name => "hardware_version", is_reading => 1, is_attribute => 0 },
             0x000A => { name => "firmware_version", is_reading => 1, is_attribute => 0 },
+            0x0009 => { name => "software_version", is_reading => 1, is_attribute => 0 },
             0x000F => { name => "serial_number", is_reading => 1, is_attribute => 0 },
+            0x0015 => { name => "specification_version", is_reading => 1, is_attribute => 0 },
         },
     },
     0x002F => {
@@ -132,6 +154,84 @@ my %MATTER_CLUSTERS = (
             0x0014 => { name => "battery_common_designation", is_reading => 1, is_attribute => 0 },
             0x0018 => { name => "battery_capacity_mAh", is_reading => 1, is_attribute => 0 },
             0x0019 => { name => "battery_quantity", is_reading => 1, is_attribute => 0 },
+        },
+    },
+    0x002A => {
+        name       => "OtaSoftwareUpdateRequestor",
+        attributes => {
+            0x0002 => { name => "ota_update_state", is_reading => 0, is_attribute => 0 },
+            0x0003 => { name => "ota_update_progress", is_reading => 1, is_attribute => 0 },
+        },
+    },
+    0x0046 => {
+        name       => "IcdManagement",
+        attributes => {
+            0x0000 => { name => "icd_idle_mode_duration", is_reading => 1, is_attribute => 0 },
+            0x0008 => { name => "icd_operating_mode", is_reading => 0, is_attribute => 0 },
+        },
+    },
+    0x0045 => {
+        name       => "BooleanState",
+        attributes => {
+            0x0000 => { name => "boolean_state", is_reading => 1, is_attribute => 0 },
+        },
+    },
+    0x0400 => {
+        name       => "IlluminanceMeasurement",
+        attributes => {
+            0x0000 => { name => "illuminance", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my ($v) = @_;
+                            return undef if $v != int($v) || $v < 0 || $v >= 65535;
+                            return 0 if $v == 0;
+                            return int(10 ** (($v - 1) / 10000) * 10 + 0.5) / 10;
+                        } },
+        },
+    },
+    0x0402 => {
+        name       => "TemperatureMeasurement",
+        attributes => {
+            0x0000 => { name => "temperature", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my ($v) = @_;
+                            return undef if $v != int($v) || $v < -27315 || $v > 32767;
+                            return $v / 100;
+                        } },
+        },
+    },
+    0x0403 => {
+        name       => "PressureMeasurement",
+        attributes => {
+            # Matter MeasuredValue = 10 * pressure [kPa]; numeric value
+            # therefore equals pressure in hPa (see Matter spec, 0x0403).
+            0x0000 => { name => "pressure", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my ($v) = @_;
+                            return undef if $v != int($v) || $v < -32767 || $v > 32767;
+                            return $v;
+                        } },
+        },
+    },
+    0x0405 => {
+        name       => "RelativeHumidityMeasurement",
+        attributes => {
+            0x0000 => { name => "humidity", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my ($v) = @_;
+                            return undef if $v != int($v) || $v < 0 || $v > 10000;
+                            return $v / 100;
+                        } },
+        },
+    },
+    0x0406 => {
+        name       => "OccupancySensing",
+        attributes => {
+            0x0000 => { name => "motion", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my ($v) = @_;
+                            return undef if $v != int($v) || $v < 0 || $v > 255;
+                            return ($v & 1) ? "motion" : "nomotion";
+                        } },
         },
     },
     0x005B => {
@@ -209,6 +309,33 @@ my %MATTER_CLUSTERS = (
             0x0009 => { name => "co_medium", is_reading => 1, is_attribute => 0 },
         },
     },
+    0x040D => {
+        name       => "CarbonDioxideConcentrationMeasurement",
+        attributes => {
+            0x0000 => { name => "co2", is_reading => 1, is_attribute => 0,
+                        transform => sub { return $_[0] >= 0 ? $_[0] : undef; } },
+            0x0008 => { name => "co2_unit", is_reading => 1, is_attribute => 0,
+                        transform => \&MATTERDevice_ConcentrationUnit },
+        },
+    },
+    0x042A => {
+        name       => "Pm25ConcentrationMeasurement",
+        attributes => {
+            0x0000 => { name => "pm25", is_reading => 1, is_attribute => 0,
+                        transform => sub { return $_[0] >= 0 ? $_[0] : undef; } },
+            0x0008 => { name => "pm25_unit", is_reading => 1, is_attribute => 0,
+                        transform => \&MATTERDevice_ConcentrationUnit },
+        },
+    },
+    0x042E => {
+        name       => "TotalVolatileOrganicCompoundsConcentrationMeasurement",
+        attributes => {
+            0x0000 => { name => "tvoc", is_reading => 1, is_attribute => 0,
+                        transform => sub { return $_[0] >= 0 ? $_[0] : undef; } },
+            0x0008 => { name => "tvoc_unit", is_reading => 1, is_attribute => 0,
+                        transform => \&MATTERDevice_ConcentrationUnit },
+        },
+    },
     0x0101 => {
         name       => "Door Lock",
         attributes => {
@@ -280,6 +407,58 @@ my %MATTER_CLUSTERS = (
             0x08   => { name => "GoToTiltPercentage", required_features => ["tilt"] },
         },
     },
+    0x0201 => {
+        name       => "Thermostat",
+        attributes => {
+            0x0000 => { name => "measured-temp", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            return undef if $_[0] != int($_[0]) ||
+                                            $_[0] < -27315 || $_[0] > 32767;
+                            return $_[0] / 100;
+                        } },
+            0x0011 => { name => "desired-temp-cool", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            return undef if $_[0] != int($_[0]) ||
+                                            $_[0] < -27315 || $_[0] > 32767;
+                            return $_[0] / 100;
+                        } },
+            0x0012 => { name => "desired-temp", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            return undef if $_[0] != int($_[0]) ||
+                                            $_[0] < -27315 || $_[0] > 32767;
+                            return $_[0] / 100;
+                        } },
+            0x001C => { name => "mode", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my %modes = (0 => 'off', 1 => 'auto', 3 => 'cool',
+                                         4 => 'heat', 5 => 'emergency_heat');
+                            return $modes{$_[0]};
+                        } },
+        },
+    },
+    0x0202 => {
+        name       => "FanControl",
+        attributes => {
+            0x0000 => { name => "fan_mode", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my %modes = (0 => 'off', 1 => 'low', 2 => 'medium',
+                                         3 => 'high', 4 => 'on', 5 => 'auto');
+                            return $modes{$_[0]};
+                        } },
+            0x0002 => { name => "fan_pct_setting", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            return undef if $_[0] != int($_[0]) ||
+                                            $_[0] < 0 || $_[0] > 100;
+                            return $_[0];
+                        } },
+            0x0003 => { name => "fan_pct", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            return undef if $_[0] != int($_[0]) ||
+                                            $_[0] < 0 || $_[0] > 100;
+                            return $_[0];
+                        } },
+        },
+    },
     0x0300 => {
         name       => "ColorControl",
         features   => {
@@ -323,6 +502,9 @@ sub MATTERDevice_Initialize($) {
                         "has_color:0,1 " .
                         "has_onoff:0,1 " .
                         "has_level:0,1 " .
+                        "dimRate:slider,1,1,254 " .
+                        "diagnostics:0,1 " .
+                        "rawReadings:0,1 " .
                         "has_ct:0,1 " .
                         "has_hue:0,1 " .
                         "has_saturation:0,1 " .
@@ -363,6 +545,13 @@ sub MATTERDevice_UpdateAvailability($$) {
     return unless ($hash->{endpoint_id} // 0) == 0;
     my $boolean = MATTERDevice_NormalizeBoolean($reported);
     return unless defined $boolean;
+    my $previous = ReadingsVal($hash->{NAME}, 'available', '');
+    # Device attributes cached on the server must never overwrite local
+    # readings while unavailable. On recovery, server snapshots may still
+    # be stale: only subsequent individual live attribute reports are fresh
+    # enough for release until a proven fresh interview is available.
+    $hash->{helper}{quarantine_snapshots} = 1
+        if !$boolean || $previous eq 'false';
     my $available = $boolean ? 'true' : 'false';
     my $state = $boolean ? 'online' : 'offline';
     my $change_available = ReadingsVal($hash->{NAME}, 'available', '') ne $available;
@@ -694,6 +883,40 @@ sub MATTERDevice_Set($$@) {
         return "Invalid frequency" if $cmd eq 'frequency' && (!$args[0] || $args[0] > 65535);
     }
 
+    if ($cmd eq 'checkFirmwareUpdate' || $cmd eq 'updateFirmware') {
+        return 'Firmware operations are only available on Matter root nodes'
+            unless ($hash->{endpoint_id} // 0) == 0;
+        my $op = $cmd eq 'checkFirmwareUpdate' ?
+            'check_node_update' : 'update_node';
+        my %args;
+        if ($cmd eq 'updateFirmware') {
+            return 'Firmware update already in progress'
+                if $hash->{helper}{firmware_update_in_flight};
+            my $version = $hash->{helper}{firmware_available};
+            return 'Run checkFirmwareUpdate before installing'
+                unless defined($version) && !ref($version) &&
+                       $version =~ /^\d+$/;
+            $args{software_version} = 0 + $version;
+        }
+        my $error = MATTERDevice_SendNodeOperation(
+            $hash, $op, \%args, $cmd eq 'updateFirmware' ? 300 : 120);
+        return $error if defined($error);
+        return wantarray ? (undef, 1) : undef;
+    }
+    if ($cmd =~ /^(?:icdRegister|icdUnregister|icdResync)$/) {
+        return 'ICD administrative operation only allowed on an ICD root'
+            unless ($hash->{endpoint_id} // 0) == 0 &&
+                ReadingsVal($name, 'icd_supported', '') eq 'true';
+        my %operations = (
+            icdRegister => 'register_icd',
+            icdUnregister => 'unregister_icd',
+            icdResync => 'resync_icd',
+        );
+        my $error = MATTERDevice_SendNodeOperation(
+            $hash, $operations{$cmd}, {}, 120);
+        return $error if defined $error;
+        return wantarray ? (undef, 1) : undef;
+    }
     if ($cmd eq "on" || $cmd eq "off") {
         my $onoff_command_id = ($cmd eq "on") ? 0x01 : 0x00;
         my $wc_command_id    = ($cmd eq "on") ? 0x00 : 0x01;
@@ -1018,6 +1241,101 @@ sub MATTERDevice_Set($$@) {
             }
         };
     }
+    elsif ($cmd =~ /^(?:dim_up|dim_down|dim_stop|dim_step_up|dim_step_down)$/) {
+        # Use the device's native LevelControl transitions. Never simulate a
+        # continuous dim by issuing repeated pct commands from FHEM.
+        my ($regular, $with_onoff, $mode);
+        if ($cmd eq 'dim_up' || $cmd eq 'dim_down') {
+            ($regular, $with_onoff) = (0x01, 0x05);
+            $mode = $cmd eq 'dim_up' ? 0 : 1;
+        } elsif ($cmd eq 'dim_step_up' || $cmd eq 'dim_step_down') {
+            ($regular, $with_onoff) = (0x02, 0x06);
+            $mode = $cmd eq 'dim_step_up' ? 0 : 1;
+        } else {
+            ($regular, $with_onoff) = (0x03, 0x07);
+        }
+        my $accepted_regular = MATTERDevice_CommandSupported($hash, 0x0008, $regular);
+        my $accepted_onoff = MATTERDevice_CommandSupported($hash, 0x0008, $with_onoff);
+        return "Native dim command is not supported" unless $accepted_regular || $accepted_onoff;
+        my $using_onoff = !$accepted_regular && $accepted_onoff;
+        my $command_name =
+            $regular == 0x01 ? ($using_onoff ? 'MoveWithOnOff' : 'Move') :
+            $regular == 0x02 ? ($using_onoff ? 'StepWithOnOff' : 'Step') :
+                               ($using_onoff ? 'StopWithOnOff' : 'Stop');
+        my $arguments = { optionsMask => 0, optionsOverride => 0 };
+        if ($regular == 0x01) {
+            my $rate = AttrVal($name, 'dimRate', 30);
+            return "dimRate must be an integer between 1 and 254"
+                unless defined($rate) && $rate =~ /^\d+$/ && $rate >= 1 && $rate <= 254;
+            $arguments->{moveMode} = $mode;
+            $arguments->{rate} = int($rate);
+        } elsif ($regular == 0x02) {
+            $arguments->{stepMode} = $mode;
+            $arguments->{stepSize} = 20;
+            $arguments->{transitionTime} = 0;
+        }
+        $payload = {
+            message_id => MATTER_NextMessageId($io_hash),
+            command    => 'device_command',
+            args       => {
+                node_id => $node_id, endpoint_id => int($endpoint_id),
+                cluster_id => 0x0008, command_name => $command_name,
+                payload => $arguments,
+            },
+        };
+    }
+    elsif ($cmd eq 'identify') {
+        return 'Identify not accepted by this endpoint'
+            unless MATTERDevice_CommandSupported($hash, 0x0003, 0x00);
+        $payload = {
+            message_id => MATTER_NextMessageId($io_hash),
+            command => 'device_command',
+            args => {
+                node_id => $node_id, endpoint_id => int($endpoint_id),
+                cluster_id => 0x0003, command_name => 'Identify',
+                payload => { identifyTime => 15 },
+            }
+        };
+    }
+    elsif ($cmd =~ /^(?:desired-temp|mode|fan_mode|fan_pct)$/) {
+        my ($cluster_id, $attr_id, $write_value);
+        return "Usage: set $name $cmd <value>" if @args != 1 || !defined($args[0]);
+        my $value = $args[0];
+        if ($cmd eq 'desired-temp') {
+            return 'desired-temp must be a valid temperature in degrees Celsius'
+                unless $value =~ /^-?\d+(?:\.\d{1,2})?$/ &&
+                       $value >= -273.15 && $value <= 327.67;
+            ($cluster_id, $attr_id) = (0x0201, 0x0012);
+            $write_value = int($value * 100 + ($value >= 0 ? 0.5 : -0.5));
+        } elsif ($cmd eq 'mode') {
+            my %modes = (off => 0, auto => 1, cool => 3, heat => 4,
+                         emergency_heat => 5);
+            return 'mode must be off, auto, cool, heat or emergency_heat'
+                unless exists $modes{$value};
+            ($cluster_id, $attr_id, $write_value) = (0x0201, 0x001C, $modes{$value});
+        } elsif ($cmd eq 'fan_mode') {
+            my %modes = (off => 0, low => 1, medium => 2, high => 3,
+                         on => 4, auto => 5);
+            return 'fan_mode must be off, low, medium, high, on or auto'
+                unless exists $modes{$value};
+            ($cluster_id, $attr_id, $write_value) = (0x0202, 0x0000, $modes{$value});
+        } else {
+            return 'fan_pct must be between 0 and 100'
+                unless $value =~ /^\d+$/ && $value <= 100;
+            ($cluster_id, $attr_id, $write_value) = (0x0202, 0x0002, int($value));
+        }
+        return "Matter attribute for $cmd is not advertised"
+            unless MATTERDevice_AttributeSupported($hash, $cluster_id, $attr_id);
+        $payload = {
+            message_id => MATTER_NextMessageId($io_hash),
+            command => 'write_attribute',
+            args => {
+                node_id => $node_id,
+                attribute_path => "$endpoint_id/$cluster_id/$attr_id",
+                value => $write_value
+            }
+        };
+    }
     elsif ($cmd eq "getConfig") {
         my $ioHash = $io_hash; # Connection was already checked above.
 
@@ -1134,8 +1452,33 @@ sub MATTERDevice_Set($$@) {
         my $sendWS = $hash->{IODev}{fhem}{helper}{sendWS};
         return "MATTER: Unable to send brightness command on $name"
             if $level_payload && !$sendWS->(encode_json($level_payload));
-        return "MATTER: Unable to send device command on $name"
-            if $payload && !$sendWS->(encode_json($payload));
+        # FHEM attribute writes are asynchronous. Track the correlated
+        # server reply so a successful socket enqueue is never presented
+        # as a confirmed Matter write.
+        my $tracked_write = $payload && ($payload->{command} // '') eq 'write_attribute';
+        if ($tracked_write) {
+            for my $pending (values %{$hash->{IODev}{helper}{pending_command} // {}}) {
+                next unless ref($pending) eq 'HASH' &&
+                            ($pending->{type} // '') eq 'node_operation';
+                return 'Another Matter operation is already pending for this node'
+                    if ($pending->{node_id} // '') eq $node_id &&
+                       ($pending->{fuuid} // '') eq ($hash->{FUUID} // '');
+            }
+        }
+        my $id = $tracked_write ? $payload->{message_id} : undef;
+        if ($tracked_write) {
+            $hash->{IODev}{helper}{pending_command}{$id} = {
+                type => 'node_operation', operation => 'write_attribute',
+                name => $name, fuuid => $hash->{FUUID}, node_id => $node_id,
+                started_at => gettimeofday(), timeout => 120,
+            };
+        }
+        if ($payload && !$sendWS->(encode_json($payload))) {
+            delete $hash->{IODev}{helper}{pending_command}{$id}
+                if $tracked_write;
+            return "MATTER: Unable to send device command on $name";
+        }
+        return wantarray ? (undef, 1) : undef if $tracked_write;
     } else {
         return "No send function found in IODev for $name";
     }
@@ -1143,9 +1486,276 @@ sub MATTERDevice_Set($$@) {
     return undef;
 }
 
-sub MATTERDevice_Get($$@) { return undef; }
+sub MATTERDevice_Get($$@) {
+    my ($hash, $name, $cmd, @args) = @_;
+    my $root = ($hash->{endpoint_id} // 0) == 0;
+    my $icd = $root && ReadingsVal($name, 'icd_supported', '') eq 'true';
+    my $io = $hash->{IODev};
+    my $schema = $io ? ReadingsVal($io->{NAME}, 'schema_version', 0) : 0;
+    my $supported = $icd && $schema =~ /^\d+$/ && $schema >= 12;
+    return 'Unknown argument, choose one of ' .
+           ($supported ? 'icdState' : '') if !defined($cmd) || $cmd eq '?';
+    return 'Unknown argument, choose one of ' .
+           ($supported ? 'icdState' : '')
+        unless $cmd eq 'icdState' && $supported && !@args;
+    my $error = MATTERDevice_SendNodeOperation($hash, 'get_icd_state', {}, 120);
+    return $error if defined $error;
+    return 'ICD state requested; result will appear in icd_* readings';
+}
 
 # --- Zentraler Parser für alle Attribut-Updates ---
+
+# Opt-in passive diagnostics: no additional server reads or polling.
+sub MATTERDevice_UpdateNetworkDiagnostics {
+    my ($hash, $cluster, $attr, $value) = @_;
+    return unless ($hash->{endpoint_id} // 0) == 0 &&
+                  AttrVal($hash->{NAME}, 'diagnostics', 0);
+    my %readings;
+    if ($cluster == 53) {
+        if ($attr == 0 && defined($value) && !ref($value) &&
+            $value =~ /^\d+$/ && $value <= 255) {
+            $readings{thread_channel} = int($value);
+        } elsif ($attr == 1 && defined($value) && !ref($value) &&
+                 $value =~ /^\d+$/) {
+            my %roles = (0 => 'unspecified', 1 => 'unassigned',
+                         2 => 'sleepy_end_device', 3 => 'end_device',
+                         4 => 'reed', 5 => 'router', 6 => 'leader');
+            $readings{thread_role} = $roles{$value} if exists $roles{$value};
+            my %types = (2 => 'MTD', 3 => 'MTD or FTD',
+                         4 => 'FTD', 5 => 'FTD', 6 => 'FTD');
+            $readings{thread_device_type} = $types{$value}
+                if exists $types{$value};
+        } elsif ($attr == 2 && defined($value) && !ref($value) &&
+                 length($value) <= 128) {
+            $readings{thread_network} = $value;
+        } elsif ($attr == 7 && ref($value) eq 'ARRAY' && @$value <= 256) {
+            $readings{thread_neighbors} = scalar(@$value);
+            my @neighbors;
+            my ($best_rssi, $best_lqi);
+            foreach my $n (@$value) {
+                next unless ref($n) eq 'HASH';
+                my $child = $n->{isChild} // $n->{'13'} // 0;
+                my $rssi = $n->{averageRssi} // $n->{'6'} //
+                           $n->{lastRssi} // $n->{'7'};
+                next unless defined($rssi) && !ref($rssi) &&
+                            $rssi =~ /^-?\d+$/ && $rssi >= -128 && $rssi <= 0;
+                if (!$child && (!defined($best_rssi) || $rssi > $best_rssi)) {
+                    $best_rssi = $rssi;
+                    $best_lqi = $n->{lqi} // $n->{'5'};
+                }
+                my $id = $n->{extAddress} // $n->{'0'} // 'unknown';
+                $id = 'unknown' if ref($id) || length("$id") > 24;
+                push @neighbors, [$rssi,
+                    "$id (" . ($child ? 'child' : 'router') . ", $rssi dBm)"];
+            }
+            $readings{rssi} = $best_rssi if defined $best_rssi;
+            $readings{lqi} = $best_lqi if defined($best_lqi) &&
+                               !ref($best_lqi) && $best_lqi =~ /^[0-3]$/;
+            @neighbors = sort { $b->[0] <=> $a->[0] } @neighbors;
+            splice(@neighbors, 16) if @neighbors > 16;
+            $readings{thread_neighbor_list} = @neighbors ?
+                substr(join(', ', map { $_->[1] } @neighbors), 0, 600) : 'none';
+        }
+    } elsif ($cluster == 54 && $attr == 4 && defined($value) &&
+             !ref($value) && $value =~ /^-?\d+$/ &&
+             $value >= -128 && $value <= 0) {
+        $readings{wifi_rssi} = $value;
+    }
+    while (my ($reading, $val) = each %readings) {
+        readingsSingleUpdate($hash, $reading, $val, 1)
+            if ReadingsVal($hash->{NAME}, $reading, '') ne "$val";
+    }
+}
+sub MATTERDevice_RawDiagnostic {
+    my ($hash, $cluster, $attr, $value) = @_;
+    return unless AttrVal($hash->{NAME}, 'rawReadings', 0);
+    return unless defined($value) && $attr < 0xFFF0;
+    # Sensitive administration, fabric, key, and commissioning clusters.
+    return if $cluster =~ /^(?:31|48|49|60|62|63|64|65)$/;
+    my $str = ref($value) ? eval { encode_json($value) } : "$value";
+    return if !defined($str) || length($str) > 512;
+    my $reading = 'raw_' . ($hash->{endpoint_id} // 0) .
+                  '_' . $cluster . '_' . $attr;
+    readingsSingleUpdate($hash, $reading, $str, 1)
+        if ReadingsVal($hash->{NAME}, $reading, '') ne $str;
+}
+
+
+# Passive ICD support belongs to the root only. A saved capability reading
+# may survive a restart, while dynamic awake/registration must be refreshed
+# explicitly through matterjs-server.
+sub MATTERDevice_RefreshIcdCapability {
+    my ($hash) = @_;
+    return unless ($hash->{endpoint_id} // 0) == 0;
+    my $features = $hash->{helper}{capabilities}{70}{feature_map};
+    my $spec = ReadingsVal($hash->{NAME}, 'specification_version', undef);
+    return unless defined($features) && !ref($features) &&
+                  $features =~ /^\d+$/ &&
+                  defined($spec) && !ref($spec) && $spec =~ /^\d+$/;
+    my $supported = ($features & 0x04) && $spec >= 0x01040000 ?
+                    'true' : 'false';
+    readingsSingleUpdate($hash, 'icd_lit_supported', $supported, 1)
+        if ReadingsVal($hash->{NAME}, 'icd_lit_supported', '') ne $supported;
+}
+sub MATTERDevice_IcdCapabilityReport {
+    my ($hash, $cluster, $attr, $value) = @_;
+    return unless ($hash->{endpoint_id} // 0) == 0;
+    if ($cluster == 70 && defined($value) && !ref($value)) {
+        if ($attr == 65532 && $value =~ /^\d+$/) {
+            readingsSingleUpdate($hash, 'icd_supported', 'true', 1)
+                if ReadingsVal($hash->{NAME}, 'icd_supported', '') ne 'true';
+            MATTERDevice_RefreshIcdCapability($hash);
+        } elsif ($attr == 8 && $value =~ /^(?:0|1)$/) {
+            my $mode = $value == 1 ? 'LIT' : 'SIT';
+            readingsSingleUpdate($hash, 'icd_operating_mode', $mode, 1)
+                if ReadingsVal($hash->{NAME}, 'icd_operating_mode', '') ne $mode;
+            readingsSingleUpdate($hash, 'icd_supported', 'true', 1)
+                if ReadingsVal($hash->{NAME}, 'icd_supported', '') ne 'true';
+        } elsif ($attr == 0 && $value =~ /^\d+$/ && $value <= 4294967295) {
+            readingsSingleUpdate($hash, 'icd_idle_mode_duration', $value, 1)
+                if ReadingsVal($hash->{NAME}, 'icd_idle_mode_duration', '') ne "$value";
+        }
+    } elsif ($cluster == 40 && $attr == 21 &&
+             defined($value) && !ref($value) && $value =~ /^\d+$/) {
+        readingsSingleUpdate($hash, 'specification_version', $value, 1)
+            if ReadingsVal($hash->{NAME}, 'specification_version', '') ne "$value";
+        MATTERDevice_RefreshIcdCapability($hash);
+    }
+}
+sub MATTERDevice_SendNodeOperation {
+    my ($hash, $command, $args, $timeout) = @_;
+    my $name = $hash->{NAME};
+    my $io = $hash->{IODev};
+    return 'No active Matter server connection'
+        unless $io && $io->{CD} && $io->{websocket} &&
+               ($io->{ws_status} // '') eq 'connected' &&
+               $io->{fhem}{helper}{sendWS};
+    # Per-node serialization: a late response from an older operation must
+    # never be mistaken for the result of a newer ICD/OTA operation.
+    for my $pending (values %{$io->{helper}{pending_command} // {}}) {
+        next unless ref($pending) eq 'HASH' &&
+                    ($pending->{type} // '') eq 'node_operation';
+        return 'Another Matter operation is already pending for this node'
+            if ($pending->{node_id} // '') eq $hash->{node_id} &&
+               ($pending->{fuuid} // '') eq ($hash->{FUUID} // '');
+    }
+    my $id = MATTER_NextMessageId($io);
+    return 'No available Matter request ID' unless defined $id;
+    my $pending = {
+        type => 'node_operation', operation => $command,
+        name => $name, fuuid => $hash->{FUUID}, node_id => $hash->{node_id},
+        started_at => gettimeofday(), timeout => ($timeout // 120),
+    };
+    $io->{helper}{pending_command}{$id} = $pending;
+    my $payload = {
+        message_id => $id, command => $command,
+        args => { node_id => 0 + $hash->{node_id}, %{$args // {}} }
+    };
+    unless ($io->{fhem}{helper}{sendWS}->(encode_json($payload))) {
+        delete $io->{helper}{pending_command}{$id};
+        return "Could not send $command";
+    }
+    my $reading = $command =~ /icd/ ? 'icd_request' : 'firmware_update';
+    readingsSingleUpdate($hash, $reading, 'requested', 1);
+    return undef;
+}
+sub MATTERDevice_HandleNodeOperation {
+    my ($hash, $request, $reply) = @_;
+    my $cmd = $request->{operation};
+    my $reading = $cmd =~ /icd/ ? 'icd_request' :
+                  $cmd eq 'write_attribute' ? 'lastError' : 'firmware_update';
+    if (exists($reply->{error_code}) || exists($reply->{error})) {
+        if ($cmd eq 'check_node_update') {
+            delete $hash->{helper}{firmware_available};
+            readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
+        }
+        my $error = ref($reply->{error}) eq 'HASH'
+            ? $reply->{error}{message} : $reply->{details};
+        $error = 'Matter server rejected the request'
+            unless defined($error) && !ref($error);
+        $error =~ s/[\x00-\x1f\x7f]/ /g;
+        readingsSingleUpdate($hash, $reading,
+                             'failed: ' . substr($error, 0, 200), 1);
+        return;
+    }
+    if ($cmd =~ /icd/) {
+        if ($cmd eq 'resync_icd' && exists($reply->{result}) &&
+            !defined($reply->{result})) {
+            readingsSingleUpdate($hash, 'icd_request', 'resync accepted', 1);
+            return;
+        }
+        my $value = $reply->{result};
+        unless (ref($value) eq 'HASH' && exists($value->{supported})) {
+            readingsSingleUpdate($hash, 'icd_request', 'invalid response', 1);
+            return;
+        }
+        my %fields = (
+            supported => 'icd_controller_supported',
+            lit_supported => 'icd_controller_lit_supported',
+            registered => 'icd_registered',
+            awake => 'icd_awake',
+            available => 'icd_controller_available',
+        );
+        for my $key (keys %fields) {
+            next unless exists($value->{$key});
+            my $b = MATTERDevice_NormalizeBoolean($value->{$key});
+            next unless defined $b;
+            readingsSingleUpdate($hash, $fields{$key},
+                                 $b ? 'true' : 'false', 1);
+        }
+        if (defined($value->{operating_mode}) && !ref($value->{operating_mode}) &&
+            $value->{operating_mode} =~ /^(?:SIT|LIT)$/) {
+            readingsSingleUpdate($hash, 'icd_controller_mode',
+                                 $value->{operating_mode}, 1);
+        }
+        if (defined($value->{next_expected_checkin}) &&
+            !ref($value->{next_expected_checkin}) &&
+            $value->{next_expected_checkin} =~ /^\d+$/) {
+            readingsSingleUpdate($hash, 'icd_next_expected_checkin_ms',
+                                 $value->{next_expected_checkin}, 1);
+        }
+        readingsSingleUpdate($hash, 'icd_request', 'completed', 1);
+    } elsif ($cmd eq 'check_node_update') {
+        my $update = $reply->{result};
+        if (!defined($update) && exists($reply->{result})) {
+            delete $hash->{helper}{firmware_available};
+            readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
+            readingsSingleUpdate($hash, 'firmware_update', 'none reported', 1);
+        } elsif (ref($update) eq 'HASH' &&
+                 defined($update->{software_version}) &&
+                 !ref($update->{software_version}) &&
+                 $update->{software_version} =~ /^\d+$/) {
+            my $current = ReadingsVal($hash->{NAME}, 'software_version', undef);
+            if (defined($current) && $current =~ /^\d+$/ &&
+                $update->{software_version} <= $current) {
+                delete $hash->{helper}{firmware_available};
+                readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
+                readingsSingleUpdate($hash, 'firmware_update', 'up to date', 1);
+                return;
+            }
+            $hash->{helper}{firmware_available} = $update->{software_version};
+            my $label = $update->{software_version_string};
+            $label = $update->{software_version}
+                unless defined($label) && !ref($label) && length($label) <= 80;
+            readingsSingleUpdate($hash, 'firmware_update_version', $label, 1);
+            readingsSingleUpdate($hash, 'firmware_update', 'available', 1);
+        } else {
+            delete $hash->{helper}{firmware_available};
+            readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
+            readingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
+        }
+    } elsif ($cmd eq 'write_attribute') {
+        readingsSingleUpdate($hash, 'lastError', 'none', 1)
+            if exists($reply->{result});
+    } elsif ($cmd eq 'update_node') {
+        if (exists($reply->{result}) && !defined($reply->{result})) {
+            $hash->{helper}{firmware_update_in_flight} = 1;
+            readingsSingleUpdate($hash, 'firmware_update', 'update requested', 1);
+        } else {
+            readingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
+        }
+    }
+}
 sub MATTERDevice_ProcessAttributeValue($$$$) {
     my ($hash, $cluster_id, $attr_id, $value) = @_; # quick unpack
     my $name = $hash->{NAME};
@@ -1160,9 +1770,53 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     # including measurement clusters this module does not yet expose as readings.
     $hash->{helper}{seen_clusters}{$cluster_id} = 1 if defined($value);
 
-    # Globale Matter-Attribute gelten fuer jeden Cluster, auch wenn dessen
-    # Nutzdaten im FHEM-Modul noch nicht abgebildet sind.
-    return if (MATTERDevice_ProcessGlobalAttribute($hash, $cluster_id, $attr_id, $value));
+    # OTA Requestor status comes from the physical device, not from the
+    # WebSocket command acknowledgement.
+    if (($hash->{endpoint_id} // 0) == 0 &&
+        $cluster_id == 42 && $attr_id == 2 &&
+        defined($value) && !ref($value) && $value =~ /^\d+$/) {
+        my %state = (0 => 'unknown', 1 => 'idle',
+                     2 => 'checking', 3 => 'waiting for update',
+                     4 => 'downloading', 5 => 'installing',
+                     6 => 'waiting to install', 7 => 'rolling back',
+                     8 => 'waiting for confirmation');
+        if (exists($state{$value})) {
+            readingsSingleUpdate($hash, 'ota_update_state', $state{$value}, 1)
+                if ReadingsVal($name, 'ota_update_state', '') ne $state{$value};
+            readingsSingleUpdate($hash, 'firmware_update', $state{$value}, 1)
+                if $hash->{helper}{firmware_update_in_flight} && $value >= 2;
+        }
+    }
+    if (($hash->{endpoint_id} // 0) == 0 && $cluster_id == 40 &&
+        $attr_id == 9 && defined($value) && !ref($value) &&
+        $value =~ /^\d+$/ && $hash->{helper}{firmware_update_in_flight}) {
+        my $expected = $hash->{helper}{firmware_available};
+        if (defined($expected) && $expected eq $value) {
+            readingsSingleUpdate($hash, 'firmware_update', 'installed', 1);
+            delete $hash->{helper}{firmware_update_in_flight};
+            delete $hash->{helper}{firmware_available};
+        }
+    }
+
+    if (($hash->{endpoint_id} // 0) == 0 &&
+        $cluster_id == 42 && $attr_id == 3 &&
+        defined($value) && !ref($value) &&
+        $value =~ /^\d+$/ && $value <= 100 &&
+        $hash->{helper}{firmware_update_in_flight}) {
+        my $state = ReadingsVal($name, 'ota_update_state', '');
+        readingsSingleUpdate($hash, 'firmware_update',
+                             "$state $value%", 1)
+            if $state eq 'downloading' || $state eq 'installing';
+    }
+
+    # ICD capability comes from endpoint-zero metadata, not a get_icd_state
+    # probe during discovery. Do not conflate a sleeping ICD with offline.
+    # Process shared global attributes once, then derive ICD properties from
+    # the same authoritative feature-map cache rather than maintaining two.
+    my $global = MATTERDevice_ProcessGlobalAttribute($hash, $cluster_id, $attr_id, $value);
+    MATTERDevice_IcdCapabilityReport($hash, $cluster_id, $attr_id, $value)
+        if ($cluster_id == 70 || $cluster_id == 40);
+    return if $global;
 
     # Descriptor cluster (0x001D), DeviceTypeList (0x0000).
     # Matter.js supplies an array of DeviceTypeStruct objects (deviceType, revision).
@@ -1187,10 +1841,15 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         }
         return;
     }
-    return if !$cluster;
-
-    my $attr_info = $cluster->{attributes}{$attr_id};
-    return if !$attr_info;
+    if ($cluster_id == 0x0035 || $cluster_id == 0x0036) {
+        MATTERDevice_UpdateNetworkDiagnostics($hash, $cluster_id, $attr_id, $value);
+        return;
+    }
+    my $attr_info = $cluster ? $cluster->{attributes}{$attr_id} : undef;
+    unless ($attr_info) {
+        MATTERDevice_RawDiagnostic($hash, $cluster_id, $attr_id, $value);
+        return;
+    }
 
     my $attr_name = $attr_info->{name};
     my $is_reading = $attr_info->{is_reading} // 0;
@@ -1203,12 +1862,27 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     if ($transform && ref($transform) eq 'CODE') {
         # Numeric transformations must not turn malformed values into zero.
         if ($cluster_id != 0x0091) {
-            return if ref($value) || $value !~ /^-?(?:\d+(?:\.\d+)?|\.\d+)$/;
+            return if ref($value) || $value !~ /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/;
         }
         $value = $transform->($value);
         return if !defined($value);
     }
     return if ref($value);
+    if ($cluster_id == 0x0045 && $attr_id == 0) {
+        my $active = MATTERDevice_NormalizeBoolean($value);
+        return unless defined $active;
+        my %types = map { $_ => 1 } MATTERDevice_DeviceTypeIds($hash);
+        if ($types{0x0015}) {
+            ($attr_name, $value) = ('contact', $active ? 'closed' : 'open');
+        } elsif ($types{0x0043}) {
+            ($attr_name, $value) = ('water_leak', $active ? 'leak' : 'dry');
+        } elsif ($types{0x0044}) {
+            ($attr_name, $value) = ('rain', $active ? 'rain' : 'dry');
+        } else {
+            ($attr_name, $value) = ('boolean_state', $active);
+        }
+        $is_reading = 1;
+    }
     return if $cluster_id == 0x0006 && $attr_id == 0 &&
               !defined(MATTERDevice_NormalizeBoolean($value));
     return if $cluster_id == 0x0008 && $attr_id == 0 &&
@@ -1236,6 +1910,12 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     elsif (defined($attr_name)) {
         if ($is_reading) {
             readingsBulkUpdate($hash, $attr_name, $value);
+            # FHEM's native state also represents standard binary sensor
+            # endpoints. This is device telemetry, never a command echo.
+            if (($hash->{endpoint_id} // 0) > 0 &&
+                $attr_name =~ /^(?:contact|water_leak|rain|motion)$/) {
+                readingsBulkUpdate($hash, 'state', $value);
+            }
         }
         if ($is_attribute) {
             MATTERDevice_SetAttributeIfNotExists($name, $attr_name, $value);
@@ -1268,13 +1948,39 @@ sub MATTERDevice_Parse($ $) {
     }
 
     my $my_endpoint = $hash->{endpoint_id} // 0;
+    my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} :
+                  AttrVal($name, 'IODev', '');
+    my $root = $my_endpoint == 0 ? $hash :
+        $modules{MATTERDevice}{defptr}{"$io_name:$hash->{node_id}"};
+    # The root owns availability for every child; an endpoint's local state
+    # or old available reading is not a separate reachability report.
+    my $allow_device_attr = sub {
+        my ($live) = @_;
+        return 1 unless $root;
+        return 0 if ReadingsVal($root->{NAME}, 'available', '') eq 'false';
+        return 0 if !$live && $root->{helper}{quarantine_snapshots};
+        return 1;
+    };
 
     # Availability is node-wide; missing/invalid values are not state reports.
     my $update_available = sub { MATTERDevice_UpdateAvailability($hash, $_[0]) };
     
     # Hilfs-Subroutine zur internen Weiterleitung an Root oder Child
     my $route_attribute = sub {
-        my ($ep, $cluster, $attr, $val) = @_;
+        my ($ep, $cluster, $attr, $val, $live) = @_;
+        # Offline snapshots can still tell us which endpoint IDs exist.
+        # Preserve FHEM identity/association without importing device data.
+        if (!$allow_device_attr->($live)) {
+            if ($my_endpoint == 0 && $ep > 0) {
+                MATTERDevice_GetOrCreateChild($hash, $ep);
+            } elsif ($my_endpoint == 0 && $ep == 0 &&
+                     $cluster == 0x001D && $attr == 3 &&
+                     ref($val) eq 'ARRAY') {
+                MATTERDevice_GetOrCreateChild($hash, $_)
+                    for grep { defined($_) && !ref($_) && /^\d+$/ && $_ > 0 } @$val;
+            }
+            return;
+        }
         if ($ep == $my_endpoint) {
             # Spezialbehandlung für PartsList (Cluster 0x001D / 29, Attribut 0x0003 / 3)
             if ($cluster == 0x001D && $attr == 0x0003 && ref($val) eq 'ARRAY') {
@@ -1299,6 +2005,17 @@ sub MATTERDevice_Parse($ $) {
 
     # 1. ANTWORT AUF GETCONFIG (enthält "result")
     if (exists $decoded->{result} && ref($decoded->{result}) eq 'HASH') {
+        # Never reset current capability metadata from a cached response
+        # while the root is offline or still awaiting fresh live data.
+        if (!$allow_device_attr->(0)) {
+            if ($my_endpoint == 0) {
+                for my $path (keys %{$decoded->{result}}) {
+                    MATTERDevice_GetOrCreateChild($hash, $1)
+                        if $path =~ m{^([1-9]\d*)/\d+/\d+$};
+                }
+            }
+            return;
+        }
         # getConfig synchronisiert die Capability-Metadaten der in der Antwort
         # enthaltenen Endpoints vollständig. Alte Cluster-/Command-Daten dürfen
         # nicht erhalten bleiben, wenn sie im aktuellen Datenmodell verschwunden sind.
@@ -1311,7 +2028,10 @@ sub MATTERDevice_Parse($ $) {
             delete $target_hash->{helper}{capabilities} if ($target_hash);
         }
 
-        while (my ($path, $value) = each %{$decoded->{result}}) {
+        for my $path (sort {
+            ($a =~ m{/29/0$} ? 0 : 1) <=> ($b =~ m{/29/0$} ? 0 : 1)
+        } keys %{$decoded->{result}}) {
+            my $value = $decoded->{result}->{$path};
             if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
                 $route_attribute->($1, $2, $3, $value);
             }
@@ -1330,6 +2050,43 @@ sub MATTERDevice_Parse($ $) {
         return;
     }
 
+    # Switch events are not device state: one explicit event per occurrence,
+    # including repeated values with event-on-change-reading.
+    if (($decoded->{event} // '') eq 'node_event' &&
+        ref($decoded->{data}) eq 'HASH') {
+        return unless $my_endpoint == 0;
+        my $event = $decoded->{data};
+        return unless defined($event->{node_id}) && !ref($event->{node_id}) &&
+                      "$event->{node_id}" eq "$hash->{node_id}";
+        my ($ep, $cluster, $id) = @{$event}{qw(endpoint_id cluster_id event_id)};
+        return unless defined($ep) && !ref($ep) && $ep =~ /^\d+$/ && $ep > 0 &&
+                      defined($cluster) && !ref($cluster) && $cluster =~ /^\d+$/ &&
+                      $cluster == 0x003B &&
+                      defined($id) && !ref($id) && $id =~ /^\d+$/;
+        my %events = (1 => 'pressed', 2 => 'long',
+                      3 => 'short', 4 => 'long_release');
+        my $value = $events{$id};
+        if ($id == 6) {
+            my $count = ref($event->{data}) eq 'HASH'
+                ? $event->{data}{totalNumberOfPressesCounted} : undef;
+            return unless defined($count) && !ref($count) &&
+                          $count =~ /^\d+$/ && $count >= 1 && $count <= 255;
+            $value = $count == 1 ? 'short' :
+                     $count == 2 ? 'double' :
+                     $count == 3 ? 'triple' : $count . 'x';
+        }
+        return unless defined $value;
+        # Unknown event endpoints cannot create devices. Discovery and the
+        # Descriptor PartsList own endpoint identity, not transient events.
+        my ($child) = grep {
+            ($_->{endpoint_id} // 0) == $ep
+        } MATTERDevice_NodeChildren($hash);
+        return unless $child;
+        readingsSingleUpdate($child, 'button', $value, 0);
+        DoTrigger($child->{NAME}, "button: $value");
+        return;
+    }
+
     # 3. LIVE UPDATES (event == 'attribute_updated')
     if (exists $decoded->{event} && $decoded->{event} eq 'attribute_updated' && ref($decoded->{data}) eq 'ARRAY') {
         my ($node_id, $attribute_path, $value) = @{$decoded->{data}};
@@ -1337,7 +2094,7 @@ sub MATTERDevice_Parse($ $) {
             $hash->{node_id} eq $node_id;
         if (defined($attribute_path) && !ref($attribute_path) &&
             $attribute_path =~ m{^(\d+)/(\d+)/(\d+)$}) {
-            $route_attribute->($1, $2, $3, $value);
+            $route_attribute->($1, $2, $3, $value, 1);
             Log3 $name, 4, "MATTERDevice: Live attribute update ($attribute_path)";
         }
         return;
@@ -1351,7 +2108,10 @@ sub MATTERDevice_Parse($ $) {
         $update_available->($decoded->{available}) if exists($decoded->{available});
 
         if ($attributes && ref($attributes) eq 'HASH') {
-            while (my ($path, $value) = each %{$attributes}) {
+            for my $path (sort {
+                ($a =~ m{/29/0$} ? 0 : 1) <=> ($b =~ m{/29/0$} ? 0 : 1)
+            } keys %{$attributes}) {
+                my $value = $attributes->{$path};
                 if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
                     $route_attribute->($1, $2, $3, $value);
                 }
@@ -1375,6 +2135,37 @@ sub MATTERDevice_GetSetList($) {
         push @list, $entry;
     };
 
+    if (($hash->{endpoint_id} // 0) == 0 &&
+        (ReadingsVal($name, 'ota_update_state', '') ne '' ||
+         $hash->{helper}{seen_clusters}{42})) {
+        $add->("checkFirmwareUpdate:noArg");
+        $add->("updateFirmware:noArg")
+            if defined($hash->{helper}{firmware_available});
+    }
+    if (($hash->{endpoint_id} // 0) == 0 &&
+        ReadingsVal($name, 'icd_supported', '') eq 'true') {
+        my $schema = $hash->{IODev} ?
+            ReadingsVal($hash->{IODev}{NAME}, 'schema_version', 0) : 0;
+        my $features = $hash->{helper}{capabilities}{70}{feature_map};
+        if (defined($schema) && $schema =~ /^\d+$/ && $schema >= 12 &&
+            defined($features) && !ref($features) && $features =~ /^\d+$/ &&
+            ($features & 1)) {
+            $add->("icdRegister:noArg");
+            $add->("icdUnregister:noArg");
+            $add->("icdResync:noArg");
+        }
+    }
+    $add->("identify:noArg")
+        if MATTERDevice_CommandSupported($hash, 0x0003, 0x00);
+    $add->("desired-temp:slider,5,0.5,30,1")
+        if MATTERDevice_AttributeSupported($hash, 0x0201, 0x0012);
+    $add->("mode:off,heat,cool,auto,emergency_heat")
+        if MATTERDevice_AttributeSupported($hash, 0x0201, 0x001C);
+    $add->("fan_mode:off,low,medium,high,on,auto")
+        if MATTERDevice_AttributeSupported($hash, 0x0202, 0x0000);
+    $add->("fan_pct:slider,0,1,100")
+        if MATTERDevice_AttributeSupported($hash, 0x0202, 0x0002);
+
     $add->("on:noArg") if (
         MATTERDevice_CommandSupported($hash, 0x0006, 0x01) ||
         MATTERDevice_CommandSupported($hash, 0x0102, 0x00)
@@ -1393,6 +2184,22 @@ sub MATTERDevice_GetSetList($) {
         $add->("brightness:slider,0,1,$max_level");
         $add->("pct:slider,0,1,100");
     }
+
+    $add->("dim_up:noArg") if (
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x01) ||
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x05));
+    $add->("dim_down:noArg") if (
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x01) ||
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x05));
+    $add->("dim_stop:noArg") if (
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x03) ||
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x07));
+    $add->("dim_step_up:noArg") if (
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x02) ||
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x06));
+    $add->("dim_step_down:noArg") if (
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x02) ||
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x06));
 
     if (MATTERDevice_CommandSupported($hash, 0x0300, 0x0A)) {
         my $min_mired = MATTERDevice_AttributeUsable($hash, 0x0300, 0x400B)
@@ -1527,6 +2334,9 @@ sub MATTERDevice_SyncNodeReadings($;$) {
     foreach my $child (@children) {
         my @changes;
         foreach my $reading (qw(model available)) {
+            next if $reading eq 'model' &&
+                (ReadingsVal($root->{NAME}, 'available', '') eq 'false' ||
+                 $root->{helper}{quarantine_snapshots});
             my $source = $root->{READINGS}{$reading};
             next unless ref($source) eq 'HASH';
             my $value = $source->{VAL};
@@ -1725,6 +2535,11 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
   <li><b>Attributes:</b> <code>has_onoff</code>, <code>has_level</code>,
       <code>has_ct</code>, <code>has_xy</code> and other capability flags;
       existing user overrides are respected.</li>
+  <li><b>Offline attribute protection:</b> No cached device attributes or capability
+metadata are imported when the root reports <code>available=false</code>.
+After recovery, only new live attribute events are accepted while stale
+snapshot freshness cannot be proven. Local manual reading changes remain
+untouched. The Matter server cache is not modified.</li>
   <li><b>Root state:</b> Without a <code>stateFormat</code> attribute, the root's
       <code>state</code> reading shows <code>online</code> or <code>offline</code>
       only after valid <code>available=true/false</code> from the server,
@@ -1765,6 +2580,66 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
       power and cumulative energy clusters, where the server supplies the
       corresponding attributes.</li>
 </ul>
+<h4>Hardware validation status</h4>
+<p>The following classes are implemented but have no class-wide hardware validation
+recorded in this repository. <strong>untested</strong> refers to missing documented
+physical-device verification, not missing source or automated tests. Even testing
+one model cannot establish support for all models sharing the cluster.</p>
+<table><tr><th>Device class</th><th>Matter cluster</th><th>Hardware status</th></tr>
+<tr><td>OnOff lights / on-off plugs</td><td>OnOff, LevelControl</td><td><strong>untested</strong></td></tr>
+<tr><td>Color / color-temperature lights</td><td>ColorControl</td><td><strong>untested</strong></td></tr>
+<tr><td>Window coverings / blinds</td><td>WindowCovering</td><td><strong>untested</strong></td></tr>
+<tr><td>Thermostats / fans / Identify</td><td>Thermostat, FanControl, Identify</td><td><strong>untested</strong></td></tr>
+<tr><td>Contact / water leak / rain sensors</td><td>BooleanState</td><td><strong>untested</strong></td></tr>
+<tr><td>Temperature / humidity / pressure / illumination</td><td>TemperatureMeasurement, RelativeHumidityMeasurement, PressureMeasurement, IlluminanceMeasurement</td><td><strong>untested</strong></td></tr>
+<tr><td>Occupancy and Matter buttons</td><td>OccupancySensing, Switch</td><td><strong>untested</strong></td></tr>
+<tr><td>CO2 / PM2.5 / TVOC concentration</td><td>ConcentrationMeasurement family</td><td><strong>untested</strong></td></tr>
+<tr><td>Thread / Wi-Fi diagnostics, ICD and OTA</td><td>ThreadNetworkDiagnostics, WiFiNetworkDiagnostics, IcdManagement, OTA Requestor</td><td><strong>untested</strong></td></tr>
+<tr><td>Door locks</td><td>DoorLock</td><td><strong>untested</strong></td></tr>
+<tr><td>Battery / power sources</td><td>PowerSource</td><td><strong>untested</strong></td></tr>
+<tr><td>Smoke / carbon-monoxide alarms</td><td>SmokeCoAlarm</td><td><strong>untested</strong></td></tr>
+<tr><td>Electrical metering</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>untested</strong></td></tr>
+<tr><td>Air quality / CO concentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>untested</strong></td></tr>
+</table>
+<p>Thermostat (measured/desired temperature and system mode), FanControl
+(mode and percent speed) and Identify (15 seconds) are supported when the
+required Matter attributes/commands are advertised. Thermostat, fan and
+Identify device combinations are <strong>untested</strong> in this repository.
+Command acceptance does not assert that the physical state has changed.</p>
+<p>Server-backed Matter OTA: root nodes with OTA Requestor support can
+<code>checkFirmwareUpdate</code> and, after an update version is confirmed,
+<code>updateFirmware</code>. Image download, hosting and installation remain
+with matterjs-server; no firmware upload and no automatic update.
+Server acknowledgement is not proof of installation. Hardware
+<strong>untested</strong>.</p>
+<p>ICD Management: passive <code>icd_supported</code>,
+<code>icd_lit_supported</code>, <code>icd_operating_mode</code> and
+<code>icd_idle_mode_duration</code> readings. Positively recognized ICD
+roots on compatible servers offer asynchronous <code>get icdState</code>,
+plus conservative <code>icdRegister</code>, <code>icdUnregister</code> and
+<code>icdResync</code> where Check-In support is advertised. The server
+owns registration and availability; <code>awake=false</code> is not offline.
+Hardware validation: <strong>untested</strong>.</p>
+<p>Root <code>diagnostics=1</code> enables passive Thread/Wi-Fi diagnostics.
+Device <code>rawReadings=1</code> exposes limited non-sensitive unmatched
+attributes. Both default to off, add no polling, retain existing readings
+on disable, and are <strong>untested</strong> on hardware.</p>
+<p>Native LevelControl dimming: <code>dim_up</code>, <code>dim_down</code>,
+<code>dim_step_up</code>, <code>dim_step_down</code> and <code>dim_stop</code>
+only when the corresponding commands are advertised. Optional per-device
+<code>dimRate</code> (1–254, default 30) sets the speed for continuous dimming.
+No FHEM dimming loop. Physical device variants <strong>untested</strong>.</p>
+<p>Additional environmental measurements: pressure (hPa), CO2, PM2.5 and TVOC
+with separately reported measurement units. These classes are
+<strong>untested</strong> on real devices.</p>
+<p>Switch cluster (0x003B) emits button press/release events on the respective
+endpoint; every press is a separate event. Hardware status:
+<strong>untested</strong>.</p>
+<p>Core sensor classes (contact, water leak, rain, temperature, humidity,
+illuminance, occupancy) are implemented but <strong>untested</strong> on physical
+hardware in this repository.</p>
+<p>Actual hardware evidence must identify the model, firmware, endpoint, validated
+readings and commands before a row can be narrowed or upgraded to tested.</p>
 <p>Root nodes use the administrative FHEMWEB group <code>Matter Nodes</code>.
 Functional endpoints are grouped by their single non-structural Matter
 <code>Descriptor.DeviceTypeList</code> type (for example
@@ -1806,6 +2681,11 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
   <li><b>Attribute:</b> <code>has_onoff</code>, <code>has_level</code>,
       <code>has_ct</code>, <code>has_xy</code> und weitere Fähigkeitsattribute;
       vorhandene Benutzervorgaben werden nicht überschrieben.</li>
+  <li><b>Offline-Attributsperre:</b> Bei <code>available=false</code> werden
+keine zwischengespeicherten Geräteattribute oder Capability-Metadaten aus
+Matter übernommen. Nach Wiederherstellung werden neue Live-Attribute
+akzeptiert, solange die Frische eines Snapshots nicht nachweisbar ist.
+Manuelle lokale Reading-Änderungen bleiben erhalten.</li>
   <li><b>Root-Status:</b> Ohne <code>stateFormat</code>-Attribut zeigt das
       <code>state</code>-Reading am Root <code>online</code> oder
       <code>offline</code> nur nach einer gültigen <code>available=true/false</code>-
@@ -1848,6 +2728,69 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
       Kohlenmonoxidkonzentration, elektrische Leistung und kumulierte Energie,
       soweit die Geräte die jeweiligen Attribute liefern.</li>
 </ul>
+<h4>Hardware-Teststatus</h4>
+<p>Die folgenden Geräteklassen sind implementiert, aber es liegt im Repository
+kein klassenweiter Hardware-Nachweis vor. <strong>ungetestet</strong> bedeutet:
+keine dokumentierte Prüfung am realen Gerät; es bedeutet nicht, dass Code oder
+automatisierte Tests fehlen. Ein getestetes Modell belegt nicht alle Modelle
+mit demselben Matter-Cluster.</p>
+<table><tr><th>Geräteklasse</th><th>Matter-Cluster</th><th>Hardwarestatus</th></tr>
+<tr><td>Schaltbare Leuchten / Steckdosen</td><td>OnOff, LevelControl</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Farb-/Farbtemperaturleuchten</td><td>ColorControl</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Rollläden / Jalousien</td><td>WindowCovering</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Thermostate / Lüfter / Identify</td><td>Thermostat, FanControl, Identify</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Kontakt-/Wasserleck-/Regensensoren</td><td>BooleanState</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Temperatur / Feuchte / Druck / Beleuchtungsstärke</td><td>TemperatureMeasurement, RelativeHumidityMeasurement, PressureMeasurement, IlluminanceMeasurement</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Bewegungs-/Präsenzsensoren und Matter-Taster</td><td>OccupancySensing, Switch</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>CO2 / PM2.5 / TVOC-Konzentration</td><td>ConcentrationMeasurement-Cluster</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Thread-/WLAN-Diagnose, ICD und OTA</td><td>ThreadNetworkDiagnostics, WiFiNetworkDiagnostics, IcdManagement, OTA Requestor</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Türschlösser</td><td>DoorLock</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Batterien / Stromversorgung</td><td>PowerSource</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Rauch-/CO-Warnmelder</td><td>SmokeCoAlarm</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Elektrische Messwerte</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Luftqualität / CO-Konzentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>ungetestet</strong></td></tr>
+</table>
+<p>Thermostat (Ist-/Solltemperatur und Betriebsmodus), FanControl
+(Modus und Prozentgeschwindigkeit) und Identify (15 Sekunden) sind nur bei
+vorhandenen Matter-Attributen/Befehlen verfügbar. Thermostat-/Lüfter-
+Geräte und Identify-Kombinationen sind <strong>ungetestet</strong>.
+Ein angenommener Befehl bestätigt keine physische Zustandsänderung.</p>
+<p>Servergestütztes Matter-OTA: Root-Knoten mit OTA Requestor bieten
+<code>checkFirmwareUpdate</code> und nach nachgewiesener Versionsfreigabe
+<code>updateFirmware</code>. Download, Hosting und Installation übernimmt
+matterjs-server. Kein Upload und kein automatisches Update. Die Serverannahme
+bestätigt noch keine erfolgreiche Installation. Hardware
+<strong>ungetestet</strong>.</p>
+<p>ICD Management: passive Readings <code>icd_supported</code>,
+<code>icd_lit_supported</code>, <code>icd_operating_mode</code> und
+<code>icd_idle_mode_duration</code>. Für bestätigte ICD-Root-Knoten am
+kompatiblen Matter-Server stehen asynchrones <code>get icdState</code> und
+bei passender Check-In-Fähigkeit die konservativen Befehle
+<code>icdRegister</code>, <code>icdUnregister</code>, <code>icdResync</code>
+zur Verfügung. Der Server verwaltet die Registrierung; 
+<code>awake=false</code> ist nicht gleich offline. Hardwarestatus
+<strong>ungetestet</strong>.</p>
+<p>Root-Attribut <code>diagnostics=1</code> aktiviert passive Thread-/WLAN-
+Diagnose. <code>rawReadings=1</code> zeigt begrenzte, nicht sensitive
+unbekannte Attribute. Beides ist standardmäßig aus, verursacht kein Polling,
+löscht vorhandene Readings beim Abschalten nicht und ist an Hardware
+<strong>ungetestet</strong>.</p>
+<p>Natives LevelControl-Dimmen: <code>dim_up</code>, <code>dim_down</code>,
+<code>dim_step_up</code>, <code>dim_step_down</code> und <code>dim_stop</code>
+nur bei gemeldeten Befehlen. <code>dimRate</code> (1–254, Standard 30) legt
+die Geschwindigkeit für kontinuierliches Dimmen pro Gerät fest. Keine
+FHEM-Dimmschleife; Hardwarevarianten <strong>ungetestet</strong>.</p>
+<p>Weitere Umweltmesswerte: Luftdruck (hPa), CO2, PM2.5 und TVOC mit
+separaten, geräteseitig angegebenen Einheiten. Hardwarestatus:
+<strong>ungetestet</strong>.</p>
+<p>Switch-Cluster (0x003B): Tastendrücke und Loslassen werden am zugehörigen
+Endpunkt als eigene FHEM-Ereignisse verarbeitet. Hardwarestatus:
+<strong>ungetestet</strong>.</p>
+<p>Basissensoren (Kontakt, Wasserleck, Regen, Temperatur, Luftfeuchte,
+Beleuchtungsstärke, Belegung) sind implementiert, aber an eigener Hardware
+<strong>ungetestet</strong>.</p>
+<p>Vor einer Änderung des Teststatus müssen Modell, Firmware, Endpunkt sowie
+tatsächlich geprüfte Readings und Befehle nachvollziehbar dokumentiert sein.</p>
 <p>Root-Knoten erhalten die Verwaltungsgruppe <code>Matter Nodes</code>.
 Funktionale Endpunkte werden nach ihrem eindeutigen, nicht-strukturellen
 Matter-Gerätetyp aus <code>Descriptor.DeviceTypeList</code> gruppiert
