@@ -1,2 +1,1 @@
-2026-11-17  MATTER IO/Device V0.18: retire has_* capability flags and legacy command fallbacks; require Matter-advertised commands.
-2026-11-17  MATTER IO/Device V0.18: restore setters after offline recovery through correlated metadata-only reads; preserve cached-state quarantine and discard stale replies.
+2026-11-17  MATTER IO/Device V0.19: recover missing command metadata after offline startup, skip known capabilities and retry failed/empty reads up to three times on later events without releasing cached-state quarantine.
