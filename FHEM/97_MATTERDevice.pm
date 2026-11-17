@@ -487,6 +487,8 @@ sub MATTERDevice_Initialize($) {
                         "has_onoff:0,1 " .
                         "has_level:0,1 " .
                         "dimRate:slider,1,1,254 " .
+                        "diagnostics:0,1 " .
+                        "rawReadings:0,1 " .
                         "has_ct:0,1 " .
                         "has_hue:0,1 " .
                         "has_saturation:0,1 " .
@@ -1412,6 +1414,78 @@ sub MATTERDevice_Set($$@) {
 sub MATTERDevice_Get($$@) { return undef; }
 
 # --- Zentraler Parser für alle Attribut-Updates ---
+
+# Opt-in passive diagnostics: no additional server reads or polling.
+sub MATTERDevice_UpdateNetworkDiagnostics {
+    my ($hash, $cluster, $attr, $value) = @_;
+    return unless ($hash->{endpoint_id} // 0) == 0 &&
+                  AttrVal($hash->{NAME}, 'diagnostics', 0);
+    my %readings;
+    if ($cluster == 53) {
+        if ($attr == 0 && defined($value) && !ref($value) &&
+            $value =~ /^\d+$/ && $value <= 255) {
+            $readings{thread_channel} = int($value);
+        } elsif ($attr == 1 && defined($value) && !ref($value) &&
+                 $value =~ /^\d+$/) {
+            my %roles = (0 => 'unspecified', 1 => 'unassigned',
+                         2 => 'sleepy_end_device', 3 => 'end_device',
+                         4 => 'reed', 5 => 'router', 6 => 'leader');
+            $readings{thread_role} = $roles{$value} if exists $roles{$value};
+        } elsif ($attr == 2 && defined($value) && !ref($value) &&
+                 length($value) <= 128) {
+            $readings{thread_network} = $value;
+        } elsif ($attr == 7 && ref($value) eq 'ARRAY' && @$value <= 256) {
+            $readings{thread_neighbors} = scalar(@$value);
+            my @neighbors;
+            my ($best_rssi, $best_lqi);
+            foreach my $n (@$value) {
+                next unless ref($n) eq 'HASH';
+                my $child = $n->{isChild} // $n->{'13'} // 0;
+                my $rssi = $n->{averageRssi} // $n->{'6'} //
+                           $n->{lastRssi} // $n->{'7'};
+                next unless defined($rssi) && !ref($rssi) &&
+                            $rssi =~ /^-?\d+$/ && $rssi >= -128 && $rssi <= 0;
+                if (!$child && (!defined($best_rssi) || $rssi > $best_rssi)) {
+                    $best_rssi = $rssi;
+                    $best_lqi = $n->{lqi} // $n->{'5'};
+                }
+                my $id = $n->{extAddress} // $n->{'0'} // 'unknown';
+                $id = 'unknown' if ref($id) || length("$id") > 24;
+                push @neighbors, [$rssi,
+                    "$id (" . ($child ? 'child' : 'router') . ", $rssi dBm)"];
+            }
+            $readings{rssi} = $best_rssi if defined $best_rssi;
+            $readings{lqi} = $best_lqi if defined($best_lqi) &&
+                               !ref($best_lqi) && $best_lqi =~ /^[0-3]$/;
+            @neighbors = sort { $b->[0] <=> $a->[0] } @neighbors;
+            splice(@neighbors, 16) if @neighbors > 16;
+            $readings{thread_neighbor_list} = @neighbors ?
+                substr(join(', ', map { $_->[1] } @neighbors), 0, 600) : 'none';
+        }
+    } elsif ($cluster == 54 && $attr == 4 && defined($value) &&
+             !ref($value) && $value =~ /^-?\d+$/ &&
+             $value >= -128 && $value <= 0) {
+        $readings{wifi_rssi} = $value;
+    }
+    while (my ($reading, $val) = each %readings) {
+        readingsSingleUpdate($hash, $reading, $val, 1)
+            if ReadingsVal($hash->{NAME}, $reading, '') ne "$val";
+    }
+}
+sub MATTERDevice_RawDiagnostic {
+    my ($hash, $cluster, $attr, $value) = @_;
+    return unless AttrVal($hash->{NAME}, 'rawReadings', 0);
+    return unless defined($value) && $attr < 0xFFF0;
+    # Sensitive administration, fabric, key, and commissioning clusters.
+    return if $cluster =~ /^(?:31|48|49|60|62|63|64|65)$/;
+    my $str = ref($value) ? eval { encode_json($value) } : "$value";
+    return if !defined($str) || length($str) > 512;
+    my $reading = 'raw_' . ($hash->{endpoint_id} // 0) .
+                  '_' . $cluster . '_' . $attr;
+    readingsSingleUpdate($hash, $reading, $str, 1)
+        if ReadingsVal($hash->{NAME}, $reading, '') ne $str;
+}
+
 sub MATTERDevice_ProcessAttributeValue($$$$) {
     my ($hash, $cluster_id, $attr_id, $value) = @_; # quick unpack
     my $name = $hash->{NAME};
@@ -1453,10 +1527,15 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         }
         return;
     }
-    return if !$cluster;
-
-    my $attr_info = $cluster->{attributes}{$attr_id};
-    return if !$attr_info;
+    if ($cluster_id == 0x0035 || $cluster_id == 0x0036) {
+        MATTERDevice_UpdateNetworkDiagnostics($hash, $cluster_id, $attr_id, $value);
+        return;
+    }
+    my $attr_info = $cluster ? $cluster->{attributes}{$attr_id} : undef;
+    unless ($attr_info) {
+        MATTERDevice_RawDiagnostic($hash, $cluster_id, $attr_id, $value);
+        return;
+    }
 
     my $attr_name = $attr_info->{name};
     my $is_reading = $attr_info->{is_reading} // 0;
@@ -2178,6 +2257,10 @@ one model cannot establish support for all models sharing the cluster.</p>
 required Matter attributes/commands are advertised. Thermostat, fan and
 Identify device combinations are <strong>untested</strong> in this repository.
 Command acceptance does not assert that the physical state has changed.</p>
+<p>Root <code>diagnostics=1</code> enables passive Thread/Wi-Fi diagnostics.
+Device <code>rawReadings=1</code> exposes limited non-sensitive unmatched
+attributes. Both default to off, add no polling, retain existing readings
+on disable, and are <strong>untested</strong> on hardware.</p>
 <p>Native LevelControl dimming: <code>dim_up</code>, <code>dim_down</code>,
 <code>dim_step_up</code>, <code>dim_step_down</code> and <code>dim_stop</code>
 only when the corresponding commands are advertised. Optional per-device
@@ -2304,6 +2387,11 @@ mit demselben Matter-Cluster.</p>
 vorhandenen Matter-Attributen/Befehlen verfügbar. Thermostat-/Lüfter-
 Geräte und Identify-Kombinationen sind <strong>ungetestet</strong>.
 Ein angenommener Befehl bestätigt keine physische Zustandsänderung.</p>
+<p>Root-Attribut <code>diagnostics=1</code> aktiviert passive Thread-/WLAN-
+Diagnose. <code>rawReadings=1</code> zeigt begrenzte, nicht sensitive
+unbekannte Attribute. Beides ist standardmäßig aus, verursacht kein Polling,
+löscht vorhandene Readings beim Abschalten nicht und ist an Hardware
+<strong>ungetestet</strong>.</p>
 <p>Natives LevelControl-Dimmen: <code>dim_up</code>, <code>dim_down</code>,
 <code>dim_step_up</code>, <code>dim_step_down</code> und <code>dim_stop</code>
 nur bei gemeldeten Befehlen. <code>dimRate</code> (1–254, Standard 30) legt

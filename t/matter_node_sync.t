@@ -2371,4 +2371,50 @@ is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
 is(ReadingsVal($offline_root->{NAME}, 'state', ''), 'online',
    'root availability remains independent from endpoint state');
 
+
+# Issue #35: explicit opt-in diagnostic and raw visibility.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 3500, name => 'DiagnosticsProbe', available => JSON::true,
+    attributes => {
+        '0/53/0' => 15, '0/53/1' => 5, '0/53/2' => 'Mesh',
+        '0/53/7' => [{'0' => 'abcd', '6' => -50, '5' => 3, '13' => JSON::false}],
+        '0/54/4' => -67, '1/987/3' => 42,
+    }
+});
+my $dr = $defs{MATTER_DiagnosticsProbe};
+my $dep = $defs{MATTER_DiagnosticsProbe_EP1};
+ok(!defined(ReadingsVal($dr->{NAME}, 'thread_role', undef)),
+   'no default diagnostic readings');
+ok(!defined(ReadingsVal($dep->{NAME}, 'raw_1_987_3', undef)),
+   'unmapped data not published by default');
+is(CommandAttr(undef, 'MATTER_DiagnosticsProbe diagnostics 1'), undef,
+   'diagnostics opt-in accepted');
+is(CommandAttr(undef, 'MATTER_DiagnosticsProbe_EP1 rawReadings 1'), undef,
+   'raw opt-in accepted');
+MATTERDevice_Parse($dr, encode_json({
+    node_id => 3500, attributes => {
+        '0/53/0' => 15, '0/53/1' => 5, '0/53/2' => 'Mesh',
+        '0/53/7' => [{'0' => 'abcd', '6' => -50, '5' => 3, '13' => JSON::false}],
+        '0/54/4' => -67, '1/987/3' => 42,
+    }
+}));
+is(ReadingsVal($dr->{NAME}, 'thread_role', ''), 'router',
+   'Thread role maps to router');
+is(ReadingsVal($dr->{NAME}, 'thread_neighbors', ''), 1,
+   'neighbor table count');
+is(ReadingsVal($dr->{NAME}, 'rssi', ''), -50,
+   'best router RSSI');
+is(ReadingsVal($dr->{NAME}, 'lqi', ''), 3,
+   'best router LQI');
+is(ReadingsVal($dr->{NAME}, 'wifi_rssi', ''), -67,
+   'Wi-Fi RSSI');
+is(ReadingsVal($dep->{NAME}, 'raw_1_987_3', ''), 42,
+   'unmapped scalar exposed explicitly');
+is(CommandAttr(undef, 'MATTER_DiagnosticsProbe diagnostics 0'), undef,
+   'disable diagnostics');
+MATTERDevice_Parse($dr, encode_json({
+    node_id => 3500, attributes => {'0/54/4' => -62}
+}));
+is(ReadingsVal($dr->{NAME}, 'wifi_rssi', ''), -67,
+   'disable stops updating diagnostics without deleting old data');
 done_testing();
