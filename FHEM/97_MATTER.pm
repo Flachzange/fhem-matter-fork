@@ -507,7 +507,9 @@ sub MATTER_Close($) {
         next unless $device && ($device->{FUUID} // '') eq ($op->{fuuid} // '') &&
                     $device->{IODev} && $device->{IODev} eq $hash;
         my $reading = ($op->{operation} // '') =~ /icd/ ?
-                      'icd_request' : 'firmware_update';
+                      'icd_request' :
+                      ($op->{operation} // '') eq 'write_attribute' ?
+                      'lastError' : 'firmware_update';
         readingsSingleUpdate($device, $reading, 'interrupted (outcome unknown)', 1);
     }
     if ($active) {
@@ -544,7 +546,9 @@ sub MATTER_Heartbeat($) {
         next unless $owner && ($owner->{FUUID} // '') eq ($p->{fuuid} // '') &&
                     $owner->{IODev} && $owner->{IODev} eq $hash;
         my $reading = ($p->{operation} // '') =~ /icd/ ?
-                      'icd_request' : 'firmware_update';
+                      'icd_request' :
+                      ($p->{operation} // '') eq 'write_attribute' ?
+                      'lastError' : 'firmware_update';
         readingsSingleUpdate($owner, $reading, 'timeout (outcome unknown)', 1);
     }
     if (defined($hash->{helper}{pending_pong})) {

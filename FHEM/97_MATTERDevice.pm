@@ -1452,8 +1452,24 @@ sub MATTERDevice_Set($$@) {
         my $sendWS = $hash->{IODev}{fhem}{helper}{sendWS};
         return "MATTER: Unable to send brightness command on $name"
             if $level_payload && !$sendWS->(encode_json($level_payload));
-        return "MATTER: Unable to send device command on $name"
-            if $payload && !$sendWS->(encode_json($payload));
+        # FHEM attribute writes are asynchronous. Track the correlated
+        # server reply so a successful socket enqueue is never presented
+        # as a confirmed Matter write.
+        my $tracked_write = $payload && ($payload->{command} // '') eq 'write_attribute';
+        my $id = $tracked_write ? $payload->{message_id} : undef;
+        if ($tracked_write) {
+            $hash->{IODev}{helper}{pending_command}{$id} = {
+                type => 'node_operation', operation => 'write_attribute',
+                name => $name, fuuid => $hash->{FUUID}, node_id => $node_id,
+                started_at => gettimeofday(), timeout => 120,
+            };
+        }
+        if ($payload && !$sendWS->(encode_json($payload))) {
+            delete $hash->{IODev}{helper}{pending_command}{$id}
+                if $tracked_write;
+            return "MATTER: Unable to send device command on $name";
+        }
+        return wantarray ? (undef, 1) : undef if $tracked_write;
     } else {
         return "No send function found in IODev for $name";
     }
@@ -1634,7 +1650,8 @@ sub MATTERDevice_SendNodeOperation {
 sub MATTERDevice_HandleNodeOperation {
     my ($hash, $request, $reply) = @_;
     my $cmd = $request->{operation};
-    my $reading = $cmd =~ /icd/ ? 'icd_request' : 'firmware_update';
+    my $reading = $cmd =~ /icd/ ? 'icd_request' :
+                  $cmd eq 'write_attribute' ? 'lastError' : 'firmware_update';
     if (exists($reply->{error_code}) || exists($reply->{error})) {
         delete $hash->{helper}{firmware_available}
             if $cmd eq 'check_node_update';
@@ -1709,6 +1726,9 @@ sub MATTERDevice_HandleNodeOperation {
         } else {
             readingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
         }
+    } elsif ($cmd eq 'write_attribute') {
+        readingsSingleUpdate($hash, 'lastError', 'none', 1)
+            if exists($reply->{result});
     } elsif ($cmd eq 'update_node') {
         if (exists($reply->{result}) && !defined($reply->{result})) {
             $hash->{helper}{firmware_update_in_flight} = 1;

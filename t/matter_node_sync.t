@@ -2553,4 +2553,33 @@ is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'up to date',
    'already installed firmware is not offered as a newer update');
 ok(!grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
    'no install action for the already installed firmware');
+
+# Review #33: asynchronous thermostat writes are correlated, not reported
+# successful merely because FHEM accepted an outgoing WebSocket frame.
+@sent_requests = ();
+is(MATTERDevice_Set($therm, $therm->{NAME}, 'desired-temp', '20.5'), undef,
+   'another thermostat write is queued');
+my $write_id = $sent_requests[-1]{message_id};
+ok(exists($defs{ioA}{helper}{pending_command}{$write_id}),
+   'write request is held until matching server response');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $write_id,
+    error_code => 1,
+    error => { message => 'attribute is not writable' }
+}));
+like(ReadingsVal($therm->{NAME}, 'lastError', ''),
+     qr/not writable/, 'server rejected write is visible on the FHEM device');
+is(ReadingsVal($therm->{NAME}, 'desired-temp', ''), 21,
+   'failed write never changes the physical reported setpoint');
+@sent_requests = ();
+is(MATTERDevice_Set($therm, $therm->{NAME}, 'desired-temp', '20.5'), undef,
+   'write may be retried explicitly');
+my $write_ok_id = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $write_ok_id, result => undef
+}));
+is(ReadingsVal($therm->{NAME}, 'lastError', ''), 'none',
+   'server-confirmed write clears the prior error');
+is(ReadingsVal($therm->{NAME}, 'desired-temp', ''), 21,
+   'server acknowledgement is still not new device telemetry');
 done_testing();
