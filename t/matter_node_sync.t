@@ -1044,6 +1044,14 @@ MATTERDevice_Parse($root, encode_json({node_id => 42, attributes => {'1/6/0' => 
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'state', ''), $old_state,
    'null OnOff state is not incorrectly published as off');
 
+# The original tests depended on auto-created has_onoff=1 without advertised
+# command metadata. Supply actual Matter AcceptedCommandList evidence instead.
+MATTERDevice_Parse($root, encode_json({
+    node_id => 42, attributes => { '1/6/65529' => [0, 1, 2] }
+}));
+ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($child)),
+   'On is supported by Matter metadata before transport failure tests');
+
 my @sent_requests;
 # Device commands require a connected transport; the stub simulates only
 # the successful accepted-send contract, not delivery or device execution.
@@ -1067,7 +1075,10 @@ ok(exists $defs{ioA}{helper}{pending_config}{$read_request->{message_id}},
    'getConfig pending request is recorded where MATTER_ParseMessage reads it');
 MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $read_request->{message_id},
-    result => { '1/47/12' => 110 },
+    result => {
+        '1/47/12' => 110,
+        '1/6/65529' => [0, 1, 2], # A complete getConfig also reads command metadata.
+    },
 }));
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'battery_percent', ''), 55,
    'read_attribute response is routed to the original endpoint');
