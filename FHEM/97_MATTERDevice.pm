@@ -1456,6 +1456,15 @@ sub MATTERDevice_Set($$@) {
         # server reply so a successful socket enqueue is never presented
         # as a confirmed Matter write.
         my $tracked_write = $payload && ($payload->{command} // '') eq 'write_attribute';
+        if ($tracked_write) {
+            for my $pending (values %{$hash->{IODev}{helper}{pending_command} // {}}) {
+                next unless ref($pending) eq 'HASH' &&
+                            ($pending->{type} // '') eq 'node_operation';
+                return 'Another Matter operation is already pending for this node'
+                    if ($pending->{node_id} // '') eq $node_id &&
+                       ($pending->{fuuid} // '') eq ($hash->{FUUID} // '');
+            }
+        }
         my $id = $tracked_write ? $payload->{message_id} : undef;
         if ($tracked_write) {
             $hash->{IODev}{helper}{pending_command}{$id} = {
@@ -1591,7 +1600,6 @@ sub MATTERDevice_IcdCapabilityReport {
         if ($attr == 65532 && $value =~ /^\d+$/) {
             readingsSingleUpdate($hash, 'icd_supported', 'true', 1)
                 if ReadingsVal($hash->{NAME}, 'icd_supported', '') ne 'true';
-            $hash->{helper}{capabilities}{70}{feature_map} = $value;
             MATTERDevice_RefreshIcdCapability($hash);
         } elsif ($attr == 8 && $value =~ /^(?:0|1)$/) {
             my $mode = $value == 1 ? 'LIT' : 'SIT';
@@ -1782,12 +1790,12 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
     # ICD capability comes from endpoint-zero metadata, not a get_icd_state
     # probe during discovery. Do not conflate a sleeping ICD with offline.
+    # Process shared global attributes once, then derive ICD properties from
+    # the same authoritative feature-map cache rather than maintaining two.
+    my $global = MATTERDevice_ProcessGlobalAttribute($hash, $cluster_id, $attr_id, $value);
     MATTERDevice_IcdCapabilityReport($hash, $cluster_id, $attr_id, $value)
         if ($cluster_id == 70 || $cluster_id == 40);
-
-    # Globale Matter-Attribute gelten fuer jeden Cluster, auch wenn dessen
-    # Nutzdaten im FHEM-Modul noch nicht abgebildet sind.
-    return if (MATTERDevice_ProcessGlobalAttribute($hash, $cluster_id, $attr_id, $value));
+    return if $global;
 
     # Descriptor cluster (0x001D), DeviceTypeList (0x0000).
     # Matter.js supplies an array of DeviceTypeStruct objects (deviceType, revision).

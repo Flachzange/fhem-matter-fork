@@ -2582,4 +2582,18 @@ is(ReadingsVal($therm->{NAME}, 'lastError', ''), 'none',
    'server-confirmed write clears the prior error');
 is(ReadingsVal($therm->{NAME}, 'desired-temp', ''), 21,
    'server acknowledgement is still not new device telemetry');
+
+# End-to-end request discipline: do not accept another write before the
+# controller has replied to the previous attribute write.
+@sent_requests = ();
+is(MATTERDevice_Set($therm, $therm->{NAME}, 'mode', 'cool'), undef,
+   'first thermostat mode write queued');
+my $first_mode_id = $sent_requests[-1]{message_id};
+like(MATTERDevice_Set($therm, $therm->{NAME}, 'mode', 'heat') // '',
+     qr/already pending/, 'concurrent write to same node is rejected');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $first_mode_id, result => undef
+}));
+is(MATTERDevice_Set($therm, $therm->{NAME}, 'mode', 'heat'), undef,
+   'write is available again once previous command is acknowledged');
 done_testing();
