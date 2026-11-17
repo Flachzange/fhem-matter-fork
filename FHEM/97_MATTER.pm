@@ -532,6 +532,21 @@ sub MATTER_Heartbeat($) {
     my ($hash) = @_;
     return unless $hash->{CD} && ($hash->{ws_status} // '') eq 'connected';
 
+    # Reject timed-out asynchronous node operations; late replies are ignored.
+    for my $id (keys %{$hash->{helper}{pending_command} // {}}) {
+        my $p = $hash->{helper}{pending_command}{$id};
+        next unless ref($p) eq 'HASH' &&
+                    ($p->{type} // '') eq 'node_operation';
+        next unless gettimeofday() - ($p->{started_at} // 0) >
+                    ($p->{timeout} // 120);
+        delete $hash->{helper}{pending_command}{$id};
+        my $owner = $defs{$p->{name}};
+        next unless $owner && ($owner->{FUUID} // '') eq ($p->{fuuid} // '') &&
+                    $owner->{IODev} && $owner->{IODev} eq $hash;
+        my $reading = ($p->{operation} // '') =~ /icd/ ?
+                      'icd_request' : 'firmware_update';
+        readingsSingleUpdate($owner, $reading, 'timeout (outcome unknown)', 1);
+    }
     if (defined($hash->{helper}{pending_pong})) {
         Log3 $hash->{NAME}, 2, "[$hash->{NAME}] WebSocket pong timeout after $MATTER_pong_timeout seconds; reconnecting";
         MATTER_Reconnect($hash);

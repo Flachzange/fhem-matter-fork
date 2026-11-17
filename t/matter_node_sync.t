@@ -2471,4 +2471,57 @@ is(MATTERDevice_Set($icd, $icd->{NAME}, 'icdRegister'), undef,
    'explicit ICD administrative command accepted');
 is($sent_requests[-1]{command}, 'register_icd',
    'server remains responsible for ICD registration');
+
+# Issue #36: server-backed, strictly manual OTA.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 3600, name => 'OtaProbe', available => JSON::true,
+    attributes => {
+        '0/42/2' => 1, '0/42/3' => 0,
+        '0/40/9' => 100, '0/40/10' => '1.0.0',
+    }
+});
+my $ota = $defs{MATTER_OtaProbe};
+ok(grep(/^checkFirmwareUpdate:noArg$/, MATTERDevice_GetSetList($ota)),
+   'OTA root exposes explicit manual firmware check');
+ok(!grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
+   'no firmware install without server-approved version');
+@sent_requests = ();
+is(MATTERDevice_Set($ota, $ota->{NAME}, 'checkFirmwareUpdate'), undef,
+   'server firmware check request accepted');
+is($sent_requests[-1]{command}, 'check_node_update',
+   'server does the actual update discovery');
+my $cid = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $cid,
+    result => {software_version => 101, software_version_string => '1.0.1'}
+}));
+is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'available',
+   'available firmware comes from server response');
+is(ReadingsVal($ota->{NAME}, 'firmware_update_version', ''), '1.0.1',
+   'server-confirmed version label shown');
+ok(grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
+   'firmware install enabled after actual update discovery');
+@sent_requests = ();
+is(MATTERDevice_Set($ota, $ota->{NAME}, 'updateFirmware'), undef,
+   'manual firmware installation request accepted');
+is($sent_requests[-1]{command}, 'update_node',
+   'Matter server performs OTA installation');
+is($sent_requests[-1]{args}{software_version}, 101,
+   'only confirmed software version sent');
+my $uid = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $uid, result => undef
+}));
+is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'update requested',
+   'server acknowledgement is not successful installation');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [3600, '0/42/2', 4]
+}));
+is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'downloading',
+   'device OTA Requestor progress received');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [3600, '0/40/9', 101]
+}));
+is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'installed',
+   'installation requires matching new reported software version');
 done_testing();

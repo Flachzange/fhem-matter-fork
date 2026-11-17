@@ -133,6 +133,7 @@ my %MATTER_CLUSTERS = (
             0x0003 => { name => "model", is_reading => 1, is_attribute => 0 },
             0x0008 => { name => "hardware_version", is_reading => 1, is_attribute => 0 },
             0x000A => { name => "firmware_version", is_reading => 1, is_attribute => 0 },
+            0x0009 => { name => "software_version", is_reading => 1, is_attribute => 0 },
             0x000F => { name => "serial_number", is_reading => 1, is_attribute => 0 },
             0x0015 => { name => "specification_version", is_reading => 1, is_attribute => 0 },
         },
@@ -153,6 +154,13 @@ my %MATTER_CLUSTERS = (
             0x0014 => { name => "battery_common_designation", is_reading => 1, is_attribute => 0 },
             0x0018 => { name => "battery_capacity_mAh", is_reading => 1, is_attribute => 0 },
             0x0019 => { name => "battery_quantity", is_reading => 1, is_attribute => 0 },
+        },
+    },
+    0x002A => {
+        name       => "OtaSoftwareUpdateRequestor",
+        attributes => {
+            0x0002 => { name => "ota_update_state", is_reading => 0, is_attribute => 0 },
+            0x0003 => { name => "ota_update_progress", is_reading => 1, is_attribute => 0 },
         },
     },
     0x0046 => {
@@ -875,6 +883,24 @@ sub MATTERDevice_Set($$@) {
         return "Invalid frequency" if $cmd eq 'frequency' && (!$args[0] || $args[0] > 65535);
     }
 
+    if ($cmd eq 'checkFirmwareUpdate' || $cmd eq 'updateFirmware') {
+        return 'Firmware operations are only available on Matter root nodes'
+            unless ($hash->{endpoint_id} // 0) == 0;
+        my $op = $cmd eq 'checkFirmwareUpdate' ?
+            'check_node_update' : 'update_node';
+        my %args;
+        if ($cmd eq 'updateFirmware') {
+            my $version = $hash->{helper}{firmware_available};
+            return 'Run checkFirmwareUpdate before installing'
+                unless defined($version) && !ref($version) &&
+                       $version =~ /^\d+$/;
+            $args{software_version} = 0 + $version;
+        }
+        my $error = MATTERDevice_SendNodeOperation(
+            $hash, $op, \%args, $cmd eq 'updateFirmware' ? 300 : 120);
+        return $error if defined($error);
+        return wantarray ? (undef, 1) : undef;
+    }
     if ($cmd =~ /^(?:icdRegister|icdUnregister|icdResync)$/) {
         return 'ICD administrative operation only allowed on an ICD root'
             unless ($hash->{endpoint_id} // 0) == 0 &&
@@ -1645,6 +1671,31 @@ sub MATTERDevice_HandleNodeOperation {
                                  $value->{next_expected_checkin}, 1);
         }
         readingsSingleUpdate($hash, 'icd_request', 'completed', 1);
+    } elsif ($cmd eq 'check_node_update') {
+        my $update = $reply->{result};
+        if (!defined($update) && exists($reply->{result})) {
+            delete $hash->{helper}{firmware_available};
+            readingsSingleUpdate($hash, 'firmware_update', 'none reported', 1);
+        } elsif (ref($update) eq 'HASH' &&
+                 defined($update->{software_version}) &&
+                 !ref($update->{software_version}) &&
+                 $update->{software_version} =~ /^\d+$/) {
+            $hash->{helper}{firmware_available} = $update->{software_version};
+            my $label = $update->{software_version_string};
+            $label = $update->{software_version}
+                unless defined($label) && !ref($label) && length($label) <= 80;
+            readingsSingleUpdate($hash, 'firmware_update_version', $label, 1);
+            readingsSingleUpdate($hash, 'firmware_update', 'available', 1);
+        } else {
+            readingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
+        }
+    } elsif ($cmd eq 'update_node') {
+        if (exists($reply->{result}) && !defined($reply->{result})) {
+            $hash->{helper}{firmware_update_in_flight} = 1;
+            readingsSingleUpdate($hash, 'firmware_update', 'update requested', 1);
+        } else {
+            readingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
+        }
     }
 }
 sub MATTERDevice_ProcessAttributeValue($$$$) {
@@ -1660,6 +1711,34 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     # Remember cluster presence for conservative fallback labels in FHEMWEB,
     # including measurement clusters this module does not yet expose as readings.
     $hash->{helper}{seen_clusters}{$cluster_id} = 1 if defined($value);
+
+    # OTA Requestor status comes from the physical device, not from the
+    # WebSocket command acknowledgement.
+    if (($hash->{endpoint_id} // 0) == 0 &&
+        $cluster_id == 42 && $attr_id == 2 &&
+        defined($value) && !ref($value) && $value =~ /^\d+$/) {
+        my %state = (0 => 'unknown', 1 => 'idle',
+                     2 => 'checking', 3 => 'waiting for update',
+                     4 => 'downloading', 5 => 'installing',
+                     6 => 'waiting to install', 7 => 'rolling back',
+                     8 => 'waiting for confirmation');
+        if (exists($state{$value})) {
+            readingsSingleUpdate($hash, 'ota_update_state', $state{$value}, 1)
+                if ReadingsVal($name, 'ota_update_state', '') ne $state{$value};
+            readingsSingleUpdate($hash, 'firmware_update', $state{$value}, 1)
+                if $hash->{helper}{firmware_update_in_flight} && $value >= 2;
+        }
+    }
+    if (($hash->{endpoint_id} // 0) == 0 && $cluster_id == 40 &&
+        $attr_id == 9 && defined($value) && !ref($value) &&
+        $value =~ /^\d+$/ && $hash->{helper}{firmware_update_in_flight}) {
+        my $expected = $hash->{helper}{firmware_available};
+        if (defined($expected) && $expected eq $value) {
+            readingsSingleUpdate($hash, 'firmware_update', 'installed', 1);
+            delete $hash->{helper}{firmware_update_in_flight};
+            delete $hash->{helper}{firmware_available};
+        }
+    }
 
     # ICD capability comes from endpoint-zero metadata, not a get_icd_state
     # probe during discovery. Do not conflate a sleeping ICD with offline.
@@ -1977,6 +2056,13 @@ sub MATTERDevice_GetSetList($) {
         push @list, $entry;
     };
 
+    if (($hash->{endpoint_id} // 0) == 0 &&
+        (ReadingsVal($name, 'ota_update_state', '') ne '' ||
+         $hash->{helper}{seen_clusters}{42})) {
+        $add->("checkFirmwareUpdate:noArg");
+        $add->("updateFirmware:noArg")
+            if defined($hash->{helper}{firmware_available});
+    }
     if (($hash->{endpoint_id} // 0) == 0 &&
         ReadingsVal($name, 'icd_supported', '') eq 'true') {
         my $schema = $hash->{IODev} ?
@@ -2436,6 +2522,12 @@ one model cannot establish support for all models sharing the cluster.</p>
 required Matter attributes/commands are advertised. Thermostat, fan and
 Identify device combinations are <strong>untested</strong> in this repository.
 Command acceptance does not assert that the physical state has changed.</p>
+<p>Server-backed Matter OTA: root nodes with OTA Requestor support can
+<code>checkFirmwareUpdate</code> and, after an update version is confirmed,
+<code>updateFirmware</code>. Image download, hosting and installation remain
+with matterjs-server; no firmware upload and no automatic update.
+Server acknowledgement is not proof of installation. Hardware
+<strong>untested</strong>.</p>
 <p>ICD Management: passive <code>icd_supported</code>,
 <code>icd_lit_supported</code>, <code>icd_operating_mode</code> and
 <code>icd_idle_mode_duration</code> readings. Positively recognized ICD
@@ -2574,6 +2666,12 @@ mit demselben Matter-Cluster.</p>
 vorhandenen Matter-Attributen/Befehlen verfügbar. Thermostat-/Lüfter-
 Geräte und Identify-Kombinationen sind <strong>ungetestet</strong>.
 Ein angenommener Befehl bestätigt keine physische Zustandsänderung.</p>
+<p>Servergestütztes Matter-OTA: Root-Knoten mit OTA Requestor bieten
+<code>checkFirmwareUpdate</code> und nach nachgewiesener Versionsfreigabe
+<code>updateFirmware</code>. Download, Hosting und Installation übernimmt
+matterjs-server. Kein Upload und kein automatisches Update. Die Serverannahme
+bestätigt noch keine erfolgreiche Installation. Hardware
+<strong>ungetestet</strong>.</p>
 <p>ICD Management: passive Readings <code>icd_supported</code>,
 <code>icd_lit_supported</code>, <code>icd_operating_mode</code> und
 <code>icd_idle_mode_duration</code>. Für bestätigte ICD-Root-Knoten am
