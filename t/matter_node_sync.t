@@ -2434,6 +2434,7 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $recovery_requests[0]{message_id},
     result => {
         '1/6/65529' => [0, 1, 2],
+        '1/6/65532' => 0, # No OffOnly feature: On/Toggle are usable.
         '1/6/0' => JSON::true,
         '1/47/12' => 175,
     }
@@ -2540,6 +2541,7 @@ MATTER_ProcessNode($defs{ioA}, {
     attributes => {
         '1/6/0' => JSON::true,
         '1/6/65529' => [0, 1, 2],
+        '1/6/65532' => 0,
     },
 });
 my $known_root = $defs{MATTER_KnownCapabilitiesProbe};
