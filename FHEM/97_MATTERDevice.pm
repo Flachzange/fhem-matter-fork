@@ -159,7 +159,7 @@ my %MATTER_CLUSTERS = (
         name       => "IcdManagement",
         attributes => {
             0x0000 => { name => "icd_idle_mode_duration", is_reading => 1, is_attribute => 0 },
-            0x0008 => { name => "icd_operating_mode", is_reading => 1, is_attribute => 0 },
+            0x0008 => { name => "icd_operating_mode", is_reading => 0, is_attribute => 0 },
         },
     },
     0x0045 => {
