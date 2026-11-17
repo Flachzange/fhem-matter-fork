@@ -46,7 +46,7 @@ The original [tostmann/THBR](https://github.com/tostmann/THBR) uses a host-based
 
 - **Connection recovery:** nonblocking IPv4 TCP/WebSocket connection; 10-second connect/upgrade deadline, Ping every 30 seconds, 15-second Pong deadline and retry 30 seconds after a failure.
 - **Automatic node synchronization:** complete `start_listening` snapshot on connection/reconnection plus `node_added`, `node_updated` and `node_removed` events. Manual `discover` is still available; there is no periodic node polling.
-- **FHEM device management:** optional `autocreate` (enabled by default), collision-safe root/endpoint identities, default room `Matter` for newly created devices, common node groups and links to endpoints in the root's FHEMWEB details. Existing names, rooms and explicit groups are preserved; removed server nodes are marked rather than deleted.
+- **FHEM device management:** optional `autocreate` (enabled by default), collision-safe root/endpoint identities, default room `Matter` for newly created devices, administrative root-node grouping, DeviceTypeList-based endpoint groups and links to endpoints in the root's FHEMWEB details. Existing names, rooms and custom groups are preserved; removed server nodes are marked rather than deleted.
 - **Device commands:** exposed from the relevant Matter command/feature metadata when available, with legacy `has_*` fallback and explicit user overrides. Mappings include on/off, levels, colors, window covering and basic lock/unlock commands where supported.
 - **Device status and measurements:** separate `matter_status` (server membership) and `available` (server-reported reachability), plus basic device information, power source/battery, smoke/CO and electrical power/energy readings when advertised and provided.
 - **Commissioning:** manual pairing codes or `MT:` QR payloads, with `network` (IP-only, default) or `auto` (IP and optionally BLE via the Matter server).
@@ -58,7 +58,7 @@ The original [tostmann/THBR](https://github.com/tostmann/THBR) uses a host-based
 - A Matter server providing the specific **WebSocket/JSON API** used by these modules (including `start_listening`, node events and `device_command`). The primary integration here is [matter-js/matterjs-server](https://github.com/matter-js/matterjs-server), typically listening on port 5580. A generic Python/Node.js Matter controller is **not automatically compatible** just because it uses WebSockets.
 - For Matter-over-Thread: a working Thread network, an IPv6 route from the Matter controller to its devices, and Thread credentials configured on the Matter server. To commission a factory-new device via BLE, the server must have working Bluetooth support, either locally or through a compatible BLE proxy. The THBR BLE proxy requires the server's proxy feature (for example `--ble-proxy` with matterjs-server).
 - **Trusted-network requirement:** `97_MATTER.pm` uses an **unencrypted, unauthenticated `ws://` connection** to `/ws`. Neither transport encryption nor authentication is implemented by the FHEM module. Keep the server API on a trusted/controlled network; do not expose it directly to untrusted networks.
-- **Sensitive commands:** `commissionCode` suppresses FHEM's synthetic `set` event and redacts pairing codes from module diagnostics, but the FHEM input/history may still contain the code. The existing `setWifiCredentials` command does **not** suppress that synthetic FHEM event; entering Wi-Fi passwords may expose them to FHEM event consumers/DbLog and sends them over the unencrypted WebSocket. Avoid using that command with sensitive production credentials until its handling is hardened. `getCredentials` returns the server's available credential metadata, not a mechanism for configuring a Thread dataset in FHEM.
+- **Sensitive commands:** `commissionCode` suppresses FHEM's synthetic `set` event and redacts pairing codes from module diagnostics, but the FHEM input/history may still contain the code. The `setWifiCredentials` command now also suppresses the synthetic FHEM set event to avoid passing the password to event consumers/DbLog. **This does not secure FHEM command input/history or the unencrypted WebSocket transport**: use this operation only within a trusted, appropriately protected environment. `getCredentials` returns the server's available credential metadata, not a mechanism for configuring a Thread dataset in FHEM.
 
 ## Installation and updates
 
@@ -100,7 +100,43 @@ Enter the following commands in the **FHEM command line**.
    shutdown restart
    ```
 
-Only merged changes on `main` are published by this source. Adding it does not automatically schedule updates, and no copying of the Perl files is needed once this source is installed. `CHANGED` documents the fork's user-visible changes.
+Only merged changes on `main` are published by this source. Adding it does not automatically schedule updates, and no copying of the Perl files is needed once this source is installed. `CHANGED` provides brief notes for the current branch release; [CHANGELOG.md](CHANGELOG.md) preserves the full fork history. FHEM's updater does not maintain a separate changelog baseline per update source, so the displayed notes are not necessarily the exact delta since your last installation.
+
+### Testing branch (optional)
+
+The [`testing` branch](https://github.com/Flachzange/fhem-matter-fork/tree/testing) contains changes that are being evaluated before they are merged into `main`. It provides its own [FHEM updater manifest](https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/testing/controls_matter.txt). Use this branch only when you intentionally want to test newer development changes.
+
+**Automatic migration (introduced in testing V0.10):** Endpoint definitions now contain only a node ID and endpoint ID, for example `18 11`. On the first startup with the updated module, legacy definitions such as `18 11 MATTER_MatterDevice_18` are recognized and normalized **in memory**, discarding the obsolete root FHEM name. No pre-update `modify` commands are required. Existing device names, FUUIDs, readings and attributes are retained. The separate `IODev` attribute still identifies the Matter server; previously autocreated endpoints already have it.
+
+After restarting FHEM with V0.10, **save the configuration once** using the **FHEM command line**:
+
+```text
+save
+```
+
+FHEM's normal save then writes the normalized endpoint definitions permanently, both for file-based configuration and configDB. The module does **not** automatically rewrite the configuration during startup. If no save is performed, the migration repeats on the next startup; the legacy root name is never used for device ownership. New endpoint definitions are always generated without a root-name parameter. Arbitrary extra fields remain invalid.
+
+FHEM permits **only one update source named `controls_matter.txt`**. To switch an existing installation from this fork's `main` source to `testing`, enter the following commands in the **FHEM command line** (check your current sources with `update list` first):
+
+```text
+update delete https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/main/controls_matter.txt
+update add https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/testing/controls_matter.txt
+update check https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/testing/controls_matter.txt
+update all https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/testing/controls_matter.txt
+shutdown restart
+```
+
+To switch back to `main`, change the registered source and update the same modules from `main`:
+
+```text
+update delete https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/testing/controls_matter.txt
+update add https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/main/controls_matter.txt
+update check https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/main/controls_matter.txt
+update all https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/main/controls_matter.txt
+shutdown restart
+```
+
+Changing the registered source alone does **not** install or revert module files. The explicit `update all <source URL>` command downloads the selected branch's Matter modules; it does not update unrelated FHEM sources. Do not register the `main` and `testing` manifests simultaneously because they share the same filename and target module paths.
 
 ### Testing branch (optional)
 
@@ -138,7 +174,7 @@ Define an IO device with your Matter server's IPv4 address and its WebSocket por
 define matterServer MATTER 192.0.2.10 5580
 ```
 
-Use `set matterServer connect` to reconnect manually if needed; otherwise recovery is automatic. `attr matterServer disable 1` closes the connection and cancels its timers; removing the attribute or setting it to `0` enables reconnection. Prefer a numeric IPv4 address because DNS lookup may block during connection establishment. The server connection state is displayed through `state` and `ws_status`.
+The initial connection is **scheduled immediately for FHEM's event loop**, rather than opened during the loading of `fhem.cfg`. This prevents the 10-second TCP/WebSocket handshake deadline from expiring while FHEM is still initializing. A manual `set matterServer connect` still reconnects immediately; otherwise recovery is automatic and failed attempts are retried after 30 seconds. `attr matterServer disable 1` closes the connection and cancels its timers; removing the attribute or setting it to `0` enables reconnection. Repeated `modify` operations replace the pending startup timer without leaving duplicate connections. Prefer a numeric IPv4 address because DNS lookup may block during connection establishment. The server connection state is displayed through `state` and `ws_status`. WebSocket HTTP upgrade headers and the server's accept key are verified; fragmented text frames and interleaved control frames are handled. An inactive connection rejects FHEM device commands instead of silently discarding them. IO renaming updates the existing clients' `IODev` attributes, root routing and socket registration without creating duplicate Matter devices. Live attribute and structural node events take precedence over older outstanding read and discovery responses.
 
 ### Commission devices
 
@@ -150,9 +186,11 @@ set matterServer commissionCode 35325335079 network
 set matterServer commissionCode 35325335079 auto
 ```
 
-The omitted mode and explicit `network` both request **IP-only** commissioning. `auto` permits **IP and BLE discovery**, including a compatible BLE proxy connected to the Matter server; it does not force BLE. A Matter QR payload beginning with `MT:` can be used instead of an 11- or 21-digit manual code.
+Without the `commissionMode` attribute, an omitted mode defaults to **`network`** (IP-only). Set `attr matterServer commissionMode auto` in the FHEM command line for persistent BLE/IP discovery. Explicit `network` and `auto` arguments override the attribute for that request; `auto` permits BLE (including a connected proxy) but does not force it. A Matter QR payload beginning with `MT:` can be used instead of an 11- or 21-digit manual code.
 
 The Matter server handles commissioning, fabric and stored Thread/Wi-Fi network credentials. The FHEM module neither stores a Thread operational dataset nor operates the BLE radio.
+
+The MATTER IO reports `commissioning_status` (`running`, `success`, `failed` or `interrupted`), `commissioning_mode`, `commissioning_node_id`, `commissioning_duration` (seconds) and `commissioning_error`. A new attempt clears old results; one attempt per IO is permitted at a time. These readings are independent of the server connection's `state`. The server does not expose intermediate BLE/PASE commissioning phases over WebSocket. `interrupted` means the connection was lost before the outcome was received: check server nodes before trying again.
 
 ### Node synchronization and status
 
@@ -162,7 +200,13 @@ Newly commissioned nodes are normally imported automatically. After a reconnect 
 set matterServer discover
 ```
 
-New root and endpoint devices default to FHEM room `Matter` unless manually changed later. Missing node groups are assigned as `Node <node_id> (<IODev>)`, without overwriting user-defined groups. The root detail view links to existing endpoints and shows their Matter Descriptor device types when known, otherwise a conservative cluster-based description.
+Root devices use `DEF = <node_id>` (for example `18`); endpoints use `DEF = <node_id> <endpoint_id>` (for example `18 11`). The `IODev` attribute selects the Matter server independently of the FHEM name; a root name is never part of an endpoint DEF. This allows root and endpoint devices to be renamed without changing the technical definition. New root and endpoint devices default to FHEM room `Matter` unless manually changed later. Root devices (endpoint 0) use the shared administrative group `Matter Nodes`; functional endpoints use the name of their **single non-structural** Matter `Descriptor.DeviceTypeList` device type (for example `On/Off light`, `Electrical Sensor` for `0x0510`, or `Smoke CO Alarm`). Although Matter classifies `Electrical Sensor` as a utility type, it represents a usable measurement endpoint. Endpoints with only structural types, including `Aggregator` and `Bridged Node`, use `Matter Infrastruktur` instead of retaining a technical node group. Structural companions such as Power Source and OTA Requestor do not create additional groups. Unknown device type IDs use hexadecimal labels; multiple distinct functional device types do not trigger an arbitrary choice. Automatically generated legacy groups in the exact format `Node <node_id> (<IODev>)` migrate to these groups; custom group values are not replaced. Existing physical room assignments are never changed during synchronization. `Smoke CO Alarm` is Matter's shared device type and does not imply that a CO-only detector also detects smoke. The root detail view links to existing endpoints and shows their Matter Descriptor device types when known, otherwise a conservative cluster-based description. Every endpoint also has a persistent `associatedWith` reading linking to its owning root in FHEMWEB's native **Probably associated with** section. Existing user-added links are kept, and FHEM automatically updates root references on rename. Both relationships are matched by Matter IODev and node ID, not by FHEM naming conventions.
+
+MATTERDevice leaves FHEM's initial `STATE` unchanged during configuration loading, allowing normal statefile restoration. Once initialization finishes, root nodes (endpoint 0) expose a native `state` reading, without an automatically configured `stateFormat` attribute: `online` for server-reported `available=true`, `offline` for `available=false`, `unknown` when no fresh reachability report is available or the MATTER IO loses its connection, and `removed` when the server removes a node or omits it from a complete node list. `online` is not inferred from mere node-list membership. The module does not introduce reachability polling. Only root `state` changes; endpoint device states remain independent and `available` retains the last raw server report, even during connection loss.
+
+**Upgrade from V0.15:** At FHEM `INITIALIZED` / `REREADCFG`, roots that still have the old exact `stateFormat available` setting but no new-style `state` reading have that attribute removed automatically. Custom `stateFormat` values are preserved. Because V0.15 did not mark attributes as auto-created, an intentionally manually configured, identical `stateFormat available` cannot be distinguished from the old automatic default. Once migrated and a new `state` reading exists, that value can be deliberately configured again. Save the FHEM configuration after the update/restart to persist the migration.
+
+Matter `Descriptor.DeviceTypeList` is stored per endpoint in the **`device_type_ids` reading** as canonical comma-separated hexadecimal IDs (for example `0x0011,0x0076`). Both the root detail's endpoint type labels and automatic device-type groups use this reading rather than temporary helper metadata. Once a valid DeviceTypeList has been received, FHEM restores the IDs after restart through its normal statefile or configDB handling, even when the Matter server is still disconnected. Repeated identical values do not produce additional reading events. Invalid Descriptor responses do not erase previously known IDs. For endpoints that have **never** supplied a valid DeviceTypeList, the existing cluster-based fallback is still based on currently observed runtime clusters; the fix does not invent an authoritative device type or add polling. The runtime capabilities/command metadata remains transient and is not treated as a persisted reading.
 
 `matter_status=present` / `removed` indicates membership in the server's node list, **not** physical availability. `available=true` / `false` indicates reachability only if reported by the server. Node-wide `model` and `available` values are mirrored from the root to endpoints when known. No recurring availability poll is introduced.
 
@@ -172,7 +216,7 @@ The available commands depend on the endpoint's reported clusters and commands. 
 
 `set <MATTERDevice> getConfig` reads attributes from the **implemented Matter clusters**, the global capability metadata and the endpoint's DeviceTypeList. It is **not** a read of all possible attributes of every Matter cluster.
 
-Supported MATTER IO attributes include `disable:0,1` and `autocreate:0,1` (default `1`). Setting `autocreate` to `0` prevents newly discovered FHEM root/endpoint devices from being created; it does not delete Matter-server nodes or stop updates to existing FHEM devices.
+Supported MATTER IO attributes include `disable:0,1`, `autocreate:0,1` (default `1`) and `commissionMode:network,auto` (default `network`). Setting `autocreate` to `0` prevents newly discovered FHEM root/endpoint devices from being created; it does not delete Matter-server nodes or stop updates to existing FHEM devices. `commissionMode` affects subsequent `commissionCode` requests without an explicit mode.
 
 MATTERDevice attributes include `IODev`, legacy capability overrides (for example `has_onoff`, `has_level`, `has_ct`, `has_wc` and `has_lock`) and level/color limits. If a command list has been reported, that server metadata takes precedence over legacy positive flags; a manually configured `has_*=0` disables the corresponding control.
 
@@ -187,7 +231,7 @@ MATTERDevice attributes include `IODev`, legacy capability overrides (for exampl
 
 `prove -v t/matter_node_sync.t` runs modeled FHEM callback tests and WebSocket socketpair tests (including fragmented TCP delivery, large frames, node identity, capability handling, commissioning and endpoint synchronization). `.github/workflows/perl-tests.yml` runs those Perl tests in CI. The suite tests module behavior against simulated peers, not physical device behavior.
 
-For module changes, run `bash make_controls.sh` and commit its updated `controls_matter.txt` alongside the changed Perl source. `bash make_controls.sh --check` and `.github/workflows/controls-matter.yml` verify the generated manifest. Its Git-blob sizes match the raw published files and its timestamps advance for changed modules, including same-size edits. `CHANGED` records user-facing changes.
+For module changes, run `bash make_controls.sh` and commit its updated `controls_matter.txt` alongside the changed Perl source. `bash make_controls.sh --check` and `.github/workflows/controls-matter.yml` verify the generated manifest. Its Git-blob sizes match the raw published files and its timestamps advance for changed modules, including same-size edits. Keep `CHANGED` to the current published notes and append historical changes to [CHANGELOG.md](CHANGELOG.md).
 
 Follow [AGENTS.md](AGENTS.md) and [AGENTS-MATTER.md](AGENTS-MATTER.md) for documentation and release metadata maintenance. The existing MATTER IO `VERSION` internal identifies the module version; server/device firmware versions are separate. Changes on feature branches are not automatically published.
 

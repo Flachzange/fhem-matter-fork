@@ -6,6 +6,8 @@ use warnings;
 use JSON;
 use Scalar::Util qw(blessed);
 
+our $init_done; # FHEM startup: statefile and attributes are not yet restored
+
 # Globale Matter-Metadaten-IDs. Sie werden unabhängig von der clusterspezifischen
 # Attributdefinition verarbeitet. EventList (0xFFFA) wird für ältere
 # Matter-Versionen weiterhin unterstützt.
@@ -18,7 +20,7 @@ my %MATTER_GLOBAL_ATTRIBUTES = (
     0xFFFD => "cluster_revision",
 );
 
-# Device Type IDs from the Matter Device Library; values are used for UI only.
+# Device Type IDs from the Matter Device Library; used for UI and FHEM groups.
 # Descriptor.DeviceTypeList is authoritative when supplied by the server.
 my %MATTER_DEVICE_TYPE_LABELS = (
     0x000A => "Door lock",
@@ -29,7 +31,7 @@ my %MATTER_DEVICE_TYPE_LABELS = (
     0x0016 => "Root node",
     0x002B => "Fan",
     0x002C => "Air quality sensor",
-    0x0076 => "Smoke/CO alarm",
+    0x0076 => "Smoke CO Alarm",
     0x0100 => "On/Off light",
     0x0101 => "Dimmable light",
     0x0103 => "On/Off light switch",
@@ -47,9 +49,12 @@ my %MATTER_DEVICE_TYPE_LABELS = (
     0x0305 => "Pressure sensor",
     0x0306 => "Flow sensor",
     0x0307 => "Humidity sensor",
+    0x0510 => "Electrical Sensor",
     0x0850 => "On/Off sensor",
 );
-my %MATTER_UTILITY_DEVICE_TYPES = map { $_ => 1 } (0x000E, 0x0013, 0x0016);
+# Structural types do not describe a separately usable function. Electrical Sensor
+# (0x0510) is a Matter utility type too, but does represent a useful measurement endpoint.
+my %MATTER_STRUCTURAL_DEVICE_TYPES = map { $_ => 1 } (0x000E, 0x0011, 0x0012, 0x0013, 0x0014, 0x0016);
 
 # Zentrale Definition der vom FHEM-Modul fachlich unterstützten Cluster, Attribute und Commands
 my %MATTER_CLUSTERS = (
@@ -64,9 +69,9 @@ my %MATTER_CLUSTERS = (
             0x0000 => { name => "state", is_reading => 0, is_attribute => 0},
         },
         commands   => {
-            0x00   => { name => "Off",    set_list => "off:noArg" },
-            0x01   => { name => "On",     set_list => "on:noArg", forbidden_features => ["off_only"] },
-            0x02   => { name => "Toggle", set_list => "toggle:noArg", forbidden_features => ["off_only"] },
+            0x00   => { name => "Off" },
+            0x01   => { name => "On", forbidden_features => ["off_only"] },
+            0x02   => { name => "Toggle", forbidden_features => ["off_only"] },
             0x40   => { name => "OffWithEffect", set_list => "off_with_effect:textField", required_features => ["lighting"] },
             0x41   => { name => "OnWithRecallGlobalScene", set_list => "on_with_recall_global_scene:noArg", required_features => ["lighting"] },
             0x42   => { name => "OnWithTimedOff", set_list => "on_with_timed_off:textField", required_features => ["lighting"] },
@@ -89,15 +94,15 @@ my %MATTER_CLUSTERS = (
             0x4000 => { name => "startup_current_level", is_reading => 1, is_attribute => 0, required_features => ["lighting"] },
         },
         commands   => {
-            0x00   => { name => "MoveToLevel", set_list => "move_to_level:slider,0,1,254 textField" },
-            0x01   => { name => "Move", set_list => "move:up,down slider,0,1,254 textField" },
-            0x02   => { name => "Step", set_list => "step:up, down slider,0,1,254 textField" },
-            0x03   => { name => "Stop", set_list => "stop:textField" },
-            0x04   => { name => "MoveToLevelWithOnOff", set_list => "move_to_level:slider,0,1,254 textField" },
-            0x05   => { name => "MoveWithOnOff", set_list => "move:up,down slider,0,1,254 textField" },
-            0x06   => { name => "StepWithOnOff", set_list => "step:up, down slider,0,1,254 textField" },
-            0x07   => { name => "StopWithOnOff", set_list => "stop:textField" },
-            0x08   => { name => "MoveToClosestFrequency", set_list => "move_to_frequency:textField", required_features => ["frequency"] },
+            0x00   => { name => "MoveToLevel" },
+            0x01   => { name => "Move" },
+            0x02   => { name => "Step" },
+            0x03   => { name => "Stop" },
+            0x04   => { name => "MoveToLevelWithOnOff" },
+            0x05   => { name => "MoveWithOnOff" },
+            0x06   => { name => "StepWithOnOff" },
+            0x07   => { name => "StopWithOnOff" },
+            0x08   => { name => "MoveToClosestFrequency", required_features => ["frequency"] },
         }
     },
     0x0028 => {
@@ -229,8 +234,8 @@ my %MATTER_CLUSTERS = (
             0x0021 => { name => "language", is_reading => 1, is_attribute => 0 },
         },
         commands   => {
-            0x00   => { name => "LockDoor",   set_list => "lock:noArg" },
-            0x01   => { name => "UnlockDoor", set_list => "unlock:noArg" },
+            0x00   => { name => "LockDoor" },
+            0x01   => { name => "UnlockDoor" },
         },
     },
     0x0102 => {
@@ -268,11 +273,11 @@ my %MATTER_CLUSTERS = (
 
         },
         commands => {
-            0x00   => { name => "UpOrOpen", set_list => "on:noArg" },
-            0x01   => { name => "DownOrClose", set_list => "off:noArg" },
-            0x02   => { name => "StopMotion", set_list => "stop:noArg" },
-            0x05   => { name => "GoToLiftPercentage", set_list => "pct:slider,0,1,100", required_features => ["lift"] },
-            0x08   => { name => "GoToTiltPercentage", set_list => "tilt:slider,0,1,100", required_features => ["tilt"] },
+            0x00   => { name => "UpOrOpen" },
+            0x01   => { name => "DownOrClose" },
+            0x02   => { name => "StopMotion" },
+            0x05   => { name => "GoToLiftPercentage", required_features => ["lift"] },
+            0x08   => { name => "GoToTiltPercentage", required_features => ["tilt"] },
         },
     },
     0x0300 => {
@@ -310,6 +315,7 @@ sub MATTERDevice_Initialize($) {
     $hash->{SetFn}    = "MATTERDevice_Set";
     $hash->{GetFn}    = "MATTERDevice_Get";
     $hash->{ParseFn}  = "MATTERDevice_Parse";
+    $hash->{NotifyFn} = "MATTERDevice_Notify";
     $hash->{FW_detailFn} = "MATTERDevice_FWDetail";
     $hash->{FW_deviceOverview} = 1; # Keep FHEMWEB DeviceOverview above the endpoint links.
     $hash->{AttrList} = "IODev " .
@@ -343,28 +349,92 @@ sub MATTERDevice_Initialize($) {
     $hash->{MatchList} = { "1" => ".*" };
 }
 
+# Root status is an interpreted node-wide reachability report, not an endpoint
+# state or a copy of the last saved available value.
+sub MATTERDevice_SetRootState($$) {
+    my ($hash, $state) = @_;
+    return unless ($hash->{endpoint_id} // 0) == 0;
+    readingsSingleUpdate($hash, 'state', $state, 1)
+        if ReadingsVal($hash->{NAME}, 'state', '') ne $state;
+}
+
+sub MATTERDevice_UpdateAvailability($$) {
+    my ($hash, $reported) = @_;
+    return unless ($hash->{endpoint_id} // 0) == 0;
+    my $boolean = MATTERDevice_NormalizeBoolean($reported);
+    return unless defined $boolean;
+    my $available = $boolean ? 'true' : 'false';
+    my $state = $boolean ? 'online' : 'offline';
+    my $change_available = ReadingsVal($hash->{NAME}, 'available', '') ne $available;
+    my $change_state = ReadingsVal($hash->{NAME}, 'state', '') ne $state;
+    if ($change_available || $change_state) {
+        readingsBeginUpdate($hash);
+        readingsBulkUpdate($hash, 'available', $available) if $change_available;
+        readingsBulkUpdate($hash, 'state', $state) if $change_state;
+        readingsEndUpdate($hash, 1);
+    }
+    MATTERDevice_SyncNodeReadings($hash);
+}
+
+# Config and statefile restoration complete before INITIALIZED/REREADCFG.
+# The former module created exactly 'stateFormat available' automatically.
+# Migrate that legacy default once, without altering other user formatting.
+sub MATTERDevice_Notify($$) {
+    my ($hash, $dev) = @_;
+    return unless ($hash->{endpoint_id} // 0) == 0 &&
+                  ($dev->{NAME} // '') eq 'global';
+    return unless grep { $_ eq 'INITIALIZED' || $_ eq 'REREADCFG' }
+                  @{$dev->{CHANGED} // []};
+    my $name = $hash->{NAME};
+    if (AttrVal($name, 'stateFormat', '') eq 'available' &&
+        ReadingsVal($name, 'state', '') !~ /\A(?:online|offline|unknown|removed)\z/) {
+        my $error = CommandDeleteAttr(undef, "$name stateFormat");
+        Log3 $name, 3, "MATTERDevice: Cannot remove legacy stateFormat on $name: $error" if $error;
+    }
+    MATTERDevice_SetRootState($hash, 'unknown');
+}
+
 sub MATTERDevice_Define($$) {
     my ($hash, $def) = @_;
     my @a = split("[ \t]+", $def);
 
-    return "wrong syntax: define <name> MATTERDevice <node_id> [<endpoint_id>, <root_device_name>]" if (@a < 3);
+    # Upgrade existing endpoint definitions in place. The old root name is a
+    # mutable FHEM label, not part of the Matter node/endpoint identity.
+    my $legacy_def = @a == 5 && ($a[4] // '') =~ /^[A-Za-z0-9_.-]+$/;
+    return "wrong syntax: define <name> MATTERDevice <node_id> [<endpoint_id>]"
+        unless (@a == 3 || @a == 4 || $legacy_def)
+            && ($a[2] // '') =~ /^\d+$/
+            && (@a == 3 || ($a[3] // '') =~ /^[1-9]\d*$/);
 
-    my $name    = $a[0];
+    my $name = $a[0];
     my $node_id = $a[2];
     my $endpoint_id = $a[3] // 0;
-    my $root_device_name = $a[4] // undef;
 
+    if ($legacy_def) {
+        $hash->{DEF} = "$node_id $endpoint_id";
+        Log3 $name, 3, "MATTERDevice: Migrated endpoint DEF to '$hash->{DEF}'; use save to persist";
+    }
+
+    # CommandModify can reuse a root hash for a different identity.
+    if (($hash->{endpoint_id} // -1) == 0 && defined $hash->{node_id}) {
+        my $prior_io = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
+        my $key = "$prior_io:$hash->{node_id}";
+        delete $modules{MATTERDevice}{defptr}{$key}
+            if ($modules{MATTERDevice}{defptr}{$key} // '') eq $hash;
+    }
     $hash->{node_id} = $node_id;
     $hash->{endpoint_id} = $endpoint_id;
-    $hash->{STATE}   = "Initialized";
-    if ($root_device_name) {
-        $hash->{device} = $root_device_name;
-    }
+    # The root name is derived from IODev + node ID, never from the DEF.
+    delete $hash->{device};
     
+    # NotifyFn is registered module-wide; limit all devices, including
+    # endpoints, to global events rather than the entire FHEM event stream.
+    $hash->{NOTIFYDEV} = 'global';
     if ($endpoint_id == 0) {
         AssignIoPort($hash);
         my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
         $modules{MATTERDevice}{defptr}{"$io_name:$node_id"} = $hash;
+        MATTERDevice_SetRootState($hash, 'unknown') if $init_done;
     }
     Log3 $name, 3, "MATTERDevice: Defined node_id $node_id for $name";
     return undef;
@@ -374,7 +444,9 @@ sub MATTERDevice_Undef($$) {
 my ($hash, $arg) = @_;
     if (($hash->{node_id}) && ($hash->{endpoint_id} == 0)) {
         my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
-        delete $modules{MATTERDevice}{defptr}{"$io_name:$hash->{node_id}"};
+        my $key = "$io_name:$hash->{node_id}";
+        delete $modules{MATTERDevice}{defptr}{$key}
+            if ($modules{MATTERDevice}{defptr}{$key} // '') eq $hash;
     }
     return undef;
 }
@@ -386,6 +458,17 @@ sub MATTERDevice_SetAttributeIfNotExists($$$) {
         CommandAttr(undef, "$name $attr_name $val");
         Log3 $name, 4, "MATTERDevice: Auto-set attribute $attr_name = $val for $name";
     }
+}
+
+# Never interpret string "false" or malformed objects as Matter boolean true.
+sub MATTERDevice_NormalizeBoolean {
+    my ($value) = @_;
+    return undef unless defined $value;
+    return $value ? 1 : 0
+        if blessed($value) && ($value->isa('JSON::PP::Boolean') ||
+                               $value->isa('JSON::XS::Boolean'));
+    return $value + 0 if !ref($value) && $value =~ /\A[01]\z/;
+    return undef;
 }
 
 sub MATTERDevice_NormalizeMatterId($) {
@@ -438,19 +521,9 @@ sub MATTERDevice_CapabilityContains($$$$) {
     return exists($list->{$id}) ? 1 : 0;
 }
 
-sub MATTERDevice_CommandGenerated($$$) {
-    my ($hash, $cluster_id, $command_id) = @_;
-    return MATTERDevice_CapabilityContains($hash, $cluster_id, "generated_commands", $command_id);
-}
-
 sub MATTERDevice_CommandAccepted($$$) {
     my ($hash, $cluster_id, $command_id) = @_;
     return MATTERDevice_CapabilityContains($hash, $cluster_id, "accepted_commands", $command_id);
-}
-
-sub MATTERDevice_EventSupported($$$) {
-    my ($hash, $cluster_id, $event_id) = @_;
-    return MATTERDevice_CapabilityContains($hash, $cluster_id, "event_list", $event_id);
 }
 
 sub MATTERDevice_AttributeSupported($$$) {
@@ -567,6 +640,16 @@ sub MATTERDevice_CommandSupported($$$) {
     return 1;
 }
 
+# Keep brightness bounds consistent across controls, commands and readings.
+sub MATTERDevice_MaxBrightness {
+    my ($hash) = @_;
+    my $max = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
+        ? AttrVal($hash->{NAME}, 'max_brightness', 254) : 254;
+    return 254 unless defined($max) && !ref($max) &&
+        $max =~ /^\d+$/ && $max > 0 && $max <= 254;
+    return $max;
+}
+
 sub MATTERDevice_Set($$@) {
     my ($hash, $name, $cmd, @args) = @_;
 
@@ -575,7 +658,6 @@ sub MATTERDevice_Set($$@) {
     my $valid = 0;
 
     if ($cmd eq "?") {
-        my $list_str = join(" ", @setList);
         return "Unknown argument $cmd, choose one of $list_str";
     }
 
@@ -588,7 +670,6 @@ sub MATTERDevice_Set($$@) {
     }
 
     unless ($valid) {
-        my $list_str = join(" ", @setList);
         return "Unknown argument $cmd, choose one of $list_str";
     }
     
@@ -596,6 +677,22 @@ sub MATTERDevice_Set($$@) {
     my $level_payload = undef;
     my $node_id     = $hash->{node_id};
     my $endpoint_id = $hash->{endpoint_id} // 1;
+    my $io_hash = $hash->{IODev};
+    return "MATTER: No active WebSocket connection for $name"
+        unless $io_hash && $io_hash->{CD} && $io_hash->{websocket} &&
+            ($io_hash->{ws_status} // '') eq 'connected' &&
+            $io_hash->{fhem}{helper}{sendWS};
+
+    # Direct FHEM commands must not coerce malformed numeric arguments to zero.
+    if ($cmd =~ /^(?:brightness|pct|tilt|ct|frequency)$/) {
+        return "Usage: set $name $cmd <non-negative integer>"
+            unless @args == 1 && defined($args[0]) && $args[0] =~ /\A\d+\z/;
+        return "$cmd must be between 0 and 100" if ($cmd eq 'pct' || $cmd eq 'tilt') && $args[0] > 100;
+        return "Invalid brightness" if $cmd eq 'brightness' &&
+            $args[0] > MATTERDevice_MaxBrightness($hash);
+        return "Invalid color temperature" if $cmd eq 'ct' && (!$args[0] || $args[0] > 65534);
+        return "Invalid frequency" if $cmd eq 'frequency' && (!$args[0] || $args[0] > 65535);
+    }
 
     if ($cmd eq "on" || $cmd eq "off") {
         my $onoff_command_id = ($cmd eq "on") ? 0x01 : 0x00;
@@ -605,7 +702,7 @@ sub MATTERDevice_Set($$@) {
 
         if ($can_onoff) {
             $payload = {
-                message_id => int(rand(100000) + 1),
+                message_id => MATTER_NextMessageId($io_hash),
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
@@ -617,7 +714,7 @@ sub MATTERDevice_Set($$@) {
         }
         elsif ($can_wc) {
             $payload = {
-                message_id => int(rand(100000) + 1),
+                message_id => MATTER_NextMessageId($io_hash),
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
@@ -630,7 +727,7 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "toggle") {
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id     => $node_id,
@@ -667,7 +764,7 @@ sub MATTERDevice_Set($$@) {
         return "Unknown EffectVariant '$variant_name' for $effect_name" if (!exists($effect_variant{$effect_name}{$variant_name}));
 
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -683,7 +780,7 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "on_with_recall_global_scene") {
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -707,7 +804,7 @@ sub MATTERDevice_Set($$@) {
         return "offWaitTime must be between 0 and 65534 (0.1 s units)" if ($off_wait_time > 65534);
 
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -724,7 +821,7 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "stop") {
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -737,7 +834,7 @@ sub MATTERDevice_Set($$@) {
     elsif ($cmd eq "brightness") {
         my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -753,7 +850,7 @@ sub MATTERDevice_Set($$@) {
         if ($can_wc_pct) {
             my $position = $args[0] * 100;
             $payload = {
-                message_id => int(rand(100000) + 1),
+                message_id => MATTER_NextMessageId($io_hash),
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
@@ -764,12 +861,10 @@ sub MATTERDevice_Set($$@) {
                 }
             };
         } else {
-            my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-            ? AttrVal($name, "max_brightness", 254)
-            : 254;
+            my $max_level = MATTERDevice_MaxBrightness($hash);
             my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
             $payload = {
-                message_id => int(rand(100000) + 1),
+                message_id => MATTER_NextMessageId($io_hash),
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
@@ -784,7 +879,7 @@ sub MATTERDevice_Set($$@) {
     elsif ($cmd eq "tilt") {
         my $tilt = $args[0] * 100;
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -830,7 +925,7 @@ sub MATTERDevice_Set($$@) {
                 $y = 65279 if $y > 65279;
 
                 $payload = {
-                    message_id => int(rand(100000) + 1),
+                    message_id => MATTER_NextMessageId($io_hash),
                     command    => "device_command",
                     args       => {
                         node_id      => $node_id,
@@ -847,12 +942,10 @@ sub MATTERDevice_Set($$@) {
             my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
             my $can_level = $use_with_onoff || MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
             if ($can_level) {
-                my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-                    ? AttrVal($name, "max_brightness", 254)
-                    : 254;
+                my $max_level = MATTERDevice_MaxBrightness($hash);
                 my $level = int(($rgb_max / 255) * $max_level + 0.5);
                 $level_payload = {
-                    message_id => int(rand(100000) + 1),
+                    message_id => MATTER_NextMessageId($io_hash),
                     command    => "device_command",
                     args       => {
                         node_id      => $node_id,
@@ -884,12 +977,10 @@ sub MATTERDevice_Set($$@) {
             my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
             my $can_level = $use_with_onoff || MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
             if ($can_level) {
-                my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-                    ? AttrVal($name, "max_brightness", 254)
-                    : 254;
+                my $max_level = MATTERDevice_MaxBrightness($hash);
                 my $level = int($max * $max_level + 0.5);
                 $level_payload = {
-                    message_id => int(rand(100000) + 1),
+                    message_id => MATTER_NextMessageId($io_hash),
                     command    => "device_command",
                     args       => {
                         node_id      => $node_id,
@@ -902,7 +993,7 @@ sub MATTERDevice_Set($$@) {
             }
 
             $payload = {
-                message_id => int(rand(100000) + 1),
+                message_id => MATTER_NextMessageId($io_hash),
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
@@ -916,7 +1007,7 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "ct") {
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -928,8 +1019,7 @@ sub MATTERDevice_Set($$@) {
         };
     }
     elsif ($cmd eq "getConfig") {
-        my $ioHash = $hash->{IODev};
-        return "No IODev assigned to $name" if (!$ioHash || !$ioHash->{fhem}{helper}{sendWS});
+        my $ioHash = $io_hash; # Connection was already checked above.
 
         my @paths;
 
@@ -957,8 +1047,30 @@ sub MATTERDevice_Set($$@) {
 
         # Als Bulk-Array an den Server schicken.
         if (@paths) {
-            my $msg_id = int(rand(100000) + 1);
-            $ioHash->{helper}{pending_config}{$msg_id} = $node_id;
+            my $pending_reads = ($ioHash->{helper}{pending_config} //= {});
+            foreach my $id (keys %$pending_reads) {
+                my $entry = $pending_reads->{$id};
+                if (ref($entry) eq 'HASH' &&
+                    gettimeofday() - ($entry->{created_at} // 0) > 120) {
+                    delete $pending_reads->{$id};
+                    next;
+                }
+                # Do not allow a second request for this endpoint to return
+                # an older configuration after a newer response was applied.
+                return "MATTER: getConfig already in progress for $name"
+                    if ref($entry) eq 'HASH' &&
+                       $entry->{node_id} eq $node_id &&
+                       $entry->{endpoint_id} == $endpoint_id;
+            }
+            return "MATTER: Too many pending read requests"
+                if scalar(keys %$pending_reads) >= 128;
+            my $msg_id = MATTER_NextMessageId($ioHash);
+            return "MATTER: Cannot allocate request ID" unless defined $msg_id;
+            $pending_reads->{$msg_id} = {
+                node_id => $node_id,
+                endpoint_id => int($endpoint_id),
+                created_at => gettimeofday()
+            };
 
             my $config_payload = {
                 message_id   => $msg_id,
@@ -969,7 +1081,10 @@ sub MATTERDevice_Set($$@) {
                 }
             };
             
-            $ioHash->{fhem}{helper}{sendWS}->(encode_json($config_payload));
+            unless ($ioHash->{fhem}{helper}{sendWS}->(encode_json($config_payload))) {
+                delete $pending_reads->{$msg_id};
+                return "MATTER: Unable to send getConfig on $name";
+            }
             Log3 $name, 3, "MATTERDevice: Wildcard getConfig triggered for node $node_id, endpoint $endpoint_id (" . scalar(@paths) . " paths queried).";
         }
 
@@ -977,7 +1092,7 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "frequency") {
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -990,7 +1105,7 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "lock") {
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -1002,7 +1117,7 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "unlock") {
         $payload = {
-            message_id => int(rand(100000) + 1),
+            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -1017,8 +1132,10 @@ sub MATTERDevice_Set($$@) {
 
     if ($hash->{IODev} && $hash->{IODev}{fhem}{helper}{sendWS}) {
         my $sendWS = $hash->{IODev}{fhem}{helper}{sendWS};
-        $sendWS->(encode_json($level_payload)) if ($level_payload);
-        $sendWS->(encode_json($payload)) if ($payload);
+        return "MATTER: Unable to send brightness command on $name"
+            if $level_payload && !$sendWS->(encode_json($level_payload));
+        return "MATTER: Unable to send device command on $name"
+            if $payload && !$sendWS->(encode_json($payload));
     } else {
         return "No send function found in IODev for $name";
     }
@@ -1049,7 +1166,8 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
     # Descriptor cluster (0x001D), DeviceTypeList (0x0000).
     # Matter.js supplies an array of DeviceTypeStruct objects (deviceType, revision).
-    # Store validated IDs only in the endpoint's runtime helper; no new readings/events.
+    # Persist the advertised IDs as a canonical reading. Unlike helper data,
+    # regular FHEM readings survive a restart through the statefile/configDB.
     if ($cluster_id == 0x001D && $attr_id == 0x0000) {
         if (ref($value) eq 'ARRAY') {
             my (@types, %seen);
@@ -1060,7 +1178,12 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
                 next unless defined($type_id) && $type_id <= 0xFFFFFFFF;
                 push @types, $type_id unless $seen{$type_id}++;
             }
-            $hash->{helper}{device_types} = \@types if @types;
+            if (@types) {
+                my $ids = join(',', map { sprintf('0x%04X', $_) } sort { $a <=> $b } @types);
+                readingsSingleUpdate($hash, 'device_type_ids', $ids, 1)
+                    if ReadingsVal($name, 'device_type_ids', '') ne $ids;
+                MATTERDevice_EnsureTypeGroup($hash);
+            }
         }
         return;
     }
@@ -1074,11 +1197,8 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     my $is_attribute = $attr_info->{is_attribute} // 0;
     my $transform = $attr_info->{transform};
 
-    # Bool-Handling für JSON (nur prüfen, wenn es überhaupt ein Objekt/Blessing ist)
-    if (ref($value) && blessed($value) && $value->isa('JSON::PP::Boolean')) {
-        $value = $value ? 1 : 0;
-    }
-
+    my $boolean = MATTERDevice_NormalizeBoolean($value);
+    $value = $boolean if blessed($value) && defined($boolean);
     return if !defined($value);
     if ($transform && ref($transform) eq 'CODE') {
         # Numeric transformations must not turn malformed values into zero.
@@ -1088,6 +1208,11 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         $value = $transform->($value);
         return if !defined($value);
     }
+    return if ref($value);
+    return if $cluster_id == 0x0006 && $attr_id == 0 &&
+              !defined(MATTERDevice_NormalizeBoolean($value));
+    return if $cluster_id == 0x0008 && $attr_id == 0 &&
+              ($value !~ /^\d+$/ || $value > 254);
 
     # Existing installations may depend on manually managed has_* attributes.
     my %legacy_features = (
@@ -1103,7 +1228,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     readingsBeginUpdate($hash);
 
     # Spezieller Fall: OnOff State mappen
-    if ($cluster_id == 6 && $attr_id == 0) {
+    if ($cluster_id == 6 && $attr_id == 0 && ($hash->{endpoint_id} // 0) > 0) {
         my $state_val = $value ? "on" : "off";
         readingsBulkUpdate($hash, "state", $state_val);
     }
@@ -1116,15 +1241,11 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
             MATTERDevice_SetAttributeIfNotExists($name, $attr_name, $value);
         }
         if ($attr_name eq "brightness") {
-            # Während getConfig wird der Capability-Cache vor dem Neuaufbau geleert.
-            # Attribute aus dem Result-Hash haben keine garantierte Reihenfolge. Solange
-            # AttributeList noch nicht verarbeitet wurde, den bereits bekannten Wert nutzen.
-            my $attribute_list = $hash->{helper}{capabilities}{0x0008}{attribute_list};
-            my $max_level = (
-                ref($attribute_list) ne 'HASH' ||
-                MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-            ) ? AttrVal($name, "max_brightness", 254) : 254;
-            my $pct_value = int(int($value) * 100 / $max_level);
+            # Metadata and user overrides are interpreted consistently with
+            # the set slider and outgoing LevelControl commands.
+            my $max_level = MATTERDevice_MaxBrightness($hash);
+            my $pct_value = int($value * 100 / $max_level);
+            $pct_value = 100 if $pct_value > 100;
             readingsBulkUpdate($hash, "pct", $pct_value);
         }
     }
@@ -1141,25 +1262,15 @@ sub MATTERDevice_Parse($ $) {
     my $name = $hash->{NAME};
 
     my $decoded = eval { decode_json($data) };
-    if ($@) {
-        Log3 $name, 3, "MATTERDevice: Parse JSON error: $@";
+    if ($@ || ref($decoded) ne 'HASH') {
+        Log3 $name, 3, "MATTERDevice: Invalid JSON object";
         return;
     }
 
     my $my_endpoint = $hash->{endpoint_id} // 0;
 
-    # Availability is node-wide. An absent or invalid boolean is not a report.
-    my $update_available = sub {
-        my ($available) = @_;
-        return if $my_endpoint != 0;
-        return unless defined($available) &&
-            ((!ref($available) && $available =~ /^(?:0|1)$/) ||
-             ref($available) =~ /Boolean$/);
-        my $available_value = $available ? "true" : "false";
-        readingsSingleUpdate($hash, "available", $available_value, 1)
-            if ReadingsVal($name, 'available', '') ne $available_value;
-        MATTERDevice_SyncNodeReadings($hash);
-    };
+    # Availability is node-wide; missing/invalid values are not state reports.
+    my $update_available = sub { MATTERDevice_UpdateAvailability($hash, $_[0]) };
     
     # Hilfs-Subroutine zur internen Weiterleitung an Root oder Child
     my $route_attribute = sub {
@@ -1169,15 +1280,16 @@ sub MATTERDevice_Parse($ $) {
             if ($cluster == 0x001D && $attr == 0x0003 && ref($val) eq 'ARRAY') {
                 Log3 $name, 3, "MATTERDevice: Found PartsList on node $hash->{node_id}, endpoints: " . join(", ", @{$val});
                 foreach my $child_ep (@{$val}) {
-                    # Nur Child anlegen, wenn es nicht der Root-Endpoint selbst ist
-                    if ($child_ep != $my_endpoint) {
+                    next unless defined($child_ep) && !ref($child_ep) && $child_ep =~ /^\d+$/;
+                    # Only root endpoints may create sibling endpoints.
+                    if ($my_endpoint == 0 && $child_ep != $my_endpoint) {
                         MATTERDevice_GetOrCreateChild($hash, $child_ep);
                     }
                 }
             }
             MATTERDevice_ProcessAttributeValue($hash, $cluster, $attr, $val);
         } else {
-            # Nur das Root-Device (oder valide Nodes) verteilen an Children weiter
+            return unless $my_endpoint == 0;
             my $childHash = MATTERDevice_GetOrCreateChild($hash, $ep);
             if ($childHash) {
                 MATTERDevice_ProcessAttributeValue($childHash, $cluster, $attr, $val);
@@ -1221,9 +1333,12 @@ sub MATTERDevice_Parse($ $) {
     # 3. LIVE UPDATES (event == 'attribute_updated')
     if (exists $decoded->{event} && $decoded->{event} eq 'attribute_updated' && ref($decoded->{data}) eq 'ARRAY') {
         my ($node_id, $attribute_path, $value) = @{$decoded->{data}};
-        if ($attribute_path =~ m{^(\d+)/(\d+)/(\d+)$}) {
+        return unless defined($node_id) && !ref($node_id) &&
+            $hash->{node_id} eq $node_id;
+        if (defined($attribute_path) && !ref($attribute_path) &&
+            $attribute_path =~ m{^(\d+)/(\d+)/(\d+)$}) {
             $route_attribute->($1, $2, $3, $value);
-            Log3 $name, 4, "MATTERDevice: Live update ($attribute_path) = $value";
+            Log3 $name, 4, "MATTERDevice: Live attribute update ($attribute_path)";
         }
         return;
     }
@@ -1274,9 +1389,7 @@ sub MATTERDevice_GetSetList($) {
         MATTERDevice_CommandSupported($hash, 0x0008, 0x04) ||
         MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
     if ($can_level) {
-        my $max_level = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-            ? AttrVal($name, "max_brightness", 254)
-            : 254;
+        my $max_level = MATTERDevice_MaxBrightness($hash);
         $add->("brightness:slider,0,1,$max_level");
         $add->("pct:slider,0,1,100");
     }
@@ -1331,20 +1444,53 @@ sub MATTERDevice_GetSetList($) {
     return @list;
 }
 
-# A single FHEMWEB group per Matter node, also unique across Matter IO devices.
-# Never replace a group explicitly configured by the FHEM user.
-sub MATTERDevice_EnsureNodeGroup($) {
+# Read canonical persisted Matter Descriptor IDs instead of transient helper data.
+# Malformed or missing readings must never be interpreted as a valid device type.
+sub MATTERDevice_DeviceTypeIds($) {
+    my ($hash) = @_;
+    my $ids = ReadingsVal($hash->{NAME}, 'device_type_ids', '');
+    return () unless defined($ids)
+        && $ids =~ /^0x[0-9A-Fa-f]{1,8}(?:,0x[0-9A-Fa-f]{1,8})*$/;
+    return map { hex($_) } split(/,/, $ids);
+}
+
+# Root endpoints share one administrative FHEMWEB group; functional
+# endpoints use their single non-utility Matter Descriptor device type.
+# Replace only legacy node groups or uncustomized type groups.
+sub MATTERDevice_EnsureTypeGroup($) {
     my ($device) = @_;
     return unless $device && defined($device->{NAME});
     my $name = $device->{NAME};
-    return if defined(AttrVal($name, 'group', undef));
     my $node_id = $device->{node_id};
     my $io_name = $device->{IODev} ? $device->{IODev}{NAME} : AttrVal($name, 'IODev', '');
     return unless defined($node_id) && $node_id =~ /^\d+$/ && defined($io_name) && length($io_name);
 
-    my $group = "Node $node_id ($io_name)";
+    my $root = ($device->{endpoint_id} // 0) == 0;
+    my $group;
+    if ($root) {
+        $group = 'Matter Nodes';
+    } else {
+        my @declared = MATTERDevice_DeviceTypeIds($device);
+        my @types = grep { !$MATTER_STRUCTURAL_DEVICE_TYPES{$_} } @declared;
+        # Never choose arbitrarily between multiple functional device types.
+        return if @types > 1 || !@declared;
+        $group = @types
+            ? ($MATTER_DEVICE_TYPE_LABELS{$types[0]} // sprintf("0x%04X", $types[0]))
+            : 'Matter Infrastruktur';
+    }
+
+    my $current = AttrVal($name, 'group', undef);
+    return if defined($current) && $current eq $group;
+    my $legacy = "Node $node_id ($io_name)";
+    if (defined($current) && $current ne $legacy) {
+        # Previously generated type labels can change when the Descriptor
+        # changes. Other existing group values remain user-owned.
+        my %type_labels = map { $_ => 1 } (values %MATTER_DEVICE_TYPE_LABELS, 'Matter Infrastruktur');
+        return if $root || (!$type_labels{$current} && $current !~ /^0x[0-9A-F]{4,8}$/);
+    }
+
     my $error = CommandAttr(undef, "$name group $group");
-    Log3 $name, 3, "MATTERDevice: Cannot set node group for $name: $error" if $error;
+    Log3 $name, 3, "MATTERDevice: Cannot set type group for $name: $error" if $error;
 }
 
 # Resolve an existing root's children for both navigation and group migration.
@@ -1369,9 +1515,10 @@ sub MATTERDevice_NodeChildren($) {
     } values %defs;
 }
 
-# Mirror only node-wide readings, using the same IODev/node membership as the
-# endpoint link list. Newly created children can be updated individually.
-# Missing values and unchanged values must not create endpoint events.
+# Synchronize node-wide readings and the native FHEMWEB root association,
+# using the same IODev/node membership as the endpoint link list. Newly
+# created children can be updated individually. Missing or unchanged values
+# must not create endpoint events.
 sub MATTERDevice_SyncNodeReadings($;$) {
     my ($root, $only_child) = @_;
     return unless $root && ($root->{endpoint_id} // 0) == 0;
@@ -1388,6 +1535,16 @@ sub MATTERDevice_SyncNodeReadings($;$) {
             next if defined($previous) && $previous eq $value;
             push @changes, [$reading, $value];
         }
+
+        # FHEM's getPawList() uses the persistent associatedWith reading to
+        # render "Probably associated with" links. Retain other user links.
+        # FHEM CommandRename() updates these references when a root is renamed.
+        my $links = ReadingsVal($child->{NAME}, 'associatedWith', '');
+        my %linked = map { $_ => 1 } grep { length($_) } split(/[ ,]+/, $links);
+        my $root_name = $root->{NAME};
+        push @changes, ['associatedWith', length($links) ? "$links $root_name" : $root_name]
+            unless $linked{$root_name};
+
         next unless @changes;
         readingsBeginUpdate($child);
         readingsBulkUpdate($child, $_->[0], $_->[1]) foreach @changes;
@@ -1400,9 +1557,9 @@ sub MATTERDevice_SyncNodeReadings($;$) {
 # from a switch or a light.
 sub MATTERDevice_EndpointType($) {
     my ($hash) = @_;
-    my @types = @{$hash->{helper}{device_types} // []};
+    my @types = MATTERDevice_DeviceTypeIds($hash);
     if (@types) {
-        my @specific = grep { !$MATTER_UTILITY_DEVICE_TYPES{$_} } @types;
+        my @specific = grep { !$MATTER_STRUCTURAL_DEVICE_TYPES{$_} } @types;
         @types = @specific if @specific;
         return join(", ", map {
             $MATTER_DEVICE_TYPE_LABELS{$_} // sprintf("0x%04X", $_)
@@ -1473,11 +1630,12 @@ sub MATTERDevice_GetOrCreateChild($$) {
             next unless ($device->{TYPE} // '') eq 'MATTERDevice';
             next unless ($device->{node_id} // '') eq $node_id;
             next unless ($device->{endpoint_id} // -1) == $ep_id;
-            # A device without IODev can only be reattached to its recorded root.
+            # Rebind an endpoint with a missing runtime IODev only to its
+            # explicitly configured MATTER IO; names are not identities.
             if ($device->{IODev}) {
                 next unless $device->{IODev}{NAME} eq $io_name;
             } else {
-                next unless ($device->{device} // '') eq $root_name;
+                next unless AttrVal($device->{NAME}, 'IODev', '') eq $io_name;
             }
             $child = $device;
             last;
@@ -1498,7 +1656,7 @@ sub MATTERDevice_GetOrCreateChild($$) {
             }
         }
 
-        my $error = CommandDefine(undef, "$child_name MATTERDevice $node_id $ep_id $root_name");
+        my $error = CommandDefine(undef, "$child_name MATTERDevice $node_id $ep_id");
         $child = $defs{$child_name};
         if ($error || !$child || ($child->{TYPE} // '') ne 'MATTERDevice' ||
             ($child->{node_id} // '') ne $node_id || ($child->{endpoint_id} // -1) != $ep_id) {
@@ -1532,7 +1690,7 @@ sub MATTERDevice_GetOrCreateChild($$) {
     # User-assigned names and attributes are retained for existing endpoint devices.
     $child->{device} = $root_name;
     $root_hash->{$cache_key} = $child;
-    MATTERDevice_EnsureNodeGroup($child);
+    MATTERDevice_EnsureTypeGroup($child);
     MATTERDevice_SyncNodeReadings($root_hash, $child);
     return $child;
 }
@@ -1551,25 +1709,54 @@ sub MATTERDevice_GetOrCreateChild($$) {
 <p>A MATTERDevice represents a Matter node (root endpoint 0) or one of its
 additional endpoints. It uses the assigned MATTER IO device to receive attribute
 updates and send supported commands. The module preserves existing FHEM names,
-rooms and attributes during node synchronization.</p>
+rooms and attributes during node synchronization. Device set commands
+require an active IO WebSocket; a send failure is reported as an error. It does not override FHEM's
+initial STATE, allowing the normal statefile restoration at startup.</p>
 <ul>
   <li><b>Define:</b>
-      <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id root_device_name]</code></li>
+      <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id]</code>.
+      The endpoint's IODev attribute identifies the Matter server; the root
+      name is not part of the DEF. On first load, legacy definitions with a
+      root name are normalized automatically; save the FHEM configuration once
+      after restarting to persist the shorter DEF.</li>
   <li><b>Set:</b> Depending on the reported capabilities:
       <code>on</code>, <code>off</code>, <code>brightness</code>, <code>ct</code>,
       <code>rgb</code>, <code>getConfig</code> and supported device-specific commands.</li>
   <li><b>Attributes:</b> <code>has_onoff</code>, <code>has_level</code>,
       <code>has_ct</code>, <code>has_xy</code> and other capability flags;
       existing user overrides are respected.</li>
+  <li><b>Root state:</b> Without a <code>stateFormat</code> attribute, the root's
+      <code>state</code> reading shows <code>online</code> or <code>offline</code>
+      only after valid <code>available=true/false</code> from the server,
+      <code>unknown</code> when no current report is known or the Matter IO loses
+      its connection, and <code>removed</code> when the server removes the node
+      or omits it from a complete snapshot. Root status is independent of
+      endpoint states. No polling is used.</li>
+  <li><b>Legacy display migration:</b> On <code>INITIALIZED</code> or
+      <code>REREADCFG</code>, the old autogenerated exact attribute
+      <code>stateFormat available</code> is removed if the root has no
+      new-style state reading yet. Other user-defined formats are retained.
+      An identical, manually configured old value cannot be distinguished from
+      that previous default; save the FHEM configuration after migration.</li>
   <li><b>Reading matter_status:</b> <code>present</code> means the node exists on
       the Matter server; <code>removed</code> means it was decommissioned or is
       missing from a complete server snapshot. Neither value is a reachability
       or availability indication.</li>
+  <li><b>Reading device_type_ids:</b> The validated IDs from Matter
+      <code>Descriptor.DeviceTypeList</code> are stored as comma-separated
+      hexadecimal IDs (for example <code>0x010A</code>). FHEM restores this
+      reading after a restart, so endpoint type labels and automatic grouping
+      do not depend on a new server connection. Invalid or missing Descriptor
+      updates do not overwrite known IDs.</li>
   <li><b>Readings model and available:</b> The root's <code>model</code> (from
       BasicInformation) and node-wide <code>available</code> are mirrored to
       its endpoints if reported. <code>available=true/false</code> describes
       node reachability, not individual endpoint functionality. Unchanged
       values do not generate repeated endpoint events.</li>
+  <li><b>Reading associatedWith:</b> Endpoints reference their current root
+      through FHEM's native <code>Probably associated with</code> navigation.
+      User-added associations are preserved. FHEM updates the reference when
+      the root device is renamed; no additional HTML navigation is needed.</li>
   <li><b>Capabilities:</b> Supported set commands use the Matter
       <code>AcceptedCommandList</code>, <code>FeatureMap</code> and other cluster
       metadata when available. Existing <code>has_*</code> values remain a fallback;
@@ -1578,11 +1765,18 @@ rooms and attributes during node synchronization.</p>
       power and cumulative energy clusters, where the server supplies the
       corresponding attributes.</li>
 </ul>
-<p>Nodes and their endpoints without a user-defined <code>group</code> attribute
-receive the same FHEMWEB group, <code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code>.
-Existing group values are preserved. Missing groups are also filled on already defined
-endpoints without fresh attribute updates. The detail view of the root device (endpoint 0)
-links to all its endpoint devices, even if they have been renamed.</p>
+<p>Root nodes use the administrative FHEMWEB group <code>Matter Nodes</code>.
+Functional endpoints are grouped by their single non-structural Matter
+<code>Descriptor.DeviceTypeList</code> type (for example
+<code>On/Off light</code>, <code>Electrical Sensor</code>, or
+<code>Smoke CO Alarm</code>). Endpoints with only structural types (such as
+Aggregator and Bridged Node) use <code>Matter Infrastruktur</code>.
+Additional structural types such as Power Source and OTA Requestor are ignored
+when a functional type is present. Unknown IDs use hexadecimal labels.
+Multiple distinct functional types do not cause an arbitrary group choice.
+Old generated <code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code> groups are migrated;
+custom groups are preserved. The root detail view links to its endpoints,
+even after renaming.</p>
 <p>Only newly autocreated nodes/endpoints are assigned to room <code>Matter</code>.
 Decommissioned devices are retained in FHEM rather than automatically deleted.</p>
 
@@ -1594,27 +1788,57 @@ Decommissioned devices are retained in FHEM rather than automatically deleted.</
 <h3>MATTERDevice</h3>
 <p>Ein MATTERDevice repräsentiert einen Matter-Knoten (Root-Endpunkt 0) oder einen
 seiner weiteren Endpunkte. Über das zugeordnete MATTER-IO-Device empfängt es
-Attributänderungen und sendet unterstützte Befehle. Bei der Synchronisation
-bleiben bestehende Namen, Räume und Benutzerattribute erhalten.</p>
+Attributänderungen und sendet unterstützte Befehle. Ein Set-Befehl setzt
+eine aktive IO-WebSocket-Verbindung voraus; Sendefehler werden gemeldet.
+Bei der Synchronisation bleiben bestehende Namen, Räume und Benutzerattribute erhalten. Der von FHEM
+initial gesetzte STATE bleibt unverändert, damit das Statefile beim Neustart
+den gespeicherten Anzeigestatus wiederherstellen kann.</p>
 <ul>
   <li><b>Definition:</b>
-      <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id root_device_name]</code></li>
+      <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id]</code>.
+      Das IODev-Attribut bestimmt den Matter-Server; der Root-Name gehört nicht
+      in die DEF. Bisherige dreiteilige Endpoint-Definitionen werden beim
+      ersten Laden automatisch gekürzt. Anschließend die FHEM-Konfiguration
+      einmal speichern, um die neue DEF dauerhaft zu übernehmen.</li>
   <li><b>Set:</b> Abhängig von den Fähigkeiten z. B. <code>on</code>,
       <code>off</code>, <code>brightness</code>, <code>ct</code>,
       <code>rgb</code>, <code>getConfig</code> und weitere Gerätebefehle.</li>
   <li><b>Attribute:</b> <code>has_onoff</code>, <code>has_level</code>,
       <code>has_ct</code>, <code>has_xy</code> und weitere Fähigkeitsattribute;
       vorhandene Benutzervorgaben werden nicht überschrieben.</li>
+  <li><b>Root-Status:</b> Ohne <code>stateFormat</code>-Attribut zeigt das
+      <code>state</code>-Reading am Root <code>online</code> oder
+      <code>offline</code> nur nach einer gültigen <code>available=true/false</code>-
+      Meldung des Servers, <code>unknown</code> ohne bestätigte aktuelle Meldung
+      oder bei Ausfall der Matter-IO-Verbindung und <code>removed</code> bei
+      Entfernung aus dem Matter-Server oder einer vollständigen Node-Liste.
+      Endpunkt-Zustände bleiben unverändert. Es erfolgt kein Polling.</li>
+  <li><b>Migration der alten Anzeige:</b> Nach <code>INITIALIZED</code> oder
+      <code>REREADCFG</code> wird das bisher automatisch angelegte Attribut
+      <code>stateFormat available</code> entfernt, sofern noch kein neuer
+      Root-Status gespeichert ist. Andere benutzerdefinierte Formate bleiben
+      erhalten. Ein absichtlich identisch gesetzter Altwert ist vom früheren
+      Standard nicht unterscheidbar. Nach der Migration die Konfiguration speichern.</li>
   <li><b>Reading matter_status:</b> <code>present</code> bedeutet, dass der Knoten
       auf dem Matter-Server vorhanden ist; <code>removed</code> bedeutet, dass er
       dort entfernt wurde oder in einer vollständigen Node-Liste fehlt. Das Reading
       zeigt nicht die physische Erreichbarkeit oder Verfügbarkeit an.</li>
+  <li><b>Reading device_type_ids:</b> Die validierten IDs aus
+      <code>Descriptor.DeviceTypeList</code> werden als kommaseparierte
+      Hexadezimalwerte (z. B. <code>0x010A</code>) gespeichert. FHEM stellt
+      das Reading beim Neustart wieder her; die Typanzeige und die automatische
+      Gruppierung benötigen dafür keine neue Serververbindung. Ungültige oder
+      fehlende Descriptor-Updates überschreiben die gespeicherten IDs nicht.</li>
   <li><b>Readings model und available:</b> Das am Root über BasicInformation
       ermittelte <code>model</code> und die Node-weite Erreichbarkeit
       <code>available</code> werden bei bekannten Werten an die Endpunkte
       weitergegeben. <code>available=true/false</code> beschreibt die
       Erreichbarkeit des Knotens, nicht die Funktion einzelner Endpunkte.
       Unveränderte Werte erzeugen keine weiteren Endpoint-Events.</li>
+  <li><b>Reading associatedWith:</b> Endpunkte verlinken ihren aktuellen
+      Root-Knoten über FHEMs nativen Bereich <code>Probably associated with</code>.
+      Manuell ergänzte Zuordnungen bleiben erhalten. Beim Umbenennen des Roots
+      aktualisiert FHEM die Referenz automatisch; zusätzliches HTML ist nicht nötig.</li>
   <li><b>Capabilities:</b> Unterstützte Set-Befehle werden nach Möglichkeit
       anhand der Matter-Metadaten wie <code>AcceptedCommandList</code> und
       <code>FeatureMap</code> bestimmt. Vorhandene <code>has_*</code>-Attribute
@@ -1624,12 +1848,18 @@ bleiben bestehende Namen, Räume und Benutzerattribute erhalten.</p>
       Kohlenmonoxidkonzentration, elektrische Leistung und kumulierte Energie,
       soweit die Geräte die jeweiligen Attribute liefern.</li>
 </ul>
-<p>Knoten und Endpunkte ohne manuell gesetztes <code>group</code>-Attribut
-erhalten dieselbe FHEMWEB-Gruppe <code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code>.
-Vorhandene Gruppeneinstellungen bleiben erhalten. Fehlende Gruppen werden
-auch bei bereits definierten Endpunkten ohne neue Attributmeldungen ergänzt.
-In der Detailansicht des Root-Devices (Endpunkt 0) werden die Endpunkt-Devices verlinkt,
-auch wenn diese umbenannt wurden.</p>
+<p>Root-Knoten erhalten die Verwaltungsgruppe <code>Matter Nodes</code>.
+Funktionale Endpunkte werden nach ihrem eindeutigen, nicht-strukturellen
+Matter-Gerätetyp aus <code>Descriptor.DeviceTypeList</code> gruppiert
+(z. B. <code>On/Off light</code>, <code>Electrical Sensor</code> oder
+<code>Smoke CO Alarm</code>). Rein strukturelle Endpunkte wie
+Aggregator und Bridged Node erhalten <code>Matter Infrastruktur</code>.
+Zusätzliche strukturelle Typen wie Power Source oder OTA Requestor werden
+bei vorhandener Gerätefunktion ignoriert. Unbekannte Typ-IDs erscheinen
+hexadezimal. Bei mehreren funktionalen Typen wird keine willkürliche
+Auswahl getroffen. Bisherige automatisch erzeugte
+<code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code>-Gruppen werden migriert;
+eigene Gruppen bleiben erhalten. Die Root-Detailansicht verlinkt die Endpunkte.</p>
 <p>Nur neu automatisch erzeugte Geräte werden dem Raum <code>Matter</code>
 zugeordnet. Entfernte Geräte bleiben in FHEM erhalten.</p>
 
