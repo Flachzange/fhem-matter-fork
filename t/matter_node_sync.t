@@ -2300,10 +2300,16 @@ is($sent_requests[-1]{args}{value}, 2150,
    'temperature write uses centidegrees');
 is(ReadingsVal($therm->{NAME}, 'desired-temp', ''), 21,
    'outgoing set does not optimistically overwrite measured reading');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $sent_requests[-1]{message_id}, result => undef
+}));
 is(MATTERDevice_Set($fan, $fan->{NAME}, 'fan_mode', 'high'), undef,
    'fan mode is set with native attribute write');
 is($sent_requests[-1]{args}{value}, 3,
    'fan high maps to native enum value 3');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $sent_requests[-1]{message_id}, result => undef
+}));
 is(MATTERDevice_Set($identify, $identify->{NAME}, 'identify'), undef,
    'Identify command accepted');
 is($sent_requests[-1]{args}{command_name}, 'Identify',
