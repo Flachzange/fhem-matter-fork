@@ -2408,14 +2408,87 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
    'individual update is ignored while explicitly offline');
+@sent_requests = ();
 MATTER_ProcessNode($defs{ioA}, {
     node_id => 2700, available => JSON::true,
     attributes => { '1/6/0' => JSON::true, '1/47/12' => 190 },
 });
+my @recovery_requests = grep {
+    ($_->{command} // '') eq 'read_attribute' &&
+    ($_->{args}{node_id} // 0) == 2700
+} @sent_requests;
+is(scalar(@recovery_requests), 1,
+   'offline to online generates exactly one event-driven capability read');
+is_deeply([sort @{$recovery_requests[0]{args}{attribute_path}}],
+          [sort qw(*/*/65529 */*/65531 */*/65532 */*/65533)],
+          'automatic refresh asks only for structural Matter metadata');
+ok($defs{ioA}{helper}{pending_config}{$recovery_requests[0]{message_id}}{capability_only},
+   'capability request is tracked separately from device-state updates');
+ok(!grep(/^on:noArg$/, MATTERDevice_GetSetList($offline_child)),
+   'setter is not fabricated before command metadata is received');
 is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
    'availability true with cached snapshot cannot overwrite manual state');
 is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
    'cached battery remains quarantined after available true');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $recovery_requests[0]{message_id},
+    result => {
+        '1/6/65529' => [0, 1, 2],
+        '1/6/0' => JSON::true,
+        '1/47/12' => 175,
+    }
+}));
+ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($offline_child)),
+   'recovery restores On setter from an advertised AcceptedCommandList');
+is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
+   'capability recovery does not import cached physical OnOff state');
+is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
+   'capability recovery never updates cached sensor readings');
+
+@sent_requests = ();
+is(MATTERDevice_Set($offline_child, $offline_child->{NAME}, 'getConfig'),
+   undef, 'manual getConfig remains usable while snapshots are quarantined');
+my $manual_recovery_id = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $manual_recovery_id,
+    result => {
+        '1/6/65529' => [0, 1, 2],
+        '1/6/0' => JSON::true,
+        '1/47/12' => 180,
+    }
+}));
+is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
+   'explicit getConfig in quarantine does not restore stale OnOff values');
+is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
+   'explicit getConfig in quarantine does not restore stale battery values');
+ok(MATTERDevice_CommandAccepted($offline_child, 6, 1),
+   'explicit getConfig preserves advertised command metadata');
+
+@sent_requests = ();
+is(MATTERDevice_Set($offline_child, $offline_child->{NAME}, 'getConfig'),
+   undef, 'second manual getConfig starts before another offline transition');
+my $expired_recovery_id = $sent_requests[-1]{message_id};
+MATTER_ProcessNode($defs{ioA}, { node_id => 2700, available => JSON::false });
+like(MATTERDevice_Set($offline_child, $offline_child->{NAME}, 'getConfig') // '',
+     qr/offline/, 'manual read is not sent while the node is offline');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $expired_recovery_id,
+    result => { '1/6/65529' => [] }
+}));
+ok(MATTERDevice_CommandAccepted($offline_child, 6, 1),
+   'reply from a previous availability epoch cannot erase command metadata');
+@sent_requests = ();
+MATTER_ProcessNode($defs{ioA}, { node_id => 2700, available => JSON::true });
+my @second_recovery = grep {
+    ($_->{command} // '') eq 'read_attribute' &&
+    ($_->{args}{node_id} // 0) == 2700
+} @sent_requests;
+is(scalar(@second_recovery), 1,
+   'another offline/online cycle triggers one new metadata request');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $second_recovery[0]{message_id},
+    result => { '1/6/65529' => [0, 1, 2] }
+}));
 MATTER_ParseMessage($defs{ioA}, encode_json({
     event => 'attribute_updated', data => [2700, '1/6/0', JSON::true]
 }));
@@ -2426,6 +2499,41 @@ is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
 is(ReadingsVal($offline_root->{NAME}, 'state', ''), 'online',
    'root availability remains independent from endpoint state');
 
+
+# Startup when a known node is offline must not depend on old has_* flags
+# or a subsequent FHEM process restart to restore its set commands.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2701, name => 'BootOfflineProbe', available => JSON::false,
+    attributes => { '1/6/0' => JSON::true },
+});
+my $boot_root = $defs{MATTER_BootOfflineProbe};
+my $boot_child = $defs{MATTER_BootOfflineProbe_EP1};
+ok($boot_root && $boot_child, 'offline startup retains endpoint ownership');
+readingsSingleUpdate($boot_child, 'state', 'off', 1);
+ok(!grep(/^on:noArg$/, MATTERDevice_GetSetList($boot_child)),
+   'offline startup does not invent an On setter');
+@sent_requests = ();
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2701, available => JSON::true,
+    attributes => { '1/6/0' => JSON::true }
+});
+my @boot_reads = grep {
+    ($_->{command} // '') eq 'read_attribute' &&
+    ($_->{args}{node_id} // 0) == 2701
+} @sent_requests;
+is(scalar(@boot_reads), 1,
+   'recovery after an offline startup automatically requests capabilities');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $boot_reads[0]{message_id},
+    result => {
+        '1/6/65529' => [0, 1, 2],
+        '1/6/0' => JSON::true,
+    },
+}));
+ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($boot_child)),
+   'On setter returns after offline startup without has_* fallback');
+is(ReadingsVal($boot_child->{NAME}, 'state', ''), 'off',
+   'offline-start recovery preserves manually corrected device state');
 
 # Issue #35: explicit opt-in diagnostic and raw visibility.
 MATTER_ProcessNode($defs{ioA}, {

@@ -1,1 +1,2 @@
-2026-11-17  MATTER IO/Device V0.18: retire has_* capability flags, automatic creation and legacy command overrides; require advertised Matter command metadata and preserve old FHEM settings for manual cleanup.
+2026-11-17  MATTER IO/Device V0.18: retire has_* capability flags and legacy command fallbacks; require Matter-advertised commands.
+2026-11-17  MATTER IO/Device V0.18: restore setters after offline recovery through correlated metadata-only reads; preserve cached-state quarantine and discard stale replies.
