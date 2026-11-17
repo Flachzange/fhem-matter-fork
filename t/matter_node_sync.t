@@ -2244,4 +2244,64 @@ is(MATTERDevice_Set($dim, $dim->{NAME}, 'dim_stop'), undef,
 is($sent_requests[-1]{args}{command_name}, 'Stop',
    'dim_stop uses native Stop and no timer');
 
+
+# Issue #33: Thermostat, FanControl, Identify and structured writes.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 3300, name => 'HVACProbe', available => JSON::true,
+    attributes => {
+        '1/513/65531' => [0, 18, 28],
+        '1/513/0' => 2250,
+        '1/513/18' => 2100,
+        '1/513/28' => 4,
+        '2/514/65531' => [0, 2, 3],
+        '2/514/0' => 2,
+        '2/514/2' => 55,
+        '2/514/3' => 53,
+        '3/3/65529' => [0],
+        '3/3/0' => 0,
+    }
+});
+my $therm = $defs{MATTER_HVACProbe_EP1};
+my $fan = $defs{MATTER_HVACProbe_EP2};
+my $identify = $defs{MATTER_HVACProbe_EP3};
+is(ReadingsVal($therm->{NAME}, 'measured-temp', ''), 22.5,
+   'thermostat measured temperature is centidegrees to Celsius');
+is(ReadingsVal($therm->{NAME}, 'desired-temp', ''), 21,
+   'thermostat heating setpoint is scaled');
+is(ReadingsVal($therm->{NAME}, 'mode', ''), 'heat',
+   'thermostat mode is decoded');
+is(ReadingsVal($fan->{NAME}, 'fan_mode', ''), 'medium',
+   'fan mode is decoded');
+is(ReadingsVal($fan->{NAME}, 'fan_pct', ''), 53,
+   'fan current percentage is read separately from setting');
+ok(grep(/^desired-temp:/, MATTERDevice_GetSetList($therm)),
+   'thermostat setpoint offered if advertised in AttributeList');
+ok(grep(/^fan_pct:/, MATTERDevice_GetSetList($fan)),
+   'fan setting offered if advertised');
+ok(grep(/^identify:noArg$/, MATTERDevice_GetSetList($identify)),
+   'Identify offered if command is accepted');
+@sent_requests = ();
+is(MATTERDevice_Set($therm, $therm->{NAME}, 'desired-temp', '21.5'), undef,
+   'thermostat setpoint accepts decimal value');
+is($sent_requests[-1]{command}, 'write_attribute',
+   'thermostat writes through the Matter server');
+is($sent_requests[-1]{args}{attribute_path}, '1/513/18',
+   'thermostat uses OccupiedHeatingSetpoint');
+is($sent_requests[-1]{args}{value}, 2150,
+   'temperature write uses centidegrees');
+is(ReadingsVal($therm->{NAME}, 'desired-temp', ''), 21,
+   'outgoing set does not optimistically overwrite measured reading');
+is(MATTERDevice_Set($fan, $fan->{NAME}, 'fan_mode', 'high'), undef,
+   'fan mode is set with native attribute write');
+is($sent_requests[-1]{args}{value}, 3,
+   'fan high maps to native enum value 3');
+is(MATTERDevice_Set($identify, $identify->{NAME}, 'identify'), undef,
+   'Identify command accepted');
+is($sent_requests[-1]{args}{command_name}, 'Identify',
+   'native Identify command used');
+is($sent_requests[-1]{args}{payload}{identifyTime}, 15,
+   'Identify lasts 15 seconds');
+like(MATTERDevice_Set($fan, $fan->{NAME}, 'fan_pct', '300') // '',
+   qr/between 0 and 100/, 'invalid fan target is rejected');
+
 done_testing();

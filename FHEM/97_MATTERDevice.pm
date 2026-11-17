@@ -72,6 +72,12 @@ sub MATTERDevice_ConcentrationUnit {
 
 # Zentrale Definition der vom FHEM-Modul fachlich unterstützten Cluster, Attribute und Commands
 my %MATTER_CLUSTERS = (
+    0x0003 => {
+        name       => "Identify",
+        commands   => {
+            0x00 => { name => "Identify" },
+        },
+    },
     0x0006 => {
         name       => "OnOff",
         features   => {
@@ -383,6 +389,58 @@ my %MATTER_CLUSTERS = (
             0x02   => { name => "StopMotion" },
             0x05   => { name => "GoToLiftPercentage", required_features => ["lift"] },
             0x08   => { name => "GoToTiltPercentage", required_features => ["tilt"] },
+        },
+    },
+    0x0201 => {
+        name       => "Thermostat",
+        attributes => {
+            0x0000 => { name => "measured-temp", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            return undef if $_[0] != int($_[0]) ||
+                                            $_[0] < -27315 || $_[0] > 32767;
+                            return $_[0] / 100;
+                        } },
+            0x0011 => { name => "desired-temp-cool", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            return undef if $_[0] != int($_[0]) ||
+                                            $_[0] < -27315 || $_[0] > 32767;
+                            return $_[0] / 100;
+                        } },
+            0x0012 => { name => "desired-temp", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            return undef if $_[0] != int($_[0]) ||
+                                            $_[0] < -27315 || $_[0] > 32767;
+                            return $_[0] / 100;
+                        } },
+            0x001C => { name => "mode", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my %modes = (0 => 'off', 1 => 'auto', 3 => 'cool',
+                                         4 => 'heat', 5 => 'emergency_heat');
+                            return $modes{$_[0]};
+                        } },
+        },
+    },
+    0x0202 => {
+        name       => "FanControl",
+        attributes => {
+            0x0000 => { name => "fan_mode", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my %modes = (0 => 'off', 1 => 'low', 2 => 'medium',
+                                         3 => 'high', 4 => 'on', 5 => 'auto');
+                            return $modes{$_[0]};
+                        } },
+            0x0002 => { name => "fan_pct_setting", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            return undef if $_[0] != int($_[0]) ||
+                                            $_[0] < 0 || $_[0] > 100;
+                            return $_[0];
+                        } },
+            0x0003 => { name => "fan_pct", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            return undef if $_[0] != int($_[0]) ||
+                                            $_[0] < 0 || $_[0] > 100;
+                            return $_[0];
+                        } },
         },
     },
     0x0300 => {
@@ -1167,6 +1225,58 @@ sub MATTERDevice_Set($$@) {
             },
         };
     }
+    elsif ($cmd eq 'identify') {
+        return 'Identify not accepted by this endpoint'
+            unless MATTERDevice_CommandSupported($hash, 0x0003, 0x00);
+        $payload = {
+            message_id => MATTER_NextMessageId($io_hash),
+            command => 'device_command',
+            args => {
+                node_id => $node_id, endpoint_id => int($endpoint_id),
+                cluster_id => 0x0003, command_name => 'Identify',
+                payload => { identifyTime => 15 },
+            }
+        };
+    }
+    elsif ($cmd =~ /^(?:desired-temp|mode|fan_mode|fan_pct)$/) {
+        my ($cluster_id, $attr_id, $write_value);
+        return "Usage: set $name $cmd <value>" if @args != 1 || !defined($args[0]);
+        my $value = $args[0];
+        if ($cmd eq 'desired-temp') {
+            return 'desired-temp must be a valid temperature in degrees Celsius'
+                unless $value =~ /^-?\d+(?:\.\d{1,2})?$/ &&
+                       $value >= -273.15 && $value <= 327.67;
+            ($cluster_id, $attr_id) = (0x0201, 0x0012);
+            $write_value = int($value * 100 + ($value >= 0 ? 0.5 : -0.5));
+        } elsif ($cmd eq 'mode') {
+            my %modes = (off => 0, auto => 1, cool => 3, heat => 4,
+                         emergency_heat => 5);
+            return 'mode must be off, auto, cool, heat or emergency_heat'
+                unless exists $modes{$value};
+            ($cluster_id, $attr_id, $write_value) = (0x0201, 0x001C, $modes{$value});
+        } elsif ($cmd eq 'fan_mode') {
+            my %modes = (off => 0, low => 1, medium => 2, high => 3,
+                         on => 4, auto => 5);
+            return 'fan_mode must be off, low, medium, high, on or auto'
+                unless exists $modes{$value};
+            ($cluster_id, $attr_id, $write_value) = (0x0202, 0x0000, $modes{$value});
+        } else {
+            return 'fan_pct must be between 0 and 100'
+                unless $value =~ /^\d+$/ && $value <= 100;
+            ($cluster_id, $attr_id, $write_value) = (0x0202, 0x0002, int($value));
+        }
+        return "Matter attribute for $cmd is not advertised"
+            unless MATTERDevice_AttributeSupported($hash, $cluster_id, $attr_id);
+        $payload = {
+            message_id => MATTER_NextMessageId($io_hash),
+            command => 'write_attribute',
+            args => {
+                node_id => $node_id,
+                attribute_path => "$endpoint_id/$cluster_id/$attr_id",
+                value => $write_value
+            }
+        };
+    }
     elsif ($cmd eq "getConfig") {
         my $ioHash = $io_hash; # Connection was already checked above.
 
@@ -1577,6 +1687,17 @@ sub MATTERDevice_GetSetList($) {
         return if ($seen{$cmd_name}++);
         push @list, $entry;
     };
+
+    $add->("identify:noArg")
+        if MATTERDevice_CommandSupported($hash, 0x0003, 0x00);
+    $add->("desired-temp:slider,5,0.5,30,1")
+        if MATTERDevice_AttributeSupported($hash, 0x0201, 0x0012);
+    $add->("mode:off,heat,cool,auto,emergency_heat")
+        if MATTERDevice_AttributeSupported($hash, 0x0201, 0x001C);
+    $add->("fan_mode:off,low,medium,high,on,auto")
+        if MATTERDevice_AttributeSupported($hash, 0x0202, 0x0000);
+    $add->("fan_pct:slider,0,1,100")
+        if MATTERDevice_AttributeSupported($hash, 0x0202, 0x0002);
 
     $add->("on:noArg") if (
         MATTERDevice_CommandSupported($hash, 0x0006, 0x01) ||
@@ -1993,12 +2114,18 @@ one model cannot establish support for all models sharing the cluster.</p>
 <tr><td>OnOff lights / on-off plugs</td><td>OnOff, LevelControl</td><td><strong>untested</strong></td></tr>
 <tr><td>Color / color-temperature lights</td><td>ColorControl</td><td><strong>untested</strong></td></tr>
 <tr><td>Window coverings / blinds</td><td>WindowCovering</td><td><strong>untested</strong></td></tr>
+<tr><td>Thermostats / fans / Identify</td><td>Thermostat, FanControl, Identify</td><td><strong>untested</strong></td></tr>
 <tr><td>Door locks</td><td>DoorLock</td><td><strong>untested</strong></td></tr>
 <tr><td>Battery / power sources</td><td>PowerSource</td><td><strong>untested</strong></td></tr>
 <tr><td>Smoke / carbon-monoxide alarms</td><td>SmokeCoAlarm</td><td><strong>untested</strong></td></tr>
 <tr><td>Electrical metering</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>untested</strong></td></tr>
 <tr><td>Air quality / CO concentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>untested</strong></td></tr>
 </table>
+<p>Thermostat (measured/desired temperature and system mode), FanControl
+(mode and percent speed) and Identify (15 seconds) are supported when the
+required Matter attributes/commands are advertised. Thermostat, fan and
+Identify device combinations are <strong>untested</strong> in this repository.
+Command acceptance does not assert that the physical state has changed.</p>
 <p>Native LevelControl dimming: <code>dim_up</code>, <code>dim_down</code>,
 <code>dim_step_up</code>, <code>dim_step_down</code> and <code>dim_stop</code>
 only when the corresponding commands are advertised. Optional per-device
@@ -2108,12 +2235,18 @@ mit demselben Matter-Cluster.</p>
 <tr><td>Schaltbare Leuchten / Steckdosen</td><td>OnOff, LevelControl</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Farb-/Farbtemperaturleuchten</td><td>ColorControl</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Rollläden / Jalousien</td><td>WindowCovering</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Thermostate / Lüfter / Identify</td><td>Thermostat, FanControl, Identify</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Türschlösser</td><td>DoorLock</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Batterien / Stromversorgung</td><td>PowerSource</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Rauch-/CO-Warnmelder</td><td>SmokeCoAlarm</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Elektrische Messwerte</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Luftqualität / CO-Konzentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>ungetestet</strong></td></tr>
 </table>
+<p>Thermostat (Ist-/Solltemperatur und Betriebsmodus), FanControl
+(Modus und Prozentgeschwindigkeit) und Identify (15 Sekunden) sind nur bei
+vorhandenen Matter-Attributen/Befehlen verfügbar. Thermostat-/Lüfter-
+Geräte und Identify-Kombinationen sind <strong>ungetestet</strong>.
+Ein angenommener Befehl bestätigt keine physische Zustandsänderung.</p>
 <p>Natives LevelControl-Dimmen: <code>dim_up</code>, <code>dim_down</code>,
 <code>dim_step_up</code>, <code>dim_step_down</code> und <code>dim_stop</code>
 nur bei gemeldeten Befehlen. <code>dimRate</code> (1–254, Standard 30) legt
