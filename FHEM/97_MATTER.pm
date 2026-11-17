@@ -502,6 +502,18 @@ sub MATTER_Close($) {
                            : AttrVal($device->{NAME}, 'IODev', '') eq $name;
         MATTERDevice_SetRootState($device, 'unknown');
     }
+    # A server reconnect invalidates old OTA offers even if no update request
+    # was pending. Installing a version requires a fresh server check.
+    for my $dev (values %defs) {
+        next unless ($dev->{TYPE} // '') eq 'MATTERDevice' &&
+                    ($dev->{endpoint_id} // 0) == 0 &&
+                    $dev->{IODev} && $dev->{IODev} eq $hash;
+        if (exists($dev->{helper}{firmware_available})) {
+            delete $dev->{helper}{firmware_available};
+            readingsSingleUpdate($dev, 'firmware_update', 'unknown (server disconnected)', 1)
+                if ReadingsVal($dev->{NAME}, 'firmware_update', '') eq 'available';
+        }
+    }
     for my $op (@incomplete_node_ops) {
         my $device = $defs{$op->{name}};
         next unless $device && ($device->{FUUID} // '') eq ($op->{fuuid} // '') &&

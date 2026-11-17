@@ -2639,4 +2639,32 @@ MATTERDevice_Parse($dr, encode_json({
 }));
 ok(!defined(ReadingsVal($dep->{NAME}, 'raw_1_62_42', undef)),
    'sensitive credential cluster excluded even with rawReadings enabled');
+
+# Review #36: an empty firmware offer and a failed check invalidate the
+# prior version, never leaving an unsafe install command available.
+@sent_requests = ();
+is(MATTERDevice_Set($ota, $ota->{NAME}, 'checkFirmwareUpdate'), undef,
+   'new manual check after previous result');
+my $none_id = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $none_id, result => undef
+}));
+is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'none reported',
+   'a null update response means none reported, not up to date forever');
+is(ReadingsVal($ota->{NAME}, 'firmware_update_version', ''), 'none',
+   'outdated firmware offer label is cleared');
+ok(!grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
+   'no install set after null result');
+@sent_requests = ();
+is(MATTERDevice_Set($ota, $ota->{NAME}, 'checkFirmwareUpdate'), undef,
+   'firmware check can be retried explicitly');
+my $failure_id = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $failure_id,
+    error_code => 1, error => { message => 'DCL unavailable' }
+}));
+like(ReadingsVal($ota->{NAME}, 'firmware_update', ''), qr/DCL unavailable/,
+   'server lookup failure is visible in firmware_update');
+ok(!grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
+   'lookup errors do not leave a stale install action');
 done_testing();

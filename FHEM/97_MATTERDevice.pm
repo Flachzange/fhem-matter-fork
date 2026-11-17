@@ -1665,8 +1665,10 @@ sub MATTERDevice_HandleNodeOperation {
     my $reading = $cmd =~ /icd/ ? 'icd_request' :
                   $cmd eq 'write_attribute' ? 'lastError' : 'firmware_update';
     if (exists($reply->{error_code}) || exists($reply->{error})) {
-        delete $hash->{helper}{firmware_available}
-            if $cmd eq 'check_node_update';
+        if ($cmd eq 'check_node_update') {
+            delete $hash->{helper}{firmware_available};
+            readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
+        }
         my $error = ref($reply->{error}) eq 'HASH'
             ? $reply->{error}{message} : $reply->{details};
         $error = 'Matter server rejected the request'
@@ -1717,6 +1719,7 @@ sub MATTERDevice_HandleNodeOperation {
         my $update = $reply->{result};
         if (!defined($update) && exists($reply->{result})) {
             delete $hash->{helper}{firmware_available};
+            readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
             readingsSingleUpdate($hash, 'firmware_update', 'none reported', 1);
         } elsif (ref($update) eq 'HASH' &&
                  defined($update->{software_version}) &&
@@ -1726,6 +1729,7 @@ sub MATTERDevice_HandleNodeOperation {
             if (defined($current) && $current =~ /^\d+$/ &&
                 $update->{software_version} <= $current) {
                 delete $hash->{helper}{firmware_available};
+                readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
                 readingsSingleUpdate($hash, 'firmware_update', 'up to date', 1);
                 return;
             }
@@ -1736,6 +1740,8 @@ sub MATTERDevice_HandleNodeOperation {
             readingsSingleUpdate($hash, 'firmware_update_version', $label, 1);
             readingsSingleUpdate($hash, 'firmware_update', 'available', 1);
         } else {
+            delete $hash->{helper}{firmware_available};
+            readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
             readingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
         }
     } elsif ($cmd eq 'write_attribute') {
