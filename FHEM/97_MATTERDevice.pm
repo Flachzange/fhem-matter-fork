@@ -2680,10 +2680,12 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
       FHEM may reject undeclared attribute lines when restoring a configuration.</li>
   <li><b>Offline attribute protection:</b> While the root reports
 <code>available=false</code>, neither cached device values nor capability
-snapshots are imported. After returning online, FHEM makes one targeted
-global-command-metadata request per recovery transition. Its correlated
-response restores command availability without importing cached physical
-states, measurements or limits. Manual <code>getConfig</code> is permitted
+snapshots are imported. After returning online, FHEM requests the global command metadata only
+if known endpoints lack required capability data. A known complete
+command list is reused. Missing data can trigger up to three event-driven
+read attempts, separated by at least 15 seconds; there is no polling
+timer. Matched responses restore command availability without importing
+cached physical states, measurements or limits. Manual <code>getConfig</code> is permitted
 while online and quarantined, but only global Matter capability metadata
 from its reply is used. Offline requests and responses from an earlier
 offline/online cycle are rejected. Live individual attribute events are
@@ -2840,10 +2842,13 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
   <li><b>Offline-Attributsperre:</b> Bei <code>available=false</code> werden
 weder zwischengespeicherte Gerätewerte noch Capability-Snapshots übernommen.
 Nach dem Wiedererreichen von <code>available=true</code> fordert FHEM
-einmalig pro Wiederherstellung die globalen Matter-Befehlsmetadaten an.
-Die zugehörige Antwort darf Setter wiederherstellen, aber keine
-zwischengespeicherten Schaltzustände, Messwerte oder Gerätegrenzwerte
-überschreiben. Manuelles <code>getConfig</code> bleibt während der
+globale Matter-Befehlsmetadaten nur an, wenn erforderliche Capability-Daten
+fehlen. Bereits vollständig bekannte Befehlslisten werden weiterverwendet.
+Bei fehlgeschlagener oder unvollständiger Antwort sind höchstens drei
+ereignisgesteuerte Versuche pro Wiederherstellung möglich, mit mindestens
+15 Sekunden Abstand, ohne zyklisches Polling. Die zugehörigen Antworten
+dürfen Setter wiederherstellen, aber keine zwischengespeicherten
+Schaltzustände, Messwerte oder Gerätegrenzwerte überschreiben. Manuelles <code>getConfig</code> bleibt während der
 Online-Quarantäne erlaubt; auch dann werden nur globale Capability-Metadaten
 übernommen. Offline-Anfragen sowie verspätete Antworten aus einem früheren
 Offline-/Online-Zyklus werden verworfen. Einzelne Live-Attribute werden
