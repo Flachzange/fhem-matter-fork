@@ -47,8 +47,9 @@ The original [tostmann/THBR](https://github.com/tostmann/THBR) uses a host-based
 - **Connection recovery:** nonblocking IPv4 TCP/WebSocket connection; 10-second connect/upgrade deadline, Ping every 30 seconds, 15-second Pong deadline and retry 30 seconds after a failure.
 - **Automatic node synchronization:** complete `start_listening` snapshot on connection/reconnection plus `node_added`, `node_updated` and `node_removed` events. Manual `discover` is still available; there is no periodic node polling.
 - **FHEM device management:** optional `autocreate` (enabled by default), collision-safe root/endpoint identities, default room `Matter` for newly created devices, administrative root-node grouping, DeviceTypeList-based endpoint groups and links to endpoints in the root's FHEMWEB details. Existing names, rooms and custom groups are preserved; removed server nodes are marked rather than deleted.
-- **Device commands:** exposed from the relevant Matter command/feature metadata when available, with legacy `has_*` fallback and explicit user overrides. Mappings include on/off, levels, colors, window covering and basic lock/unlock commands where supported.
-- **Device status and measurements:** separate `matter_status` (server membership) and `available` (server-reported reachability), plus basic device information, power source/battery, smoke/CO and electrical power/energy readings when advertised and provided.
+- **Device commands:** exposed from the relevant Matter command/feature metadata when available, with legacy `has_*` fallback and explicit user overrides. Mappings include on/off, color, window covering, locks, native LevelControl continuous/step dimming, Identify, Thermostat and FanControl where supported.
+- **Device status and measurements:** separate `matter_status` (server membership) and `available` (server-reported reachability); cached device attributes are quarantined while offline, and restored only through fresh live attribute events on recovery. Readings include basic information, battery, smoke/CO, electrical metering, common environmental sensors, BooleanState contacts/leaks, Occupancy and Switch button events.
+- **Optional diagnostics and maintenance:** `diagnostics=1` and `rawReadings=1` are explicitly opt-in and do not trigger additional polling. ICD metadata is detected passively; compatible roots can query controller-side ICD state. Supported nodes can request a server-backed firmware update check/install without firmware upload or automatic updates.
 - **Commissioning:** manual pairing codes or `MT:` QR payloads, with `network` (IP-only, default) or `auto` (IP and optionally BLE via the Matter server).
 - **Native FHEM updates:** a versioned `controls_matter.txt` published on this fork's `main` branch and validated by CI.
 
@@ -198,8 +199,57 @@ MATTERDevice attributes include `IODev`, legacy capability overrides (for exampl
 
 - **Window coverings:** supports basic open/close, stop, lift percentage and tilt commands when exposed by the device; not every WindowCovering-cluster function is mapped.
 - **Door locks:** basic `lock`/`unlock` commands and selected readings are implemented; management of users, PINs and credentials is not implemented.
-- **Thermostats:** device types can be displayed, but thermostat-control commands are not implemented.
+- **Thermostats / fans:** standard attributes, basic desired-temperature/mode and fan-mode/speed commands are supported when advertised. Advanced schedules, manufacturer features and unsupported writable attributes are not implemented.
 - **Transport:** the FHEM IO supports an IPv4 WebSocket connection without built-in TLS or authentication; the network boundary and security requirements are described above.
+
+## Device-level commands, ICD, network diagnostics and OTA
+
+All new functionality remains within the existing FHEM root/endpoint model and
+uses the external Matter server. It does not install a server, export FHEM
+devices as a Matter bridge, upload firmware images or run a separate polling
+engine.
+
+- Common sensors use ordinary FHEM readings: `contact`, `water_leak`, `rain`,
+  `motion`, `temperature` (°C), `humidity` (%), `illuminance` (lux),
+  `pressure` (hPa), `co2`, `pm25`, `tvoc` and explicit concentration
+  unit readings. Native Switch events create one FHEM event per press,
+  including repeated identical presses.
+- Native dimming commands: `dim_up`, `dim_down`, `dim_step_up`,
+  `dim_step_down` and `dim_stop`, if the respective LevelControl commands
+  are advertised. Set `attr <device> dimRate 60` for the next continuous move
+  (1–254, default 30). These are device-native transitions, not FHEM timers.
+- Thermostat and fan endpoints offer `desired-temp`, `mode`, `fan_mode`
+  and `fan_pct` only when the corresponding standard attributes are
+  advertised. The server response is correlated and a write does not
+  optimistically update the device reading. Standard `identify` requires
+  an advertised Identify command.
+- `attr <root> diagnostics 1` enables passive Thread and Wi-Fi diagnostic
+  readings, including roles, channels, neighbors and received signal levels.
+  `attr <endpoint> rawReadings 1` permits bounded additional readings for
+  otherwise unmapped attributes. Both attributes are off by default.
+  Deactivating them stops new diagnostic updates but does not delete existing
+  readings. Diagnostic raw data may include device information; avoid
+  exposing or logging it without understanding its content.
+- ICD-capable root nodes expose static `icd_*` capabilities from reported
+  attributes and, with server API schema >= 12, `get <root> icdState`.
+  Check-In-capable roots can use `set <root> icdRegister`, `icdUnregister`
+  or `icdResync` when advertised. The controller manages registration;
+  `icd_awake=false` is not the same as `available=false`.
+- Nodes with OTA Software Update Requestor support offer
+  `set <root> checkFirmwareUpdate`. Only after the server reports a newer
+  software version is `set <root> updateFirmware` offered. The external
+  server handles lookup, downloading and delivery. No upload, automatic
+  update or manufacturer's own update repository is implied. Status
+  `update requested` is not proof of installation; the matching new
+  software version or OTA device reports are needed.
+- When the server reports `available=false`, device attribute and capability
+  snapshots do not overwrite the current FHEM readings or local manual edits.
+  After an offline/online transition, new individual `attribute_updated`
+  reports are accepted; cached snapshots remain quarantined because the
+  server WebSocket API does not guarantee their freshness. Existing endpoint
+  identities, IO membership, associations and root reachability continue to
+  be maintained. This conservative policy can leave rarely reporting
+  attributes unchanged until the device sends a fresh report.
 
 ## Device-class hardware validation
 

@@ -2559,6 +2559,11 @@ one model cannot establish support for all models sharing the cluster.</p>
 <tr><td>Color / color-temperature lights</td><td>ColorControl</td><td><strong>untested</strong></td></tr>
 <tr><td>Window coverings / blinds</td><td>WindowCovering</td><td><strong>untested</strong></td></tr>
 <tr><td>Thermostats / fans / Identify</td><td>Thermostat, FanControl, Identify</td><td><strong>untested</strong></td></tr>
+<tr><td>Contact / water leak / rain sensors</td><td>BooleanState</td><td><strong>untested</strong></td></tr>
+<tr><td>Temperature / humidity / pressure / illumination</td><td>TemperatureMeasurement, RelativeHumidityMeasurement, PressureMeasurement, IlluminanceMeasurement</td><td><strong>untested</strong></td></tr>
+<tr><td>Occupancy and Matter buttons</td><td>OccupancySensing, Switch</td><td><strong>untested</strong></td></tr>
+<tr><td>CO2 / PM2.5 / TVOC concentration</td><td>ConcentrationMeasurement family</td><td><strong>untested</strong></td></tr>
+<tr><td>Thread / Wi-Fi diagnostics, ICD and OTA</td><td>ThreadNetworkDiagnostics, WiFiNetworkDiagnostics, IcdManagement, OTA Requestor</td><td><strong>untested</strong></td></tr>
 <tr><td>Door locks</td><td>DoorLock</td><td><strong>untested</strong></td></tr>
 <tr><td>Battery / power sources</td><td>PowerSource</td><td><strong>untested</strong></td></tr>
 <tr><td>Smoke / carbon-monoxide alarms</td><td>SmokeCoAlarm</td><td><strong>untested</strong></td></tr>
@@ -2703,6 +2708,11 @@ mit demselben Matter-Cluster.</p>
 <tr><td>Farb-/Farbtemperaturleuchten</td><td>ColorControl</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Rollläden / Jalousien</td><td>WindowCovering</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Thermostate / Lüfter / Identify</td><td>Thermostat, FanControl, Identify</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Kontakt-/Wasserleck-/Regensensoren</td><td>BooleanState</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Temperatur / Feuchte / Druck / Beleuchtungsstärke</td><td>TemperatureMeasurement, RelativeHumidityMeasurement, PressureMeasurement, IlluminanceMeasurement</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Bewegungs-/Präsenzsensoren und Matter-Taster</td><td>OccupancySensing, Switch</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>CO2 / PM2.5 / TVOC-Konzentration</td><td>ConcentrationMeasurement-Cluster</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Thread-/WLAN-Diagnose, ICD und OTA</td><td>ThreadNetworkDiagnostics, WiFiNetworkDiagnostics, IcdManagement, OTA Requestor</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Türschlösser</td><td>DoorLock</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Batterien / Stromversorgung</td><td>PowerSource</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Rauch-/CO-Warnmelder</td><td>SmokeCoAlarm</td><td><strong>ungetestet</strong></td></tr>
