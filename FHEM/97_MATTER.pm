@@ -500,7 +500,7 @@ sub MATTER_Close($) {
         my $owner = $device->{IODev};
         next unless $owner ? $owner eq $hash
                            : AttrVal($device->{NAME}, 'IODev', '') eq $name;
-        delete $device->{helper}{capability_refresh_epoch};
+        delete $device->{helper}{capability_refresh};
         MATTERDevice_SetRootState($device, 'unknown');
     }
     # A server reconnect invalidates old OTA offers even if no update request
