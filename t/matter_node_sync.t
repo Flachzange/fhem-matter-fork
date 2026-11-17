@@ -2007,8 +2007,8 @@ is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'false',
    'partial live availability overrides only matching snapshot field');
 is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
    'partial live node attributes override only matching snapshot attribute');
-is(ReadingsVal($child->{NAME}, 'battery_percent', ''), 77,
-   'unrelated endpoint attribute remains available from full snapshot');
+is(ReadingsVal($child->{NAME}, 'battery_percent', ''), 66,
+   'offline snapshot does not overwrite last known battery value');
 is(ReadingsVal($snapshot_other_root->{NAME}, 'matter_status', ''), 'removed',
    'event for first node does not suppress removal of unrelated missing node');
 
@@ -2303,5 +2303,64 @@ is($sent_requests[-1]{args}{payload}{identifyTime}, 15,
    'Identify lasts 15 seconds');
 like(MATTERDevice_Set($fan, $fan->{NAME}, 'fan_pct', '300') // '',
    qr/between 0 and 100/, 'invalid fan target is rejected');
+
+
+# Issue #27: cache quarantine is node-wide, preserves manual edits and all
+# device-derived metadata; recovery accepts only fresh individual reports.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2700, name => 'OfflineProbe', available => JSON::true,
+    attributes => {
+        '1/6/0' => JSON::true,
+        '1/47/12' => 154,
+        '1/29/0' => [{ '0' => 0x0100, '1' => 1 }],
+    },
+});
+my $offline_root = $defs{MATTER_OfflineProbe};
+my $offline_child = $defs{MATTER_OfflineProbe_EP1};
+is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'on',
+   'pre-outage state is known online');
+MATTER_ProcessNode($defs{ioA}, { node_id => 2700, available => JSON::false });
+readingsSingleUpdate($offline_child, 'state', 'off', 1);
+readingsSingleUpdate($offline_child, 'battery_percent', 10, 1);
+my $old_type = ReadingsVal($offline_child->{NAME}, 'device_type_ids', '');
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2700, available => JSON::false,
+    attributes => {
+        '1/6/0' => JSON::true,
+        '1/47/12' => 160,
+        '1/29/0' => [{ '0' => 0x010A, '1' => 1 }],
+        '1/8/65529' => [1, 2, 3],
+    },
+});
+is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
+   'cached offline OnOff does not overwrite manual correction');
+is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
+   'cached offline power source does not overwrite manual correction');
+is(ReadingsVal($offline_child->{NAME}, 'device_type_ids', ''), $old_type,
+   'cached offline device types are not adopted');
+ok(!MATTERDevice_CommandAccepted($offline_child, 8, 1),
+   'cached offline command metadata is not adopted');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [2700, '1/6/0', JSON::true]
+}));
+is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
+   'individual update is ignored while explicitly offline');
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2700, available => JSON::true,
+    attributes => { '1/6/0' => JSON::true, '1/47/12' => 190 },
+});
+is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
+   'availability true with cached snapshot cannot overwrite manual state');
+is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
+   'cached battery remains quarantined after available true');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'attribute_updated', data => [2700, '1/6/0', JSON::true]
+}));
+is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'on',
+   'new live report releases state for its specific attribute');
+is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
+   'unreported battery still preserves its manual value');
+is(ReadingsVal($offline_root->{NAME}, 'state', ''), 'online',
+   'root availability remains independent from endpoint state');
 
 done_testing();

@@ -527,6 +527,13 @@ sub MATTERDevice_UpdateAvailability($$) {
     return unless ($hash->{endpoint_id} // 0) == 0;
     my $boolean = MATTERDevice_NormalizeBoolean($reported);
     return unless defined $boolean;
+    my $previous = ReadingsVal($hash->{NAME}, 'available', '');
+    # Device attributes cached on the server must never overwrite local
+    # readings while unavailable. On recovery, server snapshots may still
+    # be stale: only subsequent individual live attribute reports are fresh
+    # enough for release until a proven fresh interview is available.
+    $hash->{helper}{quarantine_snapshots} = 1
+        if !$boolean || $previous eq 'false';
     my $available = $boolean ? 'true' : 'false';
     my $state = $boolean ? 'online' : 'offline';
     my $change_available = ReadingsVal($hash->{NAME}, 'available', '') ne $available;
@@ -1542,13 +1549,39 @@ sub MATTERDevice_Parse($ $) {
     }
 
     my $my_endpoint = $hash->{endpoint_id} // 0;
+    my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} :
+                  AttrVal($name, 'IODev', '');
+    my $root = $my_endpoint == 0 ? $hash :
+        $modules{MATTERDevice}{defptr}{"$io_name:$hash->{node_id}"};
+    # The root owns availability for every child; an endpoint's local state
+    # or old available reading is not a separate reachability report.
+    my $allow_device_attr = sub {
+        my ($live) = @_;
+        return 1 unless $root;
+        return 0 if ReadingsVal($root->{NAME}, 'available', '') eq 'false';
+        return 0 if !$live && $root->{helper}{quarantine_snapshots};
+        return 1;
+    };
 
     # Availability is node-wide; missing/invalid values are not state reports.
     my $update_available = sub { MATTERDevice_UpdateAvailability($hash, $_[0]) };
     
     # Hilfs-Subroutine zur internen Weiterleitung an Root oder Child
     my $route_attribute = sub {
-        my ($ep, $cluster, $attr, $val) = @_;
+        my ($ep, $cluster, $attr, $val, $live) = @_;
+        # Offline snapshots can still tell us which endpoint IDs exist.
+        # Preserve FHEM identity/association without importing device data.
+        if (!$allow_device_attr->($live)) {
+            if ($my_endpoint == 0 && $ep > 0) {
+                MATTERDevice_GetOrCreateChild($hash, $ep);
+            } elsif ($my_endpoint == 0 && $ep == 0 &&
+                     $cluster == 0x001D && $attr == 3 &&
+                     ref($val) eq 'ARRAY') {
+                MATTERDevice_GetOrCreateChild($hash, $_)
+                    for grep { defined($_) && !ref($_) && /^\d+$/ && $_ > 0 } @$val;
+            }
+            return;
+        }
         if ($ep == $my_endpoint) {
             # Spezialbehandlung für PartsList (Cluster 0x001D / 29, Attribut 0x0003 / 3)
             if ($cluster == 0x001D && $attr == 0x0003 && ref($val) eq 'ARRAY') {
@@ -1573,6 +1606,17 @@ sub MATTERDevice_Parse($ $) {
 
     # 1. ANTWORT AUF GETCONFIG (enthält "result")
     if (exists $decoded->{result} && ref($decoded->{result}) eq 'HASH') {
+        # Never reset current capability metadata from a cached response
+        # while the root is offline or still awaiting fresh live data.
+        if (!$allow_device_attr->(0)) {
+            if ($my_endpoint == 0) {
+                for my $path (keys %{$decoded->{result}}) {
+                    MATTERDevice_GetOrCreateChild($hash, $1)
+                        if $path =~ m{^([1-9]\d*)/\d+/\d+$};
+                }
+            }
+            return;
+        }
         # getConfig synchronisiert die Capability-Metadaten der in der Antwort
         # enthaltenen Endpoints vollständig. Alte Cluster-/Command-Daten dürfen
         # nicht erhalten bleiben, wenn sie im aktuellen Datenmodell verschwunden sind.
@@ -1647,7 +1691,7 @@ sub MATTERDevice_Parse($ $) {
             $hash->{node_id} eq $node_id;
         if (defined($attribute_path) && !ref($attribute_path) &&
             $attribute_path =~ m{^(\d+)/(\d+)/(\d+)$}) {
-            $route_attribute->($1, $2, $3, $value);
+            $route_attribute->($1, $2, $3, $value, 1);
             Log3 $name, 4, "MATTERDevice: Live attribute update ($attribute_path)";
         }
         return;
@@ -1867,6 +1911,9 @@ sub MATTERDevice_SyncNodeReadings($;$) {
     foreach my $child (@children) {
         my @changes;
         foreach my $reading (qw(model available)) {
+            next if $reading eq 'model' &&
+                (ReadingsVal($root->{NAME}, 'available', '') eq 'false' ||
+                 $root->{helper}{quarantine_snapshots});
             my $source = $root->{READINGS}{$reading};
             next unless ref($source) eq 'HASH';
             my $value = $source->{VAL};
@@ -2065,6 +2112,11 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
   <li><b>Attributes:</b> <code>has_onoff</code>, <code>has_level</code>,
       <code>has_ct</code>, <code>has_xy</code> and other capability flags;
       existing user overrides are respected.</li>
+  <li><b>Offline attribute protection:</b> No cached device attributes or capability
+metadata are imported when the root reports <code>available=false</code>.
+After recovery, only new live attribute events are accepted while stale
+snapshot freshness cannot be proven. Local manual reading changes remain
+untouched. The Matter server cache is not modified.</li>
   <li><b>Root state:</b> Without a <code>stateFormat</code> attribute, the root's
       <code>state</code> reading shows <code>online</code> or <code>offline</code>
       only after valid <code>available=true/false</code> from the server,
@@ -2183,6 +2235,11 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
   <li><b>Attribute:</b> <code>has_onoff</code>, <code>has_level</code>,
       <code>has_ct</code>, <code>has_xy</code> und weitere Fähigkeitsattribute;
       vorhandene Benutzervorgaben werden nicht überschrieben.</li>
+  <li><b>Offline-Attributsperre:</b> Bei <code>available=false</code> werden
+keine zwischengespeicherten Geräteattribute oder Capability-Metadaten aus
+Matter übernommen. Nach Wiederherstellung werden neue Live-Attribute
+akzeptiert, solange die Frische eines Snapshots nicht nachweisbar ist.
+Manuelle lokale Reading-Änderungen bleiben erhalten.</li>
   <li><b>Root-Status:</b> Ohne <code>stateFormat</code>-Attribut zeigt das
       <code>state</code>-Reading am Root <code>online</code> oder
       <code>offline</code> nur nach einer gültigen <code>available=true/false</code>-
