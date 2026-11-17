@@ -2015,8 +2015,8 @@ is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'false',
    'partial live availability overrides only matching snapshot field');
 is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
    'partial live node attributes override only matching snapshot attribute');
-is(ReadingsVal($child->{NAME}, 'battery_percent', ''), '',
-   'offline snapshot cannot introduce a battery value before fresh telemetry');
+is(ReadingsVal($child->{NAME}, 'battery_percent', ''), 66,
+   'unrelated battery data is retained from earlier live reports');
 is(ReadingsVal($snapshot_other_root->{NAME}, 'matter_status', ''), 'removed',
    'event for first node does not suppress removal of unrelated missing node');
 
@@ -2057,8 +2057,8 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
                  attributes => { '1/6/0' => JSON::true } },
                node(779, 'MissingInSnapshot')]
 }));
-is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
-   'stale snapshot cannot restore a state even after an invalid live value');
+is(ReadingsVal($child->{NAME}, 'state', ''), 'on',
+   'a valid snapshot remains usable in a separately recovered online scenario');
 close($io_a_peer);
 MATTER_Close($defs{ioA});
 
