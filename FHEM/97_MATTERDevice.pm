@@ -2485,7 +2485,9 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
       <code>diagnostics</code> / <code>rawReadings</code>, dimming
       <code>dimRate</code> and separately supported physical limits.
       Retired <code>has_*</code> settings are ignored; they are neither
-      generated nor automatically removed from stored FHEM configurations.</li>
+      generated nor automatically removed from stored FHEM configurations.
+      Remove saved legacy flags manually before restarting with this version:
+      FHEM may reject undeclared attribute lines when restoring a configuration.</li>
   <li><b>Offline attribute protection:</b> No cached device attributes or capability
 metadata are imported when the root reports <code>available=false</code>.
 After recovery, only new live attribute events are accepted while stale
@@ -2635,7 +2637,10 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
       <code>diagnostics</code> / <code>rawReadings</code>,
       <code>dimRate</code> und separate Gerätegrenzwerte.
       Alte <code>has_*</code>-Attribute werden ignoriert, nicht mehr erzeugt
-      und nicht automatisch aus gespeicherten FHEM-Konfigurationen gelöscht.</li>
+      und nicht automatisch aus gespeicherten FHEM-Konfigurationen gelöscht.
+      Vor dem Neustart mit dieser Version sollten gespeicherte Legacy-Attribute
+      manuell entfernt werden, da FHEM unbekannte Attribute beim Laden der
+      Konfiguration ablehnen kann.</li>
   <li><b>Offline-Attributsperre:</b> Bei <code>available=false</code> werden
 keine zwischengespeicherten Geräteattribute oder Capability-Metadaten aus
 Matter übernommen. Nach Wiederherstellung werden neue Live-Attribute
