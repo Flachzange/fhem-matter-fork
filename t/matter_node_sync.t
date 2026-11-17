@@ -2013,8 +2013,8 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'false',
    'partial live availability overrides only matching snapshot field');
-is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
-   'partial live node attributes override only matching snapshot attribute');
+is(ReadingsVal($child->{NAME}, 'state', ''), 'on',
+   'partial node data does not import cached OnOff while the node is offline');
 is(ReadingsVal($child->{NAME}, 'battery_percent', ''), 66,
    'unrelated battery data is retained from earlier live reports');
 is(ReadingsVal($snapshot_other_root->{NAME}, 'matter_status', ''), 'removed',
