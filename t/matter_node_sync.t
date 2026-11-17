@@ -2479,9 +2479,8 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 ok(MATTERDevice_CommandAccepted($offline_child, 6, 1),
    'reply from a previous availability epoch cannot erase command metadata');
 @sent_requests = ();
-diag('before second recovery: needs=' . MATTERDevice_NeedsCapabilityRefresh($offline_root) .
-    ' seen=' . encode_json($offline_child->{helper}{seen_clusters} // {}) .
-    ' capabilities=' . encode_json($offline_child->{helper}{capabilities} // {}));
+ok(!MATTERDevice_NeedsCapabilityRefresh($offline_root),
+   'empty capability cache placeholders do not imply missing Matter commands');
 MATTER_ProcessNode($defs{ioA}, { node_id => 2700, available => JSON::true });
 my @second_recovery = grep {
     ($_->{command} // '') eq 'read_attribute' &&
