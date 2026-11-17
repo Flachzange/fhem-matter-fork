@@ -2191,6 +2191,18 @@ is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2_unit', ''), 'ppm',
    'unknown units do not overwrite a valid known unit');
 
 
+# The earlier transport tests close ioA deliberately. Restore a modeled
+# active connection for the new set-command fixtures.
+socketpair(my $feature_socket, my $feature_peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC)
+    or die 'feature socketpair';
+$defs{ioA}{CD} = $feature_socket;
+$defs{ioA}{websocket} = 1;
+$defs{ioA}{ws_status} = 'connected';
+$defs{ioA}{fhem}{helper}{sendWS} = sub {
+    push @sent_requests, JSON::decode_json($_[0]);
+    return 1;
+};
+
 # Issue #34: native LevelControl move, step and stop.
 MATTER_ProcessNode($defs{ioA}, {
     node_id => 3400, name => 'DimProbe', available => JSON::true,
