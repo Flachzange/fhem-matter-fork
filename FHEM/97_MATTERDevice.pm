@@ -531,10 +531,15 @@ sub MATTERDevice_NeedsCapabilityRefresh($) {
     my ($root) = @_;
     return 0 unless $root && ($root->{endpoint_id} // 0) == 0;
     foreach my $device ($root, MATTERDevice_NodeChildren($root)) {
-        my %observed = map { $_ => 1 } (
-            keys %{$device->{helper}{seen_clusters} // {}},
-            keys %{$device->{helper}{capabilities} // {}}
-        );
+        my %observed = map { $_ => 1 }
+            keys %{$device->{helper}{seen_clusters} // {}};
+        # GetSetList probes may autovivify empty capability hashes for other
+        # known clusters; those are not evidence of device support.
+        foreach my $cluster_id (keys %{$device->{helper}{capabilities} // {}}) {
+            my $cap = $device->{helper}{capabilities}{$cluster_id};
+            $observed{$cluster_id} = 1
+                if ref($cap) eq 'HASH' && $cap->{present};
+        }
         # An endpoint restored while offline has no runtime metadata at all.
         # Its persisted type label is not evidence that commands are supported.
         return 1 if ($device->{endpoint_id} // 0) > 0 && !%observed;
