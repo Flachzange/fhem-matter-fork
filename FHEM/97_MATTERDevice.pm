@@ -769,7 +769,7 @@ sub MATTERDevice_AttributeUsable($$$) {
 # A device command is available only if the endpoint's actual Matter
 # AcceptedCommandList advertises it. Reported values or retired has_* flags
 # never constitute permission to send a command.
-sub MATTERDevice_CommandSupported($$) {
+sub MATTERDevice_CommandSupported($$$) {
     my ($hash, $cluster_id, $command_id) = @_;
     return 0 unless MATTERDevice_CommandAccepted($hash, $cluster_id, $command_id);
 
