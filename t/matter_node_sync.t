@@ -1017,6 +1017,10 @@ is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'online',
    'malformed availability never alters valid native root state');
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'available', ''), 'true',
    'node-level availability is mirrored to the existing endpoint');
+# Independent subsequent callback tests model a separately proven fresh
+# re-interview. The offline quarantine tests below exercise the persistent
+# protection; merely observing available=true does not clear it in production.
+delete $root->{helper}{quarantine_snapshots};
 
 MATTERDevice_Parse($root, encode_json({
     node_id => 42,
@@ -1334,7 +1338,7 @@ is($attr{MATTER_Unknown_type_EP1}{group}, '0xF123',
 # Technical bridge topology endpoints should not retain the legacy node group.
 MATTER_ProcessNode($defs{ioA}, {
     node_id => 190, name => 'Bridge grouping',
-    available => JSON::false,
+    available => JSON::true,
     attributes => {
         '1/29/0' => [{ '0' => 0x000E, '1' => 1 }], # Aggregator
         '10/29/0' => [{ '0' => 0x0013, '1' => 1 }], # Bridged Node
@@ -1524,13 +1528,14 @@ is(ReadingsVal($metadata_ep1->{NAME}, 'available', ''), 'true',
 # Same node ID under another MATTER IO must remain isolated.
 $preferred_io = 'ioA';
 MATTER_ProcessNode($defs{ioB}, {
-    node_id => 95, name => 'OtherMetadataNode', available => JSON::false,
+    node_id => 95, name => 'OtherMetadataNode', available => JSON::true,
     attributes => {'0/40/3' => 'Other Model', '1/6/0' => JSON::true},
 });
 my $other_metadata_ep = $defs{MATTER_OtherMetadataNode_EP1};
 ok($other_metadata_ep, 'a second IO may have the same Matter node ID');
 is(ReadingsVal($other_metadata_ep->{NAME}, 'model', ''), 'Other Model',
    'same-ID endpoint on another IO keeps its own model');
+MATTER_ProcessNode($defs{ioB}, {node_id => 95, available => JSON::false});
 is(ReadingsVal($other_metadata_ep->{NAME}, 'available', ''), 'false',
    'same-ID endpoint on another IO keeps its own availability');
 MATTER_ParseMessage($defs{ioA}, encode_json({
@@ -1547,13 +1552,16 @@ is(ReadingsVal($other_metadata_ep->{NAME}, 'available', ''), 'false',
 # autocreate=0 still allows metadata changes on already defined endpoints.
 is(CommandAttr(undef, 'ioA autocreate 0'), undef,
    'autocreate can be disabled during metadata synchronization');
+# The metadata update below represents another independently fresh interview,
+# not a cached replay after the preceding offline->online transition.
+delete $metadata_root->{helper}{quarantine_snapshots};
 MATTER_ProcessNode($defs{ioA}, {
-    node_id => 95, name => 'MetadataNode', available => JSON::false,
+    node_id => 95, name => 'MetadataNode', available => JSON::true,
     attributes => {'0/40/3' => 'Synthetic Model E', '4/6/0' => JSON::true},
 });
 is(ReadingsVal($metadata_ep1->{NAME}, 'model', ''), 'Synthetic Model E',
    'existing endpoint model updates with autocreate disabled');
-is(ReadingsVal($metadata_ep2->{NAME}, 'available', ''), 'false',
+is(ReadingsVal($metadata_ep2->{NAME}, 'available', ''), 'true',
    'existing endpoint availability updates with autocreate disabled');
 ok(!$defs{MATTER_MetadataNode_EP4},
    'mirroring node metadata cannot create an endpoint when autocreate is disabled');
@@ -1567,7 +1575,7 @@ delete $metadata_ep2->{IODev};
 MATTER_ProcessNode($defs{ioA}, {node_id => 95, name => 'MetadataNode'});
 is(ReadingsVal($metadata_ep2->{NAME}, 'model', ''), 'Synthetic Model E',
    'attribute-free discovery restores model on an existing endpoint');
-is(ReadingsVal($metadata_ep2->{NAME}, 'available', ''), 'false',
+is(ReadingsVal($metadata_ep2->{NAME}, 'available', ''), 'true',
    'attribute-free discovery restores availability on an existing endpoint');
 is(CommandAttr(undef, 'MATTER_MetadataNode_EP2 IODev ioA'), undef,
    'test restores the endpoint runtime IODev pointer');
@@ -2007,8 +2015,8 @@ is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'false',
    'partial live availability overrides only matching snapshot field');
 is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
    'partial live node attributes override only matching snapshot attribute');
-is(ReadingsVal($child->{NAME}, 'battery_percent', ''), 66,
-   'offline snapshot does not overwrite last known battery value');
+is(ReadingsVal($child->{NAME}, 'battery_percent', ''), '',
+   'offline snapshot cannot introduce a battery value before fresh telemetry');
 is(ReadingsVal($snapshot_other_root->{NAME}, 'matter_status', ''), 'removed',
    'event for first node does not suppress removal of unrelated missing node');
 
@@ -2049,8 +2057,8 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
                  attributes => { '1/6/0' => JSON::true } },
                node(779, 'MissingInSnapshot')]
 }));
-is(ReadingsVal($child->{NAME}, 'state', ''), 'on',
-   'invalid live node attribute does not hide a valid snapshot update');
+is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
+   'stale snapshot cannot restore a state even after an invalid live value');
 close($io_a_peer);
 MATTER_Close($defs{ioA});
 
