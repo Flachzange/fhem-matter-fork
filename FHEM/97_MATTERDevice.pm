@@ -428,6 +428,7 @@ sub MATTERDevice_Initialize($) {
                         "has_color:0,1 " .
                         "has_onoff:0,1 " .
                         "has_level:0,1 " .
+                        "dimRate:slider,1,1,254 " .
                         "has_ct:0,1 " .
                         "has_hue:0,1 " .
                         "has_saturation:0,1 " .
@@ -1123,6 +1124,49 @@ sub MATTERDevice_Set($$@) {
             }
         };
     }
+    elsif ($cmd =~ /^(?:dim_up|dim_down|dim_stop|dim_step_up|dim_step_down)$/) {
+        # Use the device's native LevelControl transitions. Never simulate a
+        # continuous dim by issuing repeated pct commands from FHEM.
+        my ($regular, $with_onoff, $mode);
+        if ($cmd eq 'dim_up' || $cmd eq 'dim_down') {
+            ($regular, $with_onoff) = (0x01, 0x05);
+            $mode = $cmd eq 'dim_up' ? 0 : 1;
+        } elsif ($cmd eq 'dim_step_up' || $cmd eq 'dim_step_down') {
+            ($regular, $with_onoff) = (0x02, 0x06);
+            $mode = $cmd eq 'dim_step_up' ? 0 : 1;
+        } else {
+            ($regular, $with_onoff) = (0x03, 0x07);
+        }
+        my $accepted_regular = MATTERDevice_CommandSupported($hash, 0x0008, $regular);
+        my $accepted_onoff = MATTERDevice_CommandSupported($hash, 0x0008, $with_onoff);
+        return "Native dim command is not supported" unless $accepted_regular || $accepted_onoff;
+        my $using_onoff = !$accepted_regular && $accepted_onoff;
+        my $command_name =
+            $regular == 0x01 ? ($using_onoff ? 'MoveWithOnOff' : 'Move') :
+            $regular == 0x02 ? ($using_onoff ? 'StepWithOnOff' : 'Step') :
+                               ($using_onoff ? 'StopWithOnOff' : 'Stop');
+        my $arguments = { optionsMask => 0, optionsOverride => 0 };
+        if ($regular == 0x01) {
+            my $rate = AttrVal($name, 'dimRate', 30);
+            return "dimRate must be an integer between 1 and 254"
+                unless defined($rate) && $rate =~ /^\d+$/ && $rate >= 1 && $rate <= 254;
+            $arguments->{moveMode} = $mode;
+            $arguments->{rate} = int($rate);
+        } elsif ($regular == 0x02) {
+            $arguments->{stepMode} = $mode;
+            $arguments->{stepSize} = 20;
+            $arguments->{transitionTime} = 0;
+        }
+        $payload = {
+            message_id => MATTER_NextMessageId($io_hash),
+            command    => 'device_command',
+            args       => {
+                node_id => $node_id, endpoint_id => int($endpoint_id),
+                cluster_id => 0x0008, command_name => $command_name,
+                payload => $arguments,
+            },
+        };
+    }
     elsif ($cmd eq "getConfig") {
         my $ioHash = $io_hash; # Connection was already checked above.
 
@@ -1553,6 +1597,22 @@ sub MATTERDevice_GetSetList($) {
         $add->("pct:slider,0,1,100");
     }
 
+    $add->("dim_up:noArg") if (
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x01) ||
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x05));
+    $add->("dim_down:noArg") if (
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x01) ||
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x05));
+    $add->("dim_stop:noArg") if (
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x03) ||
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x07));
+    $add->("dim_step_up:noArg") if (
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x02) ||
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x06));
+    $add->("dim_step_down:noArg") if (
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x02) ||
+        MATTERDevice_CommandSupported($hash, 0x0008, 0x06));
+
     if (MATTERDevice_CommandSupported($hash, 0x0300, 0x0A)) {
         my $min_mired = MATTERDevice_AttributeUsable($hash, 0x0300, 0x400B)
             ? AttrVal($name, "color_temp_min", 153)
@@ -1939,6 +1999,11 @@ one model cannot establish support for all models sharing the cluster.</p>
 <tr><td>Electrical metering</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>untested</strong></td></tr>
 <tr><td>Air quality / CO concentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>untested</strong></td></tr>
 </table>
+<p>Native LevelControl dimming: <code>dim_up</code>, <code>dim_down</code>,
+<code>dim_step_up</code>, <code>dim_step_down</code> and <code>dim_stop</code>
+only when the corresponding commands are advertised. Optional per-device
+<code>dimRate</code> (1–254, default 30) sets the speed for continuous dimming.
+No FHEM dimming loop. Physical device variants <strong>untested</strong>.</p>
 <p>Additional environmental measurements: pressure (hPa), CO2, PM2.5 and TVOC
 with separately reported measurement units. These classes are
 <strong>untested</strong> on real devices.</p>
@@ -2049,6 +2114,11 @@ mit demselben Matter-Cluster.</p>
 <tr><td>Elektrische Messwerte</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Luftqualität / CO-Konzentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>ungetestet</strong></td></tr>
 </table>
+<p>Natives LevelControl-Dimmen: <code>dim_up</code>, <code>dim_down</code>,
+<code>dim_step_up</code>, <code>dim_step_down</code> und <code>dim_stop</code>
+nur bei gemeldeten Befehlen. <code>dimRate</code> (1–254, Standard 30) legt
+die Geschwindigkeit für kontinuierliches Dimmen pro Gerät fest. Keine
+FHEM-Dimmschleife; Hardwarevarianten <strong>ungetestet</strong>.</p>
 <p>Weitere Umweltmesswerte: Luftdruck (hPa), CO2, PM2.5 und TVOC mit
 separaten, geräteseitig angegebenen Einheiten. Hardwarestatus:
 <strong>ungetestet</strong>.</p>

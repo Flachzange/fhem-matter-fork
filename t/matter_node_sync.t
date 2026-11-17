@@ -2190,4 +2190,46 @@ is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2', ''), 650,
 is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2_unit', ''), 'ppm',
    'unknown units do not overwrite a valid known unit');
 
+
+# Issue #34: native LevelControl move, step and stop.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 3400, name => 'DimProbe', available => JSON::true,
+    attributes => {
+        '1/8/65529' => [1, 2, 3],
+        '1/8/65531' => [0],
+        '1/8/0' => 100,
+    },
+});
+my $dim = $defs{MATTER_DimProbe_EP1};
+ok(grep(/^dim_up:noArg$/, MATTERDevice_GetSetList($dim)),
+   'native Move is offered when accepted');
+ok(grep(/^dim_stop:noArg$/, MATTERDevice_GetSetList($dim)),
+   'native Stop is offered when accepted');
+@sent_requests = ();
+is(MATTERDevice_Set($dim, $dim->{NAME}, 'dim_up'), undef,
+   'native dim up command accepted');
+is($sent_requests[-1]{args}{command_name}, 'Move',
+   'native Move rather than repeated pct command');
+is($sent_requests[-1]{args}{payload}{rate}, 30,
+   'continuous dimming defaults to rate 30');
+is($sent_requests[-1]{args}{payload}{moveMode}, 0,
+   'dim_up uses MoveMode Up');
+is(CommandAttr(undef, $dim->{NAME} . ' dimRate 60'), undef,
+   'device-specific dimRate can be configured');
+@sent_requests = ();
+is(MATTERDevice_Set($dim, $dim->{NAME}, 'dim_down'), undef,
+   'native dim down command accepted');
+is($sent_requests[-1]{args}{payload}{rate}, 60,
+   'the following dim command uses the changed rate');
+is($sent_requests[-1]{args}{payload}{moveMode}, 1,
+   'dim_down uses MoveMode Down');
+is(MATTERDevice_Set($dim, $dim->{NAME}, 'dim_step_up'), undef,
+   'native step command accepted');
+is($sent_requests[-1]{args}{command_name}, 'Step',
+   'step uses native LevelControl Step');
+is(MATTERDevice_Set($dim, $dim->{NAME}, 'dim_stop'), undef,
+   'native stop command accepted');
+is($sent_requests[-1]{args}{command_name}, 'Stop',
+   'dim_stop uses native Stop and no timer');
+
 done_testing();
