@@ -2680,6 +2680,37 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($failure_child)),
    'successful retry restores the missing On command');
+
+# A later manual read can finish recovery before a slower automatic read
+# returns. A stale automatic response must never undo the newer metadata.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2706, name => 'ReadRaceProbe', available => JSON::false,
+    attributes => { '1/6/0' => JSON::true }
+});
+my $race_child = $defs{MATTER_ReadRaceProbe_EP1};
+@sent_requests = ();
+MATTER_ProcessNode($defs{ioA}, {node_id => 2706, available => JSON::true});
+my @race_reads = grep {
+    ($_->{command} // '') eq 'read_attribute' &&
+    ($_->{args}{node_id} // 0) == 2706
+} @sent_requests;
+is(scalar(@race_reads), 1, 'auto metadata read is in flight');
+my $race_auto_id = $race_reads[0]{message_id};
+is(MATTERDevice_Set($race_child, $race_child->{NAME}, 'getConfig'),
+   undef, 'explicit recovery read can start while auto request is pending');
+my $race_manual_id = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $race_manual_id,
+    result => { '1/6/65529' => [0, 1, 2], '1/6/65532' => 0 },
+}));
+ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($race_child)),
+   'newer manual capability data restores On');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $race_auto_id,
+    result => { '1/6/65529' => [] },
+}));
+ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($race_child)),
+   'late automatic metadata cannot overwrite newer complete capabilities');
 $mock_time = $time_before_recovery;
 
 # Issue #35: explicit opt-in diagnostic and raw visibility.
