@@ -482,6 +482,9 @@ sub MATTER_Close($) {
     $hash->{websocket} = 0;
     $hash->{ws_status} = 'disconnected';
     $hash->{BUF} = '';
+    my @incomplete_node_ops = grep {
+        ref($_) eq 'HASH' && ($_->{type} // '') eq 'node_operation'
+    } values %{$hash->{helper}{pending_command} // {}};
     delete $hash->{helper}{pending_command};
     delete $hash->{helper}{pending_config};
     delete $hash->{helper}{pending_snapshot_touched};
@@ -498,6 +501,14 @@ sub MATTER_Close($) {
         next unless $owner ? $owner eq $hash
                            : AttrVal($device->{NAME}, 'IODev', '') eq $name;
         MATTERDevice_SetRootState($device, 'unknown');
+    }
+    for my $op (@incomplete_node_ops) {
+        my $device = $defs{$op->{name}};
+        next unless $device && ($device->{FUUID} // '') eq ($op->{fuuid} // '') &&
+                    $device->{IODev} && $device->{IODev} eq $hash;
+        my $reading = ($op->{operation} // '') =~ /icd/ ?
+                      'icd_request' : 'firmware_update';
+        readingsSingleUpdate($device, $reading, 'interrupted (outcome unknown)', 1);
     }
     if ($active) {
         MATTER_CommissioningReadings($hash, 'interrupted', $active->{mode}, '',
@@ -1113,6 +1124,17 @@ sub MATTER_ParseMessage($$) {
         
         # start_listening and get_nodes both return a complete node list.
         my $cmd_type = delete $hash->{helper}{pending_command}{$msg_id};
+        if (ref($cmd_type) eq 'HASH' &&
+            ($cmd_type->{type} // '') eq 'node_operation') {
+            my $owner = $defs{$cmd_type->{name}};
+            if ($owner && ($owner->{TYPE} // '') eq 'MATTERDevice' &&
+                ($owner->{FUUID} // '') eq ($cmd_type->{fuuid} // '') &&
+                ($owner->{node_id} // '') eq ($cmd_type->{node_id} // '') &&
+                $owner->{IODev} && $owner->{IODev} eq $hash) {
+                MATTERDevice_HandleNodeOperation($owner, $cmd_type, $decoded);
+            }
+            return;
+        }
         if ($cmd_type && ($cmd_type eq "get_nodes" || $cmd_type eq "start_listening")) {
             my $touched = delete $hash->{helper}{pending_snapshot_touched}{$msg_id};
             if (ref($decoded->{result}) eq 'ARRAY') {

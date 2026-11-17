@@ -2417,4 +2417,58 @@ MATTERDevice_Parse($dr, encode_json({
 }));
 is(ReadingsVal($dr->{NAME}, 'wifi_rssi', ''), -67,
    'disable stops updating diagnostics without deleting old data');
+
+# Issue #28: passive ICD detection, LIT gating, explicit ICD query and
+# asynchronous correlation. Never infer awake status from availability.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 2800, name => 'IcdProbe', available => JSON::true,
+    attributes => {
+        '0/40/21' => 0x01040000,
+        '0/70/65532' => 5, # Check-In and Long Idle Time features
+        '0/70/8' => 1,
+        '0/70/0' => 3600,
+    }
+});
+my $icd = $defs{MATTER_IcdProbe};
+is(ReadingsVal($icd->{NAME}, 'icd_supported', ''), 'true',
+   'ICD presence is announced passively');
+is(ReadingsVal($icd->{NAME}, 'icd_lit_supported', ''), 'true',
+   'Matter 1.4 and LIT bit both required');
+is(ReadingsVal($icd->{NAME}, 'icd_operating_mode', ''), 'LIT',
+   'current LIT mode is distinct from LIT capability');
+is(ReadingsVal($icd->{NAME}, 'icd_idle_mode_duration', ''), 3600,
+   'idle duration is retained');
+is(CommandAttr(undef, 'ioA autocreate 1'), undef,
+   'IO remains assignable during ICD tests');
+readingsSingleUpdate($defs{ioA}, 'schema_version', 12, 0);
+ok(grep(/^icdRegister:noArg$/, MATTERDevice_GetSetList($icd)),
+   'ICD registration set is gated by check-in feature and server schema');
+@sent_requests = ();
+like(MATTERDevice_Get($icd, $icd->{NAME}, 'icdState'),
+     qr/requested/, 'ICD Get acknowledges an asynchronous server request');
+is($sent_requests[-1]{command}, 'get_icd_state',
+   'dedicated controller-side ICD API');
+my $icd_req = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $icd_req,
+    result => {
+        supported => JSON::true, lit_supported => JSON::true,
+        registered => JSON::true, operating_mode => 'LIT',
+        awake => JSON::false, available => JSON::true,
+        next_expected_checkin => 1735689600000,
+    }
+}));
+is(ReadingsVal($icd->{NAME}, 'icd_awake', ''), 'false',
+   'sleeping ICD is recorded as awake false');
+is(ReadingsVal($icd->{NAME}, 'icd_controller_available', ''), 'true',
+   'controller availability is independent of awake');
+is(ReadingsVal($icd->{NAME}, 'state', ''), 'online',
+   'sleeping ICD never forces root offline');
+is(ReadingsVal($icd->{NAME}, 'icd_registered', ''), 'true',
+   'registration is confirmed only from correlated response');
+@sent_requests = ();
+is(MATTERDevice_Set($icd, $icd->{NAME}, 'icdRegister'), undef,
+   'explicit ICD administrative command accepted');
+is($sent_requests[-1]{command}, 'register_icd',
+   'server remains responsible for ICD registration');
 done_testing();

@@ -134,6 +134,7 @@ my %MATTER_CLUSTERS = (
             0x0008 => { name => "hardware_version", is_reading => 1, is_attribute => 0 },
             0x000A => { name => "firmware_version", is_reading => 1, is_attribute => 0 },
             0x000F => { name => "serial_number", is_reading => 1, is_attribute => 0 },
+            0x0015 => { name => "specification_version", is_reading => 1, is_attribute => 0 },
         },
     },
     0x002F => {
@@ -152,6 +153,13 @@ my %MATTER_CLUSTERS = (
             0x0014 => { name => "battery_common_designation", is_reading => 1, is_attribute => 0 },
             0x0018 => { name => "battery_capacity_mAh", is_reading => 1, is_attribute => 0 },
             0x0019 => { name => "battery_quantity", is_reading => 1, is_attribute => 0 },
+        },
+    },
+    0x0046 => {
+        name       => "IcdManagement",
+        attributes => {
+            0x0000 => { name => "icd_idle_mode_duration", is_reading => 1, is_attribute => 0 },
+            0x0008 => { name => "icd_operating_mode", is_reading => 1, is_attribute => 0 },
         },
     },
     0x0045 => {
@@ -867,6 +875,20 @@ sub MATTERDevice_Set($$@) {
         return "Invalid frequency" if $cmd eq 'frequency' && (!$args[0] || $args[0] > 65535);
     }
 
+    if ($cmd =~ /^(?:icdRegister|icdUnregister|icdResync)$/) {
+        return 'ICD administrative operation only allowed on an ICD root'
+            unless ($hash->{endpoint_id} // 0) == 0 &&
+                ReadingsVal($name, 'icd_supported', '') eq 'true';
+        my %operations = (
+            icdRegister => 'register_icd',
+            icdUnregister => 'unregister_icd',
+            icdResync => 'resync_icd',
+        );
+        my $error = MATTERDevice_SendNodeOperation(
+            $hash, $operations{$cmd}, {}, 120);
+        return $error if defined $error;
+        return wantarray ? (undef, 1) : undef;
+    }
     if ($cmd eq "on" || $cmd eq "off") {
         my $onoff_command_id = ($cmd eq "on") ? 0x01 : 0x00;
         my $wc_command_id    = ($cmd eq "on") ? 0x00 : 0x01;
@@ -1411,7 +1433,22 @@ sub MATTERDevice_Set($$@) {
     return undef;
 }
 
-sub MATTERDevice_Get($$@) { return undef; }
+sub MATTERDevice_Get($$@) {
+    my ($hash, $name, $cmd, @args) = @_;
+    my $root = ($hash->{endpoint_id} // 0) == 0;
+    my $icd = $root && ReadingsVal($name, 'icd_supported', '') eq 'true';
+    my $io = $hash->{IODev};
+    my $schema = $io ? ReadingsVal($io->{NAME}, 'schema_version', 0) : 0;
+    my $supported = $icd && $schema =~ /^\d+$/ && $schema >= 12;
+    return 'Unknown argument, choose one of ' .
+           ($supported ? 'icdState' : '') if !defined($cmd) || $cmd eq '?';
+    return 'Unknown argument, choose one of ' .
+           ($supported ? 'icdState' : '')
+        unless $cmd eq 'icdState' && $supported && !@args;
+    my $error = MATTERDevice_SendNodeOperation($hash, 'get_icd_state', {}, 120);
+    return $error if defined $error;
+    return 'ICD state requested; result will appear in icd_* readings';
+}
 
 # --- Zentraler Parser für alle Attribut-Updates ---
 
@@ -1486,6 +1523,130 @@ sub MATTERDevice_RawDiagnostic {
         if ReadingsVal($hash->{NAME}, $reading, '') ne $str;
 }
 
+
+# Passive ICD support belongs to the root only. A saved capability reading
+# may survive a restart, while dynamic awake/registration must be refreshed
+# explicitly through matterjs-server.
+sub MATTERDevice_RefreshIcdCapability {
+    my ($hash) = @_;
+    return unless ($hash->{endpoint_id} // 0) == 0;
+    my $features = $hash->{helper}{capabilities}{70}{feature_map};
+    my $spec = ReadingsVal($hash->{NAME}, 'specification_version', undef);
+    return unless defined($features) && !ref($features) &&
+                  $features =~ /^\d+$/ &&
+                  defined($spec) && !ref($spec) && $spec =~ /^\d+$/;
+    my $supported = ($features & 0x04) && $spec >= 0x01040000 ?
+                    'true' : 'false';
+    readingsSingleUpdate($hash, 'icd_lit_supported', $supported, 1)
+        if ReadingsVal($hash->{NAME}, 'icd_lit_supported', '') ne $supported;
+}
+sub MATTERDevice_IcdCapabilityReport {
+    my ($hash, $cluster, $attr, $value) = @_;
+    return unless ($hash->{endpoint_id} // 0) == 0;
+    if ($cluster == 70 && defined($value) && !ref($value)) {
+        if ($attr == 65532 && $value =~ /^\d+$/) {
+            readingsSingleUpdate($hash, 'icd_supported', 'true', 1)
+                if ReadingsVal($hash->{NAME}, 'icd_supported', '') ne 'true';
+            $hash->{helper}{capabilities}{70}{feature_map} = $value;
+            MATTERDevice_RefreshIcdCapability($hash);
+        } elsif ($attr == 8 && $value =~ /^(?:0|1)$/) {
+            my $mode = $value == 1 ? 'LIT' : 'SIT';
+            readingsSingleUpdate($hash, 'icd_operating_mode', $mode, 1)
+                if ReadingsVal($hash->{NAME}, 'icd_operating_mode', '') ne $mode;
+            readingsSingleUpdate($hash, 'icd_supported', 'true', 1)
+                if ReadingsVal($hash->{NAME}, 'icd_supported', '') ne 'true';
+        } elsif ($attr == 0 && $value =~ /^\d+$/ && $value <= 4294967295) {
+            readingsSingleUpdate($hash, 'icd_idle_mode_duration', $value, 1)
+                if ReadingsVal($hash->{NAME}, 'icd_idle_mode_duration', '') ne "$value";
+        }
+    } elsif ($cluster == 40 && $attr == 21 &&
+             defined($value) && !ref($value) && $value =~ /^\d+$/) {
+        readingsSingleUpdate($hash, 'specification_version', $value, 1)
+            if ReadingsVal($hash->{NAME}, 'specification_version', '') ne "$value";
+        MATTERDevice_RefreshIcdCapability($hash);
+    }
+}
+sub MATTERDevice_SendNodeOperation {
+    my ($hash, $command, $args, $timeout) = @_;
+    my $name = $hash->{NAME};
+    my $io = $hash->{IODev};
+    return 'No active Matter server connection'
+        unless $io && $io->{CD} && $io->{websocket} &&
+               ($io->{ws_status} // '') eq 'connected' &&
+               $io->{fhem}{helper}{sendWS};
+    my $id = MATTER_NextMessageId($io);
+    return 'No available Matter request ID' unless defined $id;
+    my $pending = {
+        type => 'node_operation', operation => $command,
+        name => $name, fuuid => $hash->{FUUID}, node_id => $hash->{node_id},
+        started_at => gettimeofday(), timeout => ($timeout // 120),
+    };
+    $io->{helper}{pending_command}{$id} = $pending;
+    my $payload = {
+        message_id => $id, command => $command,
+        args => { node_id => 0 + $hash->{node_id}, %{$args // {}} }
+    };
+    unless ($io->{fhem}{helper}{sendWS}->(encode_json($payload))) {
+        delete $io->{helper}{pending_command}{$id};
+        return "Could not send $command";
+    }
+    my $reading = $command =~ /icd/ ? 'icd_request' : 'firmware_update';
+    readingsSingleUpdate($hash, $reading, 'requested', 1);
+    return undef;
+}
+sub MATTERDevice_HandleNodeOperation {
+    my ($hash, $request, $reply) = @_;
+    my $cmd = $request->{operation};
+    my $reading = $cmd =~ /icd/ ? 'icd_request' : 'firmware_update';
+    if (exists($reply->{error_code}) || exists($reply->{error})) {
+        my $error = ref($reply->{error}) eq 'HASH'
+            ? $reply->{error}{message} : $reply->{details};
+        $error = 'Matter server rejected the request'
+            unless defined($error) && !ref($error);
+        $error =~ s/[\x00-\x1f\x7f]/ /g;
+        readingsSingleUpdate($hash, $reading,
+                             'failed: ' . substr($error, 0, 200), 1);
+        return;
+    }
+    if ($cmd =~ /icd/) {
+        if ($cmd eq 'resync_icd' && exists($reply->{result}) &&
+            !defined($reply->{result})) {
+            readingsSingleUpdate($hash, 'icd_request', 'resync accepted', 1);
+            return;
+        }
+        my $value = $reply->{result};
+        unless (ref($value) eq 'HASH' && exists($value->{supported})) {
+            readingsSingleUpdate($hash, 'icd_request', 'invalid response', 1);
+            return;
+        }
+        my %fields = (
+            supported => 'icd_controller_supported',
+            lit_supported => 'icd_controller_lit_supported',
+            registered => 'icd_registered',
+            awake => 'icd_awake',
+            available => 'icd_controller_available',
+        );
+        for my $key (keys %fields) {
+            next unless exists($value->{$key});
+            my $b = MATTERDevice_NormalizeBoolean($value->{$key});
+            next unless defined $b;
+            readingsSingleUpdate($hash, $fields{$key},
+                                 $b ? 'true' : 'false', 1);
+        }
+        if (defined($value->{operating_mode}) && !ref($value->{operating_mode}) &&
+            $value->{operating_mode} =~ /^(?:SIT|LIT)$/) {
+            readingsSingleUpdate($hash, 'icd_controller_mode',
+                                 $value->{operating_mode}, 1);
+        }
+        if (defined($value->{next_expected_checkin}) &&
+            !ref($value->{next_expected_checkin}) &&
+            $value->{next_expected_checkin} =~ /^\d+$/) {
+            readingsSingleUpdate($hash, 'icd_next_expected_checkin_ms',
+                                 $value->{next_expected_checkin}, 1);
+        }
+        readingsSingleUpdate($hash, 'icd_request', 'completed', 1);
+    }
+}
 sub MATTERDevice_ProcessAttributeValue($$$$) {
     my ($hash, $cluster_id, $attr_id, $value) = @_; # quick unpack
     my $name = $hash->{NAME};
@@ -1499,6 +1660,11 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     # Remember cluster presence for conservative fallback labels in FHEMWEB,
     # including measurement clusters this module does not yet expose as readings.
     $hash->{helper}{seen_clusters}{$cluster_id} = 1 if defined($value);
+
+    # ICD capability comes from endpoint-zero metadata, not a get_icd_state
+    # probe during discovery. Do not conflate a sleeping ICD with offline.
+    MATTERDevice_IcdCapabilityReport($hash, $cluster_id, $attr_id, $value)
+        if ($cluster_id == 70 || $cluster_id == 40);
 
     # Globale Matter-Attribute gelten fuer jeden Cluster, auch wenn dessen
     # Nutzdaten im FHEM-Modul noch nicht abgebildet sind.
@@ -1811,6 +1977,19 @@ sub MATTERDevice_GetSetList($) {
         push @list, $entry;
     };
 
+    if (($hash->{endpoint_id} // 0) == 0 &&
+        ReadingsVal($name, 'icd_supported', '') eq 'true') {
+        my $schema = $hash->{IODev} ?
+            ReadingsVal($hash->{IODev}{NAME}, 'schema_version', 0) : 0;
+        my $features = $hash->{helper}{capabilities}{70}{feature_map};
+        if (defined($schema) && $schema =~ /^\d+$/ && $schema >= 12 &&
+            defined($features) && !ref($features) && $features =~ /^\d+$/ &&
+            ($features & 1)) {
+            $add->("icdRegister:noArg");
+            $add->("icdUnregister:noArg");
+            $add->("icdResync:noArg");
+        }
+    }
     $add->("identify:noArg")
         if MATTERDevice_CommandSupported($hash, 0x0003, 0x00);
     $add->("desired-temp:slider,5,0.5,30,1")
@@ -2257,6 +2436,14 @@ one model cannot establish support for all models sharing the cluster.</p>
 required Matter attributes/commands are advertised. Thermostat, fan and
 Identify device combinations are <strong>untested</strong> in this repository.
 Command acceptance does not assert that the physical state has changed.</p>
+<p>ICD Management: passive <code>icd_supported</code>,
+<code>icd_lit_supported</code>, <code>icd_operating_mode</code> and
+<code>icd_idle_mode_duration</code> readings. Positively recognized ICD
+roots on compatible servers offer asynchronous <code>get icdState</code>,
+plus conservative <code>icdRegister</code>, <code>icdUnregister</code> and
+<code>icdResync</code> where Check-In support is advertised. The server
+owns registration and availability; <code>awake=false</code> is not offline.
+Hardware validation: <strong>untested</strong>.</p>
 <p>Root <code>diagnostics=1</code> enables passive Thread/Wi-Fi diagnostics.
 Device <code>rawReadings=1</code> exposes limited non-sensitive unmatched
 attributes. Both default to off, add no polling, retain existing readings
@@ -2387,6 +2574,15 @@ mit demselben Matter-Cluster.</p>
 vorhandenen Matter-Attributen/Befehlen verfügbar. Thermostat-/Lüfter-
 Geräte und Identify-Kombinationen sind <strong>ungetestet</strong>.
 Ein angenommener Befehl bestätigt keine physische Zustandsänderung.</p>
+<p>ICD Management: passive Readings <code>icd_supported</code>,
+<code>icd_lit_supported</code>, <code>icd_operating_mode</code> und
+<code>icd_idle_mode_duration</code>. Für bestätigte ICD-Root-Knoten am
+kompatiblen Matter-Server stehen asynchrones <code>get icdState</code> und
+bei passender Check-In-Fähigkeit die konservativen Befehle
+<code>icdRegister</code>, <code>icdUnregister</code>, <code>icdResync</code>
+zur Verfügung. Der Server verwaltet die Registrierung; 
+<code>awake=false</code> ist nicht gleich offline. Hardwarestatus
+<strong>ungetestet</strong>.</p>
 <p>Root-Attribut <code>diagnostics=1</code> aktiviert passive Thread-/WLAN-
 Diagnose. <code>rawReadings=1</code> zeigt begrenzte, nicht sensitive
 unbekannte Attribute. Beides ist standardmäßig aus, verursacht kein Polling,
