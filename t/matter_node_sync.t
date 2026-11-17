@@ -2052,4 +2052,59 @@ is(ReadingsVal($child->{NAME}, 'state', ''), 'on',
 close($io_a_peer);
 MATTER_Close($defs{ioA});
 
+
+# Issue #30 - standard sensor clusters; descriptor-before-attribute ordering.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 3000, name => 'SensorProbe', available => JSON::true,
+    attributes => {
+        '1/69/0' => JSON::true,
+        '1/29/0' => [{ '0' => 0x0015, '1' => 1 }],
+        '2/1026/0' => 2234,
+        '2/29/0' => [{ '0' => 0x0302, '1' => 1 }],
+        '3/1029/0' => 4350,
+        '3/29/0' => [{ '0' => 0x0307, '1' => 1 }],
+        '4/1024/0' => 30001,
+        '4/29/0' => [{ '0' => 0x0106, '1' => 1 }],
+        '5/1030/0' => 1,
+        '5/29/0' => [{ '0' => 0x0107, '1' => 1 }],
+        '6/69/0' => JSON::true,
+        '6/29/0' => [{ '0' => 0x0043, '1' => 1 }],
+        '7/69/0' => JSON::false,
+        '7/29/0' => [{ '0' => 0x0044, '1' => 1 }],
+    },
+});
+is(ReadingsVal('MATTER_SensorProbe_EP1', 'contact', ''), 'closed',
+   'contact sensor true means closed');
+is(ReadingsVal('MATTER_SensorProbe_EP2', 'temperature', ''), 22.34,
+   'temperature centidegrees become Celsius');
+is(ReadingsVal('MATTER_SensorProbe_EP3', 'humidity', ''), 43.5,
+   'humidity centipercent converts to percent');
+is(ReadingsVal('MATTER_SensorProbe_EP4', 'illuminance', ''), 1000,
+   'logarithmic Matter illuminance becomes lux');
+is(ReadingsVal('MATTER_SensorProbe_EP5', 'motion', ''), 'motion',
+   'occupancy bitmask sets motion');
+is(ReadingsVal('MATTER_SensorProbe_EP6', 'water_leak', ''), 'leak',
+   'water-leak type maps true to leak');
+is(ReadingsVal('MATTER_SensorProbe_EP7', 'rain', ''), 'dry',
+   'rain type maps false to dry');
+MATTERDevice_Parse($defs{MATTER_SensorProbe}, encode_json({
+    node_id => 3000, attributes => {
+        '1/69/0' => JSON::false,
+        '2/1026/0' => -32768,
+        '3/1029/0' => 65535,
+        '4/1024/0' => 65535,
+        '5/1030/0' => 0,
+    }
+}));
+is(ReadingsVal('MATTER_SensorProbe_EP1', 'contact', ''), 'open',
+   'contact false means open');
+is(ReadingsVal('MATTER_SensorProbe_EP5', 'motion', ''), 'nomotion',
+   'occupancy zero means nomotion');
+is(ReadingsVal('MATTER_SensorProbe_EP2', 'temperature', ''), 22.34,
+   'temperature invalid sentinel leaves old value');
+is(ReadingsVal('MATTER_SensorProbe_EP3', 'humidity', ''), 43.5,
+   'humidity invalid sentinel leaves old value');
+is(ReadingsVal('MATTER_SensorProbe_EP4', 'illuminance', ''), 1000,
+   'illuminance invalid sentinel leaves old value');
+
 done_testing();

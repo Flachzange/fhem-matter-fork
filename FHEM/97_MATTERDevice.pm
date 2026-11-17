@@ -28,6 +28,8 @@ my %MATTER_DEVICE_TYPE_LABELS = (
     0x000F => "Generic switch",
     0x0013 => "Bridged node",
     0x0015 => "Contact sensor",
+    0x0043 => "Water leak detector",
+    0x0044 => "Rain sensor",
     0x0016 => "Root node",
     0x002B => "Fan",
     0x002C => "Air quality sensor",
@@ -132,6 +134,57 @@ my %MATTER_CLUSTERS = (
             0x0014 => { name => "battery_common_designation", is_reading => 1, is_attribute => 0 },
             0x0018 => { name => "battery_capacity_mAh", is_reading => 1, is_attribute => 0 },
             0x0019 => { name => "battery_quantity", is_reading => 1, is_attribute => 0 },
+        },
+    },
+    0x0045 => {
+        name       => "BooleanState",
+        attributes => {
+            0x0000 => { name => "boolean_state", is_reading => 1, is_attribute => 0 },
+        },
+    },
+    0x0400 => {
+        name       => "IlluminanceMeasurement",
+        attributes => {
+            0x0000 => { name => "illuminance", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my ($v) = @_;
+                            return undef if $v != int($v) || $v < 0 || $v >= 65535;
+                            return 0 if $v == 0;
+                            return int(10 ** (($v - 1) / 10000) * 10 + 0.5) / 10;
+                        } },
+        },
+    },
+    0x0402 => {
+        name       => "TemperatureMeasurement",
+        attributes => {
+            0x0000 => { name => "temperature", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my ($v) = @_;
+                            return undef if $v != int($v) || $v < -27315 || $v > 32767;
+                            return $v / 100;
+                        } },
+        },
+    },
+    0x0405 => {
+        name       => "RelativeHumidityMeasurement",
+        attributes => {
+            0x0000 => { name => "humidity", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my ($v) = @_;
+                            return undef if $v != int($v) || $v < 0 || $v > 10000;
+                            return $v / 100;
+                        } },
+        },
+    },
+    0x0406 => {
+        name       => "OccupancySensing",
+        attributes => {
+            0x0000 => { name => "motion", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my ($v) = @_;
+                            return undef if $v != int($v) || $v < 0 || $v > 255;
+                            return ($v & 1) ? "motion" : "nomotion";
+                        } },
         },
     },
     0x005B => {
@@ -1209,6 +1262,21 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         return if !defined($value);
     }
     return if ref($value);
+    if ($cluster_id == 0x0045 && $attr_id == 0) {
+        my $active = MATTERDevice_NormalizeBoolean($value);
+        return unless defined $active;
+        my %types = map { $_ => 1 } MATTERDevice_DeviceTypeIds($hash);
+        if ($types{0x0015}) {
+            ($attr_name, $value) = ('contact', $active ? 'closed' : 'open');
+        } elsif ($types{0x0043}) {
+            ($attr_name, $value) = ('water_leak', $active ? 'leak' : 'dry');
+        } elsif ($types{0x0044}) {
+            ($attr_name, $value) = ('rain', $active ? 'rain' : 'dry');
+        } else {
+            ($attr_name, $value) = ('boolean_state', $active);
+        }
+        $is_reading = 1;
+    }
     return if $cluster_id == 0x0006 && $attr_id == 0 &&
               !defined(MATTERDevice_NormalizeBoolean($value));
     return if $cluster_id == 0x0008 && $attr_id == 0 &&
@@ -1311,7 +1379,10 @@ sub MATTERDevice_Parse($ $) {
             delete $target_hash->{helper}{capabilities} if ($target_hash);
         }
 
-        while (my ($path, $value) = each %{$decoded->{result}}) {
+        for my $path (sort {
+            ($a =~ m{/29/0$} ? 0 : 1) <=> ($b =~ m{/29/0$} ? 0 : 1)
+        } keys %{$decoded->{result}}) {
+            my $value = $decoded->{result}->{$path};
             if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
                 $route_attribute->($1, $2, $3, $value);
             }
@@ -1351,7 +1422,10 @@ sub MATTERDevice_Parse($ $) {
         $update_available->($decoded->{available}) if exists($decoded->{available});
 
         if ($attributes && ref($attributes) eq 'HASH') {
-            while (my ($path, $value) = each %{$attributes}) {
+            for my $path (sort {
+                ($a =~ m{/29/0$} ? 0 : 1) <=> ($b =~ m{/29/0$} ? 0 : 1)
+            } keys %{$attributes}) {
+                my $value = $attributes->{$path};
                 if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
                     $route_attribute->($1, $2, $3, $value);
                 }
@@ -1780,6 +1854,9 @@ one model cannot establish support for all models sharing the cluster.</p>
 <tr><td>Electrical metering</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>untested</strong></td></tr>
 <tr><td>Air quality / CO concentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>untested</strong></td></tr>
 </table>
+<p>Core sensor classes (contact, water leak, rain, temperature, humidity,
+illuminance, occupancy) are implemented but <strong>untested</strong> on physical
+hardware in this repository.</p>
 <p>Actual hardware evidence must identify the model, firmware, endpoint, validated
 readings and commands before a row can be narrowed or upgraded to tested.</p>
 <p>Root nodes use the administrative FHEMWEB group <code>Matter Nodes</code>.
@@ -1881,6 +1958,9 @@ mit demselben Matter-Cluster.</p>
 <tr><td>Elektrische Messwerte</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Luftqualität / CO-Konzentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>ungetestet</strong></td></tr>
 </table>
+<p>Basissensoren (Kontakt, Wasserleck, Regen, Temperatur, Luftfeuchte,
+Beleuchtungsstärke, Belegung) sind implementiert, aber an eigener Hardware
+<strong>ungetestet</strong>.</p>
 <p>Vor einer Änderung des Teststatus müssen Modell, Firmware, Endpunkt sowie
 tatsächlich geprüfte Readings und Befehle nachvollziehbar dokumentiert sein.</p>
 <p>Root-Knoten erhalten die Verwaltungsgruppe <code>Matter Nodes</code>.
