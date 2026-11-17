@@ -246,11 +246,15 @@ engine.
   capability snapshots do not overwrite FHEM readings or local edits.
   After an offline/online transition, live `attribute_updated` reports are
   accepted, while unrequested cached device-state snapshots remain quarantined.
-  **Exception for command discovery:** FHEM requests the node's global Matter
-  command/attribute/feature metadata once per online recovery, without reading
-  device states. A matched response may restore the endpoint's setters but
-  cannot overwrite `state`, brightness, battery, sensor values or other
-  device readings. `set <endpoint> getConfig` is also available while the
+  **Exception for command discovery:** FHEM checks whether known endpoints
+  are missing command or write-attribute metadata. Only when needed, it
+  requests the global Matter command/attribute/feature metadata after online
+  recovery, without reading physical device states. Known complete metadata
+  is reused without another request. Incomplete or failed requests can be
+  retried on later events, at least 15 seconds apart and at most three times
+  per recovery period; there is no periodic polling or timer. A matched
+  response may restore setters but cannot overwrite `state`, brightness,
+  battery, sensor values or other device readings. `set <endpoint> getConfig` is also available while the
   node is online and quarantined; in that case only its global capability
   metadata is used. An offline node rejects `getConfig`, and replies issued
   before an intervening offline/online transition are ignored. The server
