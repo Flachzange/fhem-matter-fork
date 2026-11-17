@@ -524,18 +524,61 @@ sub MATTERDevice_SetRootState($$) {
         if ReadingsVal($hash->{NAME}, 'state', '') ne $state;
 }
 
-# One metadata read per online recovery, not periodic device polling. The
-# response is processed separately from cached device values and readings.
+# Only query when endpoint metadata used by FHEM controls is missing.
+# A known empty AcceptedCommandList is valid: it must not be interpreted
+# as a failed interview and must not enable old has_* fallbacks.
+sub MATTERDevice_NeedsCapabilityRefresh($) {
+    my ($root) = @_;
+    return 0 unless $root && ($root->{endpoint_id} // 0) == 0;
+    foreach my $device ($root, MATTERDevice_NodeChildren($root)) {
+        my %observed = map { $_ => 1 } (
+            keys %{$device->{helper}{seen_clusters} // {}},
+            keys %{$device->{helper}{capabilities} // {}}
+        );
+        # An endpoint restored while offline has no runtime metadata at all.
+        # Its persisted type label is not evidence that commands are supported.
+        return 1 if ($device->{endpoint_id} // 0) > 0 && !%observed;
+
+        foreach my $cluster_id (keys %observed) {
+            my $model = $MATTER_CLUSTERS{$cluster_id};
+            next unless $model;
+            my $cap = $device->{helper}{capabilities}{$cluster_id} // {};
+            my $commands = $model->{commands};
+            if (ref($commands) eq 'HASH' && keys %$commands) {
+                return 1 unless ref($cap->{accepted_commands}) eq 'HASH';
+                # Some advertised commands are gated by FeatureMap. A missing
+                # map would silently hide those controls even with the list.
+                if (!defined($cap->{feature_map})) {
+                    foreach my $command_id (keys %{$cap->{accepted_commands}}) {
+                        my $command = $commands->{$command_id};
+                        next unless $command;
+                        return 1 if @{$command->{required_features} // []} ||
+                                    @{$command->{forbidden_features} // []};
+                    }
+                }
+            }
+            # These supported setters write Matter attributes, not commands.
+            if ($cluster_id == 0x0201 || $cluster_id == 0x0202) {
+                return 1 unless ref($cap->{attribute_list}) eq 'HASH';
+            }
+        }
+    }
+    return 0;
+}
+
+# A targeted Matter Read, independent of snapshot-derived device states.
+# Called only when missing metadata makes actual FHEM controls unavailable.
 sub MATTERDevice_RequestCapabilityRefresh($) {
     my ($root) = @_;
     my $io = $root->{IODev};
-    return 'No connected Matter IO' unless $io && $io->{CD} &&
+    return (undef, 'No connected Matter IO') unless $io && $io->{CD} &&
         $io->{websocket} && ($io->{ws_status} // '') eq 'connected' &&
         $io->{fhem}{helper}{sendWS};
     my $pending = ($io->{helper}{pending_config} //= {});
-    return 'Too many pending Matter reads' if scalar(keys %$pending) >= 128;
+    return (undef, 'Too many pending Matter reads')
+        if scalar(keys %$pending) >= 128;
     my $id = MATTER_NextMessageId($io);
-    return 'Cannot allocate Matter request ID' unless defined $id;
+    return (undef, 'Cannot allocate Matter request ID') unless defined $id;
     $pending->{$id} = {
         node_id => $root->{node_id}, endpoint_id => -1,
         all_endpoints => 1, capability_only => 1,
@@ -543,9 +586,7 @@ sub MATTERDevice_RequestCapabilityRefresh($) {
         availability_epoch => $root->{helper}{availability_epoch} // 0,
         created_at => gettimeofday(),
     };
-    # Global cluster metadata; no OnOff, brightness, sensor or other physical
-    # device values are requested. matterjs-server supports endpoint and
-    # cluster wildcards in read_attribute paths.
+    # No physical OnOff, brightness or measurement values are requested.
     my $payload = {
         message_id => $id, command => 'read_attribute',
         args => {
@@ -560,9 +601,62 @@ sub MATTERDevice_RequestCapabilityRefresh($) {
     };
     unless ($io->{fhem}{helper}{sendWS}->(encode_json($payload))) {
         delete $pending->{$id};
-        return 'Unable to send Matter capability read';
+        return (undef, 'Unable to send Matter capability read');
     }
-    return undef;
+    return ($id, undef);
+}
+
+# Bounded and event-driven. A failed/empty reply is not success: a later
+# relevant event can retry after the cooldown. No background timer or polling.
+sub MATTERDevice_MaybeRefreshCapabilities($) {
+    my ($root) = @_;
+    return unless $root && ($root->{endpoint_id} // 0) == 0 &&
+                  $root->{helper}{quarantine_snapshots} &&
+                  ReadingsVal($root->{NAME}, 'available', '') eq 'true';
+
+    unless (MATTERDevice_NeedsCapabilityRefresh($root)) {
+        delete $root->{helper}{capability_refresh};
+        return;
+    }
+
+    my $io = $root->{IODev};
+    return unless $io && $io->{CD} && $io->{websocket} &&
+                  ($io->{ws_status} // '') eq 'connected' &&
+                  $io->{fhem}{helper}{sendWS};
+
+    my $epoch = $root->{helper}{availability_epoch} // 0;
+    my $recovery = $root->{helper}{capability_refresh};
+    if (ref($recovery) ne 'HASH' || ($recovery->{epoch} // -1) != $epoch) {
+        $recovery = { epoch => $epoch, attempts => 0 };
+        $root->{helper}{capability_refresh} = $recovery;
+    }
+
+    my $now = gettimeofday();
+    if (defined(my $id = $recovery->{pending_id})) {
+        my $pending = $io->{helper}{pending_config}{$id};
+        if ($pending) {
+            return if $now - ($pending->{created_at} // $now) < 120;
+            # This read has timed out; never apply its eventual response.
+            delete $io->{helper}{pending_config}{$id};
+        }
+        delete $recovery->{pending_id};
+    }
+    return if ($recovery->{attempts} // 0) >= 3;
+    return if defined($recovery->{last_attempt}) &&
+              $now - $recovery->{last_attempt} < 15;
+
+    # Set ownership before sending: a synchronous notify/send callback must
+    # not recursively issue another read for the same root.
+    ++$recovery->{attempts};
+    $recovery->{last_attempt} = $now;
+    my ($id, $error) = MATTERDevice_RequestCapabilityRefresh($root);
+    if (defined $id) {
+        $recovery->{pending_id} = $id;
+    } elsif (defined $error) {
+        Log3 $root->{NAME}, 3,
+            "MATTERDevice: Capability refresh for node $root->{node_id} " .
+            "attempt $recovery->{attempts} failed: $error";
+    }
 }
 
 sub MATTERDevice_UpdateAvailability($$) {
@@ -590,20 +684,6 @@ sub MATTERDevice_UpdateAvailability($$) {
         readingsEndUpdate($hash, 1);
     }
     MATTERDevice_SyncNodeReadings($hash);
-    # A former offline node may have no transient command metadata at all.
-    # Request it once per recovery epoch, while keeping cached states
-    # quarantined. Do not clear quarantine_snapshots here.
-    if ($boolean && $hash->{helper}{quarantine_snapshots}) {
-        my $epoch = $hash->{helper}{availability_epoch} // 0;
-        if (!defined($hash->{helper}{capability_refresh_epoch}) ||
-            $hash->{helper}{capability_refresh_epoch} != $epoch) {
-            $hash->{helper}{capability_refresh_epoch} = $epoch;
-            my $error = MATTERDevice_RequestCapabilityRefresh($hash);
-            Log3 $hash->{NAME}, 3,
-                "MATTERDevice: Could not refresh capabilities for node $hash->{node_id}: $error"
-                if defined $error;
-        }
-    }
 }
 
 # Config and statefile restoration complete before INITIALIZED/REREADCFG.
@@ -2094,6 +2174,7 @@ sub MATTERDevice_Parse($ $) {
             $update_available->($node->{available});
             Log3 $name, 4, "MATTERDevice: Node $node_id availability = " . ($node->{available} ? "true" : "false");
         }
+        MATTERDevice_MaybeRefreshCapabilities($hash) if $my_endpoint == 0;
         return;
     }
 
@@ -2144,6 +2225,9 @@ sub MATTERDevice_Parse($ $) {
             $route_attribute->($1, $2, $3, $value, 1);
             Log3 $name, 4, "MATTERDevice: Live attribute update ($attribute_path)";
         }
+        # Later device events may trigger a bounded retry if the initial
+        # metadata read failed. Fresh reported values remain independent.
+        MATTERDevice_MaybeRefreshCapabilities($hash) if $my_endpoint == 0;
         return;
     }
 
@@ -2164,6 +2248,9 @@ sub MATTERDevice_Parse($ $) {
                 }
             }
         }
+        # The snapshot has been routed (or quarantined); decide about a
+        # targeted read only after observing available metadata and endpoints.
+        MATTERDevice_MaybeRefreshCapabilities($hash) if $my_endpoint == 0;
     }
 }
 
