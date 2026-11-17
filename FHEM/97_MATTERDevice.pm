@@ -1401,6 +1401,39 @@ sub MATTERDevice_Parse($ $) {
         return;
     }
 
+    # Switch events are not device state: one explicit event per occurrence,
+    # including repeated values with event-on-change-reading.
+    if (($decoded->{event} // '') eq 'node_event' &&
+        ref($decoded->{data}) eq 'HASH') {
+        return unless $my_endpoint == 0;
+        my $event = $decoded->{data};
+        return unless defined($event->{node_id}) && !ref($event->{node_id}) &&
+                      "$event->{node_id}" eq "$hash->{node_id}";
+        my ($ep, $cluster, $id) = @{$event}{qw(endpoint_id cluster_id event_id)};
+        return unless defined($ep) && !ref($ep) && $ep =~ /^\d+$/ && $ep > 0 &&
+                      defined($cluster) && !ref($cluster) && $cluster =~ /^\d+$/ &&
+                      $cluster == 0x003B &&
+                      defined($id) && !ref($id) && $id =~ /^\d+$/;
+        my %events = (1 => 'pressed', 2 => 'long',
+                      3 => 'short', 4 => 'long_release');
+        my $value = $events{$id};
+        if ($id == 6) {
+            my $count = ref($event->{data}) eq 'HASH'
+                ? $event->{data}{totalNumberOfPressesCounted} : undef;
+            return unless defined($count) && !ref($count) &&
+                          $count =~ /^\d+$/ && $count >= 1 && $count <= 255;
+            $value = $count == 1 ? 'short' :
+                     $count == 2 ? 'double' :
+                     $count == 3 ? 'triple' : $count . 'x';
+        }
+        return unless defined $value;
+        my $child = MATTERDevice_GetOrCreateChild($hash, $ep);
+        return unless $child;
+        readingsSingleUpdate($child, 'button', $value, 0);
+        DoTrigger($child->{NAME}, "button: $value");
+        return;
+    }
+
     # 3. LIVE UPDATES (event == 'attribute_updated')
     if (exists $decoded->{event} && $decoded->{event} eq 'attribute_updated' && ref($decoded->{data}) eq 'ARRAY') {
         my ($node_id, $attribute_path, $value) = @{$decoded->{data}};
@@ -1854,6 +1887,9 @@ one model cannot establish support for all models sharing the cluster.</p>
 <tr><td>Electrical metering</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>untested</strong></td></tr>
 <tr><td>Air quality / CO concentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>untested</strong></td></tr>
 </table>
+<p>Switch cluster (0x003B) emits button press/release events on the respective
+endpoint; every press is a separate event. Hardware status:
+<strong>untested</strong>.</p>
 <p>Core sensor classes (contact, water leak, rain, temperature, humidity,
 illuminance, occupancy) are implemented but <strong>untested</strong> on physical
 hardware in this repository.</p>
@@ -1958,6 +1994,9 @@ mit demselben Matter-Cluster.</p>
 <tr><td>Elektrische Messwerte</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Luftqualität / CO-Konzentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>ungetestet</strong></td></tr>
 </table>
+<p>Switch-Cluster (0x003B): Tastendrücke und Loslassen werden am zugehörigen
+Endpunkt als eigene FHEM-Ereignisse verarbeitet. Hardwarestatus:
+<strong>ungetestet</strong>.</p>
 <p>Basissensoren (Kontakt, Wasserleck, Regen, Temperatur, Luftfeuchte,
 Beleuchtungsstärke, Belegung) sind implementiert, aber an eigener Hardware
 <strong>ungetestet</strong>.</p>

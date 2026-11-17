@@ -10,6 +10,8 @@ use vars qw(%defs %attr %modules %selectlist $readingFnAttributes $init_done);
 BEGIN { $INC{'HttpUtils.pm'} = 1; } # No FHEM network stack is needed by these simulated callbacks.
 
 my @log;
+my @direct_events;
+sub DoTrigger { push @direct_events, [@_]; }
 my @timers;
 my %bulk_writes;
 my %single_writes;
@@ -2106,5 +2108,46 @@ is(ReadingsVal('MATTER_SensorProbe_EP3', 'humidity', ''), 43.5,
    'humidity invalid sentinel leaves old value');
 is(ReadingsVal('MATTER_SensorProbe_EP4', 'illuminance', ''), 1000,
    'illuminance invalid sentinel leaves old value');
+
+
+# Issue #31: repeated identical switch events must not be lost.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 3100, name => 'SwitchProbe', available => JSON::true,
+    attributes => { '1/59/0' => 0, '1/29/0' => [{ '0' => 0x000F, '1' => 1 }] }
+});
+@direct_events = ();
+for (1 .. 2) {
+    MATTER_ParseMessage($defs{ioA}, encode_json({
+        event => 'node_event',
+        data => { node_id => 3100, endpoint_id => 1, cluster_id => 59,
+                  event_id => 3, data => {} }
+    }));
+}
+is(ReadingsVal('MATTER_SwitchProbe_EP1', 'button', ''), 'short',
+   'Matter short release produces button short');
+is(scalar(@direct_events), 2,
+   'two identical button values emit two explicit FHEM events');
+is($direct_events[0][1], 'button: short',
+   'button event is suitable for notify/DOIF');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_event',
+    data => { node_id => 3100, endpoint_id => 2, cluster_id => 59,
+              event_id => 6, data => { totalNumberOfPressesCounted => 2 } }
+}));
+is(ReadingsVal('MATTER_SwitchProbe_EP2', 'button', ''), 'double',
+   'second endpoint receives double-press event');
+my $before_invalid = scalar(@direct_events);
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_event',
+    data => { node_id => 3100, endpoint_id => 2, cluster_id => 59,
+              event_id => 6, data => { totalNumberOfPressesCounted => 'bad' } }
+}));
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_event',
+    data => { node_id => 3100, endpoint_id => 2, cluster_id => 51,
+              event_id => 3, data => {} }
+}));
+is(scalar(@direct_events), $before_invalid,
+   'invalid event payload and unrelated clusters cause no button events');
 
 done_testing();

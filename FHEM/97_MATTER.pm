@@ -1032,6 +1032,21 @@ sub MATTER_ParseMessage($$) {
             MATTER_ProcessNode($hash, $decoded->{data});
             return;
         }
+        if ($event eq 'node_event' && ref($decoded->{data}) eq 'HASH') {
+            my $data = $decoded->{data};
+            my ($node_id, $endpoint, $cluster, $event_id) =
+                @{$data}{qw(node_id endpoint_id cluster_id event_id)};
+            if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/ &&
+                defined($endpoint) && !ref($endpoint) && $endpoint =~ /^\d+$/ &&
+                $endpoint > 0 &&
+                defined($cluster) && !ref($cluster) && $cluster =~ /^\d+$/ &&
+                $cluster == 0x003B &&
+                defined($event_id) && !ref($event_id) && $event_id =~ /^\d+$/) {
+                my $root = $modules{MATTERDevice}{defptr}{"$name:$node_id"};
+                MATTERDevice_Parse($root, $payload) if $root;
+            }
+            return;
+        }
         if ($event eq 'node_removed') {
             if (defined($decoded->{data}) && !ref($decoded->{data}) && $decoded->{data} =~ /^\d+$/) {
                 MATTER_RecordSnapshotEvent($hash, $decoded->{data}, $event);
