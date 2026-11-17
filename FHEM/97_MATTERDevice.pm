@@ -58,6 +58,18 @@ my %MATTER_DEVICE_TYPE_LABELS = (
 # (0x0510) is a Matter utility type too, but does represent a useful measurement endpoint.
 my %MATTER_STRUCTURAL_DEVICE_TYPES = map { $_ => 1 } (0x000E, 0x0011, 0x0012, 0x0013, 0x0014, 0x0016);
 
+# Explicit Matter MeasurementUnitEnum values. Never assume that a
+# concentration reading represents ppm without an accompanying unit.
+sub MATTERDevice_ConcentrationUnit {
+    my ($value) = @_;
+    my %units = (0 => 'ppm', 1 => 'ppb', 2 => 'ppt', 3 => 'mg/m3',
+                 4 => 'ug/m3', 5 => 'ng/m3', 6 => 'particles/m3',
+                 7 => 'Bq/m3', 8 => 'dBpm', 9 => 'particles/ft3');
+    return undef if !defined($value) || ref($value) ||
+                    $value !~ /^\d+$/;
+    return $units{$value};
+}
+
 # Zentrale Definition der vom FHEM-Modul fachlich unterstützten Cluster, Attribute und Commands
 my %MATTER_CLUSTERS = (
     0x0006 => {
@@ -165,6 +177,19 @@ my %MATTER_CLUSTERS = (
                         } },
         },
     },
+    0x0403 => {
+        name       => "PressureMeasurement",
+        attributes => {
+            # Matter MeasuredValue = 10 * pressure [kPa]; numeric value
+            # therefore equals pressure in hPa (see Matter spec, 0x0403).
+            0x0000 => { name => "pressure", is_reading => 1, is_attribute => 0,
+                        transform => sub {
+                            my ($v) = @_;
+                            return undef if $v != int($v) || $v < -32767 || $v > 32767;
+                            return $v;
+                        } },
+        },
+    },
     0x0405 => {
         name       => "RelativeHumidityMeasurement",
         attributes => {
@@ -260,6 +285,33 @@ my %MATTER_CLUSTERS = (
             0x0002 => { name => "co_maximum", is_reading => 1, is_attribute => 0 },
             0x0008 => { name => "co_unit", is_reading => 1, is_attribute => 0 },
             0x0009 => { name => "co_medium", is_reading => 1, is_attribute => 0 },
+        },
+    },
+    0x040D => {
+        name       => "CarbonDioxideConcentrationMeasurement",
+        attributes => {
+            0x0000 => { name => "co2", is_reading => 1, is_attribute => 0,
+                        transform => sub { return $_[0] >= 0 ? $_[0] : undef; } },
+            0x0008 => { name => "co2_unit", is_reading => 1, is_attribute => 0,
+                        transform => \&MATTERDevice_ConcentrationUnit },
+        },
+    },
+    0x042A => {
+        name       => "Pm25ConcentrationMeasurement",
+        attributes => {
+            0x0000 => { name => "pm25", is_reading => 1, is_attribute => 0,
+                        transform => sub { return $_[0] >= 0 ? $_[0] : undef; } },
+            0x0008 => { name => "pm25_unit", is_reading => 1, is_attribute => 0,
+                        transform => \&MATTERDevice_ConcentrationUnit },
+        },
+    },
+    0x042E => {
+        name       => "TotalVolatileOrganicCompoundsConcentrationMeasurement",
+        attributes => {
+            0x0000 => { name => "tvoc", is_reading => 1, is_attribute => 0,
+                        transform => sub { return $_[0] >= 0 ? $_[0] : undef; } },
+            0x0008 => { name => "tvoc_unit", is_reading => 1, is_attribute => 0,
+                        transform => \&MATTERDevice_ConcentrationUnit },
         },
     },
     0x0101 => {
@@ -1256,7 +1308,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     if ($transform && ref($transform) eq 'CODE') {
         # Numeric transformations must not turn malformed values into zero.
         if ($cluster_id != 0x0091) {
-            return if ref($value) || $value !~ /^-?(?:\d+(?:\.\d+)?|\.\d+)$/;
+            return if ref($value) || $value !~ /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/;
         }
         $value = $transform->($value);
         return if !defined($value);
@@ -1887,6 +1939,9 @@ one model cannot establish support for all models sharing the cluster.</p>
 <tr><td>Electrical metering</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>untested</strong></td></tr>
 <tr><td>Air quality / CO concentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>untested</strong></td></tr>
 </table>
+<p>Additional environmental measurements: pressure (hPa), CO2, PM2.5 and TVOC
+with separately reported measurement units. These classes are
+<strong>untested</strong> on real devices.</p>
 <p>Switch cluster (0x003B) emits button press/release events on the respective
 endpoint; every press is a separate event. Hardware status:
 <strong>untested</strong>.</p>
@@ -1994,6 +2049,9 @@ mit demselben Matter-Cluster.</p>
 <tr><td>Elektrische Messwerte</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Luftqualität / CO-Konzentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>ungetestet</strong></td></tr>
 </table>
+<p>Weitere Umweltmesswerte: Luftdruck (hPa), CO2, PM2.5 und TVOC mit
+separaten, geräteseitig angegebenen Einheiten. Hardwarestatus:
+<strong>ungetestet</strong>.</p>
 <p>Switch-Cluster (0x003B): Tastendrücke und Loslassen werden am zugehörigen
 Endpunkt als eigene FHEM-Ereignisse verarbeitet. Hardwarestatus:
 <strong>ungetestet</strong>.</p>

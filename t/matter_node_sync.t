@@ -2150,4 +2150,44 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 is(scalar(@direct_events), $before_invalid,
    'invalid event payload and unrelated clusters cause no button events');
 
+
+# Issue #32: pressure and concentration clusters use specified units.
+MATTER_ProcessNode($defs{ioA}, {
+    node_id => 3200, name => 'EnvironmentProbe', available => JSON::true,
+    attributes => {
+        '1/1027/0' => 1013, # 10 * 101.3 kPa -> 1013 hPa
+        '2/1037/0' => 650,
+        '2/1037/8' => 0, # ppm
+        '3/1066/0' => 12.5,
+        '3/1066/8' => 4, # ug/m3
+        '4/1070/0' => 3.5,
+        '4/1070/8' => 1, # ppb
+    },
+});
+is(ReadingsVal('MATTER_EnvironmentProbe_EP1', 'pressure', ''), 1013,
+   'pressure MeasuredValue is displayed in hPa');
+is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2', ''), 650,
+   'CO2 measured value is preserved');
+is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2_unit', ''), 'ppm',
+   'CO2 unit is advertised, not guessed');
+is(ReadingsVal('MATTER_EnvironmentProbe_EP3', 'pm25', ''), 12.5,
+   'PM2.5 measurement handles decimal values');
+is(ReadingsVal('MATTER_EnvironmentProbe_EP3', 'pm25_unit', ''), 'ug/m3',
+   'PM2.5 microgram-per-cubic-metre unit');
+is(ReadingsVal('MATTER_EnvironmentProbe_EP4', 'tvoc_unit', ''), 'ppb',
+   'TVOC unit is independent of CO2 unit');
+MATTERDevice_Parse($defs{MATTER_EnvironmentProbe}, encode_json({
+    node_id => 3200, attributes => {
+        '1/1027/0' => -32768,
+        '2/1037/0' => -5,
+        '2/1037/8' => 255,
+    }
+}));
+is(ReadingsVal('MATTER_EnvironmentProbe_EP1', 'pressure', ''), 1013,
+   'pressure null sentinel leaves previous reading');
+is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2', ''), 650,
+   'negative concentrations are ignored');
+is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2_unit', ''), 'ppm',
+   'unknown units do not overwrite a valid known unit');
+
 done_testing();
