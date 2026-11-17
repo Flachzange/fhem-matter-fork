@@ -1129,16 +1129,53 @@ MATTERDevice_Parse($root, encode_json({
 ok(!MATTERDevice_AttributeUsable($child, 8, 3),
    'received AttributeList takes precedence over legacy max attribute');
 
+# Older saved has_* attributes are inert: they neither enable nor
+# disable commands. Device capability metadata is the only authority.
+unlike($modules{MATTERDevice}{AttrList}, qr/\bhas_[a-z_]+:/,
+       'has_* flags are no longer offered as configurable device attributes');
 $attr{$child->{NAME}}{has_hue} = 0;
-ok(!grep(/^rgb:/, MATTERDevice_GetSetList($child)),
-   'explicit has_hue=0 suppresses the advertised hue command');
+ok(grep(/^rgb:/, MATTERDevice_GetSetList($child)),
+   'stored has_hue=0 does not suppress an advertised hue command');
+is($attr{$child->{NAME}}{has_hue}, 0,
+   'stored legacy attribute is preserved without automatic deletion');
 delete $attr{$child->{NAME}}{has_hue};
 
 delete $child->{helper}{capabilities}{0x0300}{accepted_commands};
 $attr{$child->{NAME}}{has_color} = 1;
-ok(grep(/^rgb:/, MATTERDevice_GetSetList($child)),
-   'legacy has_color still exposes RGB before the server supplies metadata');
+ok(!grep(/^rgb:/, MATTERDevice_GetSetList($child)),
+   'stored has_color=1 cannot invent an RGB command without metadata');
 delete $attr{$child->{NAME}}{has_color};
+
+# Matter attribute reports must never repopulate obsolete has_* settings.
+delete @{$attr{$child->{NAME}}}{qw(has_onoff has_level has_hue)};
+MATTERDevice_Parse($root, encode_json({
+    node_id => 42, attributes => {
+        '1/6/0' => JSON::true,
+        '1/8/0' => 90,
+        '1/768/0' => 10,
+    },
+}));
+ok(!grep({ exists($attr{$child->{NAME}}{$_}) } qw(has_onoff has_level has_hue)),
+   'device reports do not automatically create obsolete has_* attributes');
+like(CommandAttr(undef, "$child->{NAME} has_onoff 1") // '',
+     qr/unknown attribute/,
+     'FHEM rejects new has_onoff attributes outside the module AttrList');
+
+$attr{$child->{NAME}}{has_onoff} = 0;
+MATTERDevice_Parse($root, encode_json({
+    node_id => 42, attributes => { '1/6/65529' => [0, 1, 2] }
+}));
+ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($child)),
+   'advertised On remains available despite persisted has_onoff=0');
+delete $attr{$child->{NAME}}{has_onoff};
+delete $child->{helper}{capabilities}{0x0006}{accepted_commands};
+$attr{$child->{NAME}}{has_onoff} = 1;
+ok(!grep(/^on:noArg$/, MATTERDevice_GetSetList($child)),
+   'persisted has_onoff=1 cannot enable On without AcceptedCommandList');
+delete $attr{$child->{NAME}}{has_onoff};
+MATTERDevice_Parse($root, encode_json({
+    node_id => 42, attributes => { '1/6/65529' => [0, 1, 2] }
+}));
 
 
 # FHEMWEB endpoint type display: real Descriptor DeviceTypeList takes priority;
