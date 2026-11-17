@@ -2524,4 +2524,33 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'installed',
    'installation requires matching new reported software version');
+
+# A second operation for the same node cannot race the first response.
+@sent_requests = ();
+my $pending_icd_query = MATTERDevice_Get($icd, $icd->{NAME}, 'icdState');
+like($pending_icd_query, qr/pending/, 'in-flight ICD operations are serialized');
+# Clear pending administrative request through its matched server response.
+my ($current_icd_request) = grep {
+    ref($defs{ioA}{helper}{pending_command}{$_}) eq 'HASH' &&
+    ($defs{ioA}{helper}{pending_command}{$_}{node_id} // '') == 2800
+} keys %{$defs{ioA}{helper}{pending_command}};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $current_icd_request, result => {
+        supported => JSON::true, registered => JSON::true,
+    }
+})) if defined $current_icd_request;
+
+# A reported version equal to the installed version is not an update.
+@sent_requests = ();
+is(MATTERDevice_Set($ota, $ota->{NAME}, 'checkFirmwareUpdate'), undef,
+   'can check again after the previous OTA command completed');
+my $same_version_id = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $same_version_id,
+    result => { software_version => 101, software_version_string => '1.0.1' }
+}));
+is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'up to date',
+   'already installed firmware is not offered as a newer update');
+ok(!grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
+   'no install action for the already installed firmware');
 done_testing();

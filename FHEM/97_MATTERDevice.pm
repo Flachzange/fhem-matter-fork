@@ -890,6 +890,8 @@ sub MATTERDevice_Set($$@) {
             'check_node_update' : 'update_node';
         my %args;
         if ($cmd eq 'updateFirmware') {
+            return 'Firmware update already in progress'
+                if $hash->{helper}{firmware_update_in_flight};
             my $version = $hash->{helper}{firmware_available};
             return 'Run checkFirmwareUpdate before installing'
                 unless defined($version) && !ref($version) &&
@@ -1600,6 +1602,15 @@ sub MATTERDevice_SendNodeOperation {
         unless $io && $io->{CD} && $io->{websocket} &&
                ($io->{ws_status} // '') eq 'connected' &&
                $io->{fhem}{helper}{sendWS};
+    # Per-node serialization: a late response from an older operation must
+    # never be mistaken for the result of a newer ICD/OTA operation.
+    for my $pending (values %{$io->{helper}{pending_command} // {}}) {
+        next unless ref($pending) eq 'HASH' &&
+                    ($pending->{type} // '') eq 'node_operation';
+        return 'Another Matter operation is already pending for this node'
+            if ($pending->{node_id} // '') eq $hash->{node_id} &&
+               ($pending->{fuuid} // '') eq ($hash->{FUUID} // '');
+    }
     my $id = MATTER_NextMessageId($io);
     return 'No available Matter request ID' unless defined $id;
     my $pending = {
@@ -1625,6 +1636,8 @@ sub MATTERDevice_HandleNodeOperation {
     my $cmd = $request->{operation};
     my $reading = $cmd =~ /icd/ ? 'icd_request' : 'firmware_update';
     if (exists($reply->{error_code}) || exists($reply->{error})) {
+        delete $hash->{helper}{firmware_available}
+            if $cmd eq 'check_node_update';
         my $error = ref($reply->{error}) eq 'HASH'
             ? $reply->{error}{message} : $reply->{details};
         $error = 'Matter server rejected the request'
@@ -1680,6 +1693,13 @@ sub MATTERDevice_HandleNodeOperation {
                  defined($update->{software_version}) &&
                  !ref($update->{software_version}) &&
                  $update->{software_version} =~ /^\d+$/) {
+            my $current = ReadingsVal($hash->{NAME}, 'software_version', undef);
+            if (defined($current) && $current =~ /^\d+$/ &&
+                $update->{software_version} <= $current) {
+                delete $hash->{helper}{firmware_available};
+                readingsSingleUpdate($hash, 'firmware_update', 'up to date', 1);
+                return;
+            }
             $hash->{helper}{firmware_available} = $update->{software_version};
             my $label = $update->{software_version_string};
             $label = $update->{software_version}
