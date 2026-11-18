@@ -1,1 +1,1 @@
-2026-11-17  MATTER IO/Device V0.19: recover missing command metadata after offline startup, skip known capabilities and retry failed/empty reads up to three times on later events without releasing cached-state quarantine.
+2026-11-18  MATTER IO/Device V0.20: expose per-device receive time, last input IO and message counters; count server reception once per root/addressed endpoint without additional reading events.

@@ -54,6 +54,9 @@ sub RemoveInternalTimer {
 sub InternalTimer { push @timers, { at => $_[0], callback => $_[1], owner => $_[2] }; }
 my $mock_time = 1;
 sub gettimeofday { return $mock_time; }
+# fhem.pl TimeNow returns local wall-clock time in this format. Keep the
+# clock deterministic so repeated unchanged messages can advance reception.
+sub TimeNow { return sprintf('2026-11-18 12:00:%02d', $mock_time % 60); }
 
 # FHEMWEB URL and HTML helpers as used by FW_detailFn.
 sub urlEncode {
@@ -3001,4 +3004,197 @@ like(ReadingsVal($ota->{NAME}, 'firmware_update', ''), qr/DCL unavailable/,
    'server lookup failure is visible in firmware_update');
 ok(!grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
    'lookup errors do not leave a stale install action');
+# Receive diagnostics exercise the real IO -> root -> endpoint routing. These
+# count server messages, including cached/quarantined data, not device contact.
+for my $io_name (qw(ioReceive ioReceiveOther)) {
+    $defs{$io_name} = { NAME => $io_name, TYPE => 'MATTER', READINGS => {}, helper => {} };
+}
+$mock_time = 10;
+$defs{ioReceive}{helper}{pending_command}{70001} = 'start_listening';
+MATTER_ParseMessage($defs{ioReceive}, encode_json({
+    message_id => 70001, result => [{
+        node_id => 4100, name => 'ReceiveProbe', available => JSON::true,
+        attributes => { '0/40/3' => 'Synthetic model', '0/29/3' => [1, 2, 3],
+                        '1/6/0' => JSON::true, '1/8/0' => 100,
+                        '2/6/0' => JSON::false }
+    }]
+}));
+my $rr = $defs{MATTER_ReceiveProbe};
+my $r1 = $defs{MATTER_ReceiveProbe_EP1};
+my $r2 = $defs{MATTER_ReceiveProbe_EP2};
+my $r3 = $defs{MATTER_ReceiveProbe_EP3};
+for my $device ($rr, $r1, $r2) {
+    is($device->{MSGCNT}, 1, "$device->{NAME}: snapshot counts once despite multiple attributes");
+    is($device->{ioReceive_MSGCNT}, 1, "$device->{NAME}: per-IO counter matches");
+    is($device->{ioReceive_TIME}, TimeNow(), "$device->{NAME}: receive time uses FHEM TimeNow");
+    is($device->{LASTInputDev}, 'ioReceive', "$device->{NAME}: records receiving IO");
+}
+ok(!exists($r3->{MSGCNT}), 'a PartsList reference alone is no endpoint reception');
+
+$mock_time = 11;
+my $seen_during_update;
+$reading_event_hook = sub {
+    my ($device, $reading) = @_;
+    $seen_during_update = [$rr->{MSGCNT}, $r1->{MSGCNT}]
+        if $device eq $r1 && $reading eq 'state';
+};
+MATTER_ParseMessage($defs{ioReceive}, encode_json({
+    event => 'attribute_updated', data => [4100, '1/6/0', JSON::true]
+}));
+$reading_event_hook = undef;
+is_deeply($seen_during_update, [2, 2], 'receive internals are set before publishing endpoint telemetry');
+is($r1->{ioReceive_TIME}, TimeNow(), 'unchanged value still advances receive time');
+is($r2->{MSGCNT}, 1, 'another endpoint is not counted by a live attribute');
+
+MATTER_ParseMessage($defs{ioReceive}, encode_json({
+    event => 'node_updated', data => {node_id => 4100, available => JSON::false}
+}));
+is($rr->{MSGCNT}, 3, 'availability-only message counts for root');
+is($r1->{MSGCNT}, 2, 'mirrored availability is not endpoint reception');
+MATTER_ParseMessage($defs{ioReceive}, encode_json({
+    event => 'node_updated', data => {node_id => 4100,
+        attributes => {'1/6/0' => JSON::false, '1/8/0' => 0, '2/6/0' => JSON::true}}
+}));
+is($rr->{MSGCNT}, 4, 'quarantined snapshot counts once for root');
+is($r1->{MSGCNT}, 3, 'quarantined endpoint attributes count once');
+is($r2->{MSGCNT}, 2, 'second included endpoint receives the same snapshot');
+is(ReadingsVal($r1->{NAME}, 'state', ''), 'on', 'receive accounting preserves offline state quarantine');
+MATTER_ParseMessage($defs{ioReceive}, encode_json({
+    event => 'node_event', data => {node_id => 4100, endpoint_id => 1,
+        cluster_id => 59, event_id => 3, data => {}}
+}));
+is($rr->{MSGCNT}, 5, 'Switch event counts for root');
+is($r1->{MSGCNT}, 4, 'Switch event counts for target endpoint');
+
+# Matched reads, including the capability-only bypass and errors, are counted
+# independently of whether values may be imported. Unknown replies are ignored.
+$defs{ioReceive}{helper}{pending_config}{70002} = {
+    node_id => 4100, endpoint_id => 1, root_fuuid => $rr->{FUUID}
+};
+MATTER_ParseMessage($defs{ioReceive}, encode_json({
+    message_id => 70002, result => {'1/6/65529' => [0, 1], '1/6/65532' => 0}
+}));
+is($rr->{MSGCNT}, 6, 'quarantined correlated read counts for root');
+is($r1->{MSGCNT}, 5, 'quarantined read counts once for requested endpoint');
+$defs{ioReceive}{helper}{pending_config}{70003} = {
+    node_id => 4100, endpoint_id => 1, root_fuuid => $rr->{FUUID}
+};
+MATTER_ParseMessage($defs{ioReceive}, encode_json({message_id => 70003, error_code => 1}));
+is($rr->{MSGCNT}, 7, 'correlated server error is a received node message');
+is($r1->{MSGCNT}, 6, 'correlated read error belongs to requested endpoint');
+MATTER_ParseMessage($defs{ioReceive}, encode_json({message_id => 79999, result => {}}));
+MATTER_ParseMessage($defs{ioReceive}, encode_json({
+    event => 'attribute_updated', data => [4100, 'invalid-path', 1]
+}));
+MATTER_ParseMessage($defs{ioReceive}, '{broken');
+MATTERDevice_Parse($rr, encode_json({node_id => 4101, attributes => {'1/6/0' => JSON::true}}));
+is($rr->{MSGCNT}, 7, 'unmatched replies, malformed input and foreign nodes do not count');
+$defs{ioReceive}{helper}{pending_config}{70004} = {
+    node_id => 4100, endpoint_id => 1, root_fuuid => 'replaced-owner'
+};
+MATTER_ParseMessage($defs{ioReceive}, encode_json({message_id => 70004, result => {}}));
+is($rr->{MSGCNT}, 7, 'a replaced request owner does not inherit receipt');
+
+# Online full reads also traverse MATTERDevice_Parse: shared per-message
+# context must prevent counting both response correlation and attribute routing.
+MATTER_ParseMessage($defs{ioReceive}, encode_json({
+    event => 'node_updated', data => {node_id => 4100, available => JSON::true}
+}));
+delete $rr->{helper}{quarantine_snapshots};
+$defs{ioReceive}{helper}{pending_config}{70005} = {
+    node_id => 4100, all_endpoints => 1, root_fuuid => $rr->{FUUID},
+    live_values => {'2/6/0' => JSON::false}
+};
+MATTER_ParseMessage($defs{ioReceive}, encode_json({
+    message_id => 70005, result => {'1/6/0' => JSON::true, '1/8/0' => 80}
+}));
+is($rr->{MSGCNT}, 9, 'full online read counts root once across both layers');
+is($r1->{MSGCNT}, 7, 'full online read counts endpoint once across both layers');
+is($r2->{MSGCNT}, 2, 'reconciled earlier live value does not manufacture new endpoint reception');
+
+$defs{ioReceive}{helper}{pending_command}{70006} = {
+    type => 'node_operation', operation => 'write_attribute', name => $r1->{NAME},
+    fuuid => $r1->{FUUID}, node_id => 4100
+};
+MATTER_ParseMessage($defs{ioReceive}, encode_json({message_id => 70006, result => undef}));
+is($rr->{MSGCNT}, 10, 'endpoint write reply also counts for its root');
+is($r1->{MSGCNT}, 8, 'endpoint write reply counts for its actual owner');
+MATTER_ParseMessage($defs{ioReceive}, encode_json({event => 'node_removed', data => 4100}));
+is($rr->{MSGCNT}, 11, 'explicit removal message counts for root');
+is($r1->{MSGCNT}, 8, 'removal status propagated to endpoint is not endpoint reception');
+
+MATTER_ParseMessage($defs{ioReceiveOther}, encode_json({
+    event => 'node_added', data => {node_id => 4100, name => 'ReceiveOther',
+        attributes => {'1/6/0' => JSON::false}}
+}));
+is($defs{MATTER_ReceiveOther}{MSGCNT}, 1, 'same node ID on another IO has independent counters');
+is($rr->{MSGCNT}, 11, 'other IO cannot update original root receive internals');
+my @receive_readings = grep {/^(?:MSGCNT|LASTInputDev|ioReceive_(?:TIME|MSGCNT))$/}
+    keys %{$r1->{READINGS}};
+is_deeply(\@receive_readings, [], 'receive diagnostics do not create readings or database events');
+my $before_close = $rr->{MSGCNT};
+MATTER_Close($defs{ioReceive});
+is($rr->{MSGCNT}, $before_close, 'local IO disconnect is not an incoming message');
+is(CommandRename(undef, 'ioReceive ioReceiveRenamed'), undef, 'receiving IO can be renamed');
+$mock_time = 12;
+MATTER_ParseMessage($defs{ioReceiveRenamed}, encode_json({
+    event => 'attribute_updated', data => [4100, '1/6/0', JSON::true]
+}));
+is($r1->{LASTInputDev}, 'ioReceiveRenamed', 'next reception uses renamed IO');
+is($r1->{ioReceiveRenamed_TIME}, TimeNow(), 'renamed IO receives its own conventional timestamp field');
+is($r1->{ioReceiveRenamed_MSGCNT}, 1, 'per-IO count starts under new IO name');
+is($r1->{MSGCNT}, 9, 'total count survives IO rename and disconnect');
+is(CommandDefine(undef, 'ReceiveDefined MATTERDevice 4101'), undef, 'a fresh FHEM device can be defined');
+ok(!exists($defs{ReceiveDefined}{MSGCNT}), 'definition alone does not manufacture a receive time or count');
+
+my ($root_before_raw_event, $child_before_raw_event) = ($rr->{MSGCNT}, $r1->{MSGCNT});
+MATTER_ParseMessage($defs{ioReceiveRenamed}, encode_json({
+    event => 'node_event', data => {node_id => 4100, endpoint_id => 1,
+        cluster_id => 1234, event_id => 99, data => {}}
+}));
+is($rr->{MSGCNT}, $root_before_raw_event + 1, 'unmapped Matter event still counts as node reception');
+is($r1->{MSGCNT}, $child_before_raw_event + 1, 'unmapped event counts for its known endpoint without new readings');
+MATTER_ParseMessage($defs{ioReceiveRenamed}, encode_json({
+    event => 'node_event', data => {node_id => 4100, endpoint_id => 99,
+        cluster_id => 1234, event_id => 99, data => {}}
+}));
+ok(!exists($defs{MATTER_ReceiveProbe_EP99}), 'receive accounting does not autocreate unknown event endpoints');
+is($r1->{MSGCNT}, $child_before_raw_event + 1, 'unknown event endpoint cannot refresh another endpoint');
+MATTER_ParseMessage($defs{ioReceiveRenamed}, encode_json({
+    event => 'node_added', data => {node_id => 4102, name => 'ReceiveMinimal'}
+}));
+is($defs{MATTER_ReceiveMinimal}{MSGCNT}, 1, 'node announcement without attributes or availability still counts');
+my $before_empty = $rr->{MSGCNT};
+my $endpoint_before_empty = $r1->{MSGCNT};
+$defs{ioReceiveRenamed}{helper}{pending_config}{70007} = {
+    node_id => 4100, all_endpoints => 1, root_fuuid => $rr->{FUUID}
+};
+MATTER_ParseMessage($defs{ioReceiveRenamed}, encode_json({message_id => 70007, result => {}}));
+is($rr->{MSGCNT}, $before_empty + 1, 'empty correlated wildcard reply counts for root');
+is($r1->{MSGCNT}, $endpoint_before_empty, 'empty wildcard reply cannot attribute reception to every endpoint');
+
+# Snapshot model/availability updates may synchronously notify child devices.
+# Existing recipients must already be stamped; a nested newer message must
+# keep its later timestamp when the older outer snapshot resumes routing.
+my $before_nested = $r1->{MSGCNT};
+my $count_at_mirrored_model;
+$mock_time = 13;
+$reading_event_hook = sub {
+    my ($device, $reading) = @_;
+    return unless $device eq $r1 && $reading eq 'model';
+    $count_at_mirrored_model = $r1->{MSGCNT};
+    $mock_time = 14;
+    MATTER_ParseMessage($defs{ioReceiveRenamed}, encode_json({
+        event => 'attribute_updated', data => [4100, '1/6/0', JSON::false]
+    }));
+};
+MATTER_ParseMessage($defs{ioReceiveRenamed}, encode_json({
+    event => 'node_updated', data => {node_id => 4100,
+        attributes => {'0/40/3' => 'Changed synthetic model', '1/6/0' => JSON::true}}
+}));
+$reading_event_hook = undef;
+is($count_at_mirrored_model, $before_nested + 1, 'snapshot recipient is stamped before mirrored model events');
+is($r1->{MSGCNT}, $before_nested + 2, 'nested independent message counts separately from outer snapshot');
+is($r1->{ioReceiveRenamed_TIME}, '2026-11-18 12:00:14', 'resumed older routing preserves newer nested receive time');
+
 done_testing();

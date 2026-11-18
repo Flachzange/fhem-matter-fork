@@ -2069,8 +2069,40 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         if $cluster_id == 0x0028 && $attr_id == 0x0003 && ($hash->{endpoint_id} // 0) == 0;
 }
 
-sub MATTERDevice_Parse($ $) {
-    my ($hash, $data) = @_;
+# Mirror fhem.pl Dispatch's receive internals. The context belongs to one
+# incoming server message, including any root-to-endpoint forwarding.
+# This records server reception, not proof of physical device contact.
+sub MATTERDevice_RecordReceive {
+    my ($hash, $received, $attributes) = @_;
+    return unless $hash;
+    my @targets = ($hash);
+    # Stamp existing targets before any snapshot reading event (including
+    # root model/availability mirrored to children) can reenter the module.
+    if (ref($attributes) eq 'HASH') {
+        my %endpoints;
+        for my $path (keys %$attributes) {
+            $endpoints{0 + $1} = 1 if $path =~ m{^(\d+)/\d+/\d+$};
+        }
+        push @targets, grep { $endpoints{$_->{endpoint_id}} }
+            MATTERDevice_NodeChildren($hash);
+    }
+    for my $target (@targets) {
+        next unless $target->{IODev};
+        next if $received->{endpoints} && ($target->{endpoint_id} // 0) > 0 &&
+                !$received->{endpoints}{$target->{endpoint_id}};
+        next if $received->{devices}{$target}++;
+        my $io_name = $target->{IODev}{NAME};
+        $received->{time} //= TimeNow();
+        ++$target->{MSGCNT};
+        ++$target->{"${io_name}_MSGCNT"};
+        $target->{"${io_name}_TIME"} = $received->{time};
+        $target->{LASTInputDev} = $io_name;
+    }
+}
+
+sub MATTERDevice_Parse($ $;$) {
+    my ($hash, $data, $received) = @_;
+    $received //= {};
     my $name = $hash->{NAME};
 
     my $decoded = eval { decode_json($data) };
@@ -2100,11 +2132,13 @@ sub MATTERDevice_Parse($ $) {
     # Hilfs-Subroutine zur internen Weiterleitung an Root oder Child
     my $route_attribute = sub {
         my ($ep, $cluster, $attr, $val, $live) = @_;
+        MATTERDevice_RecordReceive($hash, $received) if $ep == $my_endpoint;
         # Offline snapshots can still tell us which endpoint IDs exist.
         # Preserve FHEM identity/association without importing device data.
         if (!$allow_device_attr->($live)) {
             if ($my_endpoint == 0 && $ep > 0) {
-                MATTERDevice_GetOrCreateChild($hash, $ep);
+                my $child = MATTERDevice_GetOrCreateChild($hash, $ep);
+                MATTERDevice_RecordReceive($child, $received);
             } elsif ($my_endpoint == 0 && $ep == 0 &&
                      $cluster == 0x001D && $attr == 3 &&
                      ref($val) eq 'ARRAY') {
@@ -2130,6 +2164,7 @@ sub MATTERDevice_Parse($ $) {
             return unless $my_endpoint == 0;
             my $childHash = MATTERDevice_GetOrCreateChild($hash, $ep);
             if ($childHash) {
+                MATTERDevice_RecordReceive($childHash, $received);
                 MATTERDevice_ProcessAttributeValue($childHash, $cluster, $attr, $val);
             }
         }
@@ -2137,13 +2172,16 @@ sub MATTERDevice_Parse($ $) {
 
     # 1. ANTWORT AUF GETCONFIG (enthält "result")
     if (exists $decoded->{result} && ref($decoded->{result}) eq 'HASH') {
+        MATTERDevice_RecordReceive($hash, $received, $decoded->{result});
         # Never reset current capability metadata from a cached response
         # while the root is offline or still awaiting fresh live data.
         if (!$allow_device_attr->(0)) {
             if ($my_endpoint == 0) {
                 for my $path (keys %{$decoded->{result}}) {
-                    MATTERDevice_GetOrCreateChild($hash, $1)
-                        if $path =~ m{^([1-9]\d*)/\d+/\d+$};
+                    if ($path =~ m{^([1-9]\d*)/\d+/\d+$}) {
+                        my $child = MATTERDevice_GetOrCreateChild($hash, $1);
+                        MATTERDevice_RecordReceive($child, $received);
+                    }
                 }
             }
             return;
@@ -2175,6 +2213,8 @@ sub MATTERDevice_Parse($ $) {
     if (exists $decoded->{event} && $decoded->{event} eq 'node_updated' && ref($decoded->{data}) eq 'HASH') {
         my $node = $decoded->{data};
         my $node_id = $node->{node_id};
+        MATTERDevice_RecordReceive($hash, $received)
+            if defined($node_id) && !ref($node_id) && $hash->{node_id} eq $node_id;
         if (defined($node_id) && $hash->{node_id} eq $node_id && exists($node->{available})) {
             $update_available->($node->{available});
             Log3 $name, 4, "MATTERDevice: Node $node_id availability = " . ($node->{available} ? "true" : "false");
@@ -2209,12 +2249,14 @@ sub MATTERDevice_Parse($ $) {
                      $count == 3 ? 'triple' : $count . 'x';
         }
         return unless defined $value;
+        MATTERDevice_RecordReceive($hash, $received);
         # Unknown event endpoints cannot create devices. Discovery and the
         # Descriptor PartsList own endpoint identity, not transient events.
         my ($child) = grep {
             ($_->{endpoint_id} // 0) == $ep
         } MATTERDevice_NodeChildren($hash);
         return unless $child;
+        MATTERDevice_RecordReceive($child, $received);
         readingsSingleUpdate($child, 'button', $value, 0);
         DoTrigger($child->{NAME}, "button: $value");
         return;
@@ -2227,6 +2269,7 @@ sub MATTERDevice_Parse($ $) {
             $hash->{node_id} eq $node_id;
         if (defined($attribute_path) && !ref($attribute_path) &&
             $attribute_path =~ m{^(\d+)/(\d+)/(\d+)$}) {
+            MATTERDevice_RecordReceive($hash, $received);
             $route_attribute->($1, $2, $3, $value, 1);
             Log3 $name, 4, "MATTERDevice: Live attribute update ($attribute_path)";
         }
@@ -2241,6 +2284,7 @@ sub MATTERDevice_Parse($ $) {
     my $attributes = $decoded->{attributes};
     
     if (defined($node_id) && $hash->{node_id} eq $node_id) {
+        MATTERDevice_RecordReceive($hash, $received, $attributes);
         $update_available->($decoded->{available}) if exists($decoded->{available});
 
         if ($attributes && ref($attributes) eq 'HASH') {
@@ -2698,6 +2742,16 @@ The server's advertised metadata is not proof of a fresh physical interview.</li
       its connection, and <code>removed</code> when the server removes the node
       or omits it from a complete snapshot. Root status is independent of
       endpoint states. No polling is used.</li>
+  <li><b>Receive internals:</b> <code>&lt;IODev&gt;_TIME</code> records the last
+      received server message as <code>YYYY-MM-DD HH:MM:SS</code> in FHEM local
+      time; <code>LASTInputDev</code> identifies the IO. <code>MSGCNT</code>
+      and <code>&lt;IODev&gt;_MSGCNT</code> count messages in the current runtime.
+      Each message counts once for its root and once for each addressed
+      endpoint, irrespective of attribute count or value changes. Availability
+      mirroring alone does not count for children. Cached/quarantined snapshots
+      and correlated replies (including errors) count as server reception,
+      not proof of recent physical device contact. These internals generate no
+      additional reading events and are not restored after a FHEM restart.</li>
   <li><b>Legacy display migration:</b> On <code>INITIALIZED</code> or
       <code>REREADCFG</code>, the old autogenerated exact attribute
       <code>stateFormat available</code> is removed if the root has no
@@ -2861,6 +2915,17 @@ Server-Metadaten beweisen keine neue physische Geräteabfrage.</li>
       oder bei Ausfall der Matter-IO-Verbindung und <code>removed</code> bei
       Entfernung aus dem Matter-Server oder einer vollständigen Node-Liste.
       Endpunkt-Zustände bleiben unverändert. Es erfolgt kein Polling.</li>
+  <li><b>Empfangs-Internals:</b> <code>&lt;IODev&gt;_TIME</code> zeigt den letzten
+      Empfang einer Servernachricht als <code>YYYY-MM-DD HH:MM:SS</code> in
+      lokaler FHEM-Zeit; <code>LASTInputDev</code> nennt das IO.
+      <code>MSGCNT</code> und <code>&lt;IODev&gt;_MSGCNT</code> zählen Nachrichten
+      während der aktuellen Laufzeit. Jede Nachricht zählt einmal am Root
+      und einmal pro konkret adressiertem Endpunkt, unabhängig von der Anzahl
+      der Attribute oder Wertänderungen. Gespiegelte Availability zählt allein
+      nicht als Endpoint-Empfang. Auch Cache-/Quarantäne-Snapshots und zugeordnete
+      Antworten einschließlich Fehlern zählen als Serverempfang; sie beweisen
+      keinen aktuellen Kontakt zum physischen Gerät. Die Internals erzeugen keine
+      zusätzlichen Reading-Events und werden beim FHEM-Neustart nicht wiederhergestellt.</li>
   <li><b>Migration der alten Anzeige:</b> Nach <code>INITIALIZED</code> oder
       <code>REREADCFG</code> wird das bisher automatisch angelegte Attribut
       <code>stateFormat available</code> entfernt, sofern noch kein neuer

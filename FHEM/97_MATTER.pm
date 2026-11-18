@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.19 17.11.2026";
+my $MATTER_version = "V0.20 18.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -940,6 +940,8 @@ sub MATTER_ProcessNode($$) {
         $payload{attributes} = $node->{attributes}
             if ref($node->{attributes}) eq 'HASH';
         MATTERDevice_Parse($root, encode_json(\%payload));
+    } else {
+        MATTERDevice_RecordReceive($root, {});
     }
     # Synchronize already defined endpoints even without endpoint attributes.
     foreach my $child (MATTERDevice_NodeChildren($root)) {
@@ -1083,15 +1085,25 @@ sub MATTER_ParseMessage($$) {
                 defined($endpoint) && !ref($endpoint) && $endpoint =~ /^\d+$/ &&
                 $endpoint > 0 &&
                 defined($cluster) && !ref($cluster) && $cluster =~ /^\d+$/ &&
-                $cluster == 0x003B &&
                 defined($event_id) && !ref($event_id) && $event_id =~ /^\d+$/) {
                 my $root = $modules{MATTERDevice}{defptr}{"$name:$node_id"};
-                MATTERDevice_Parse($root, $payload) if $root;
+                if ($root) {
+                    my $received = {};
+                    MATTERDevice_RecordReceive($root, $received);
+                    for my $child (MATTERDevice_NodeChildren($root)) {
+                        MATTERDevice_RecordReceive($child, $received)
+                            if $child->{endpoint_id} == $endpoint;
+                    }
+                    MATTERDevice_Parse($root, $payload, $received);
+                }
             }
             return;
         }
         if ($event eq 'node_removed') {
             if (defined($decoded->{data}) && !ref($decoded->{data}) && $decoded->{data} =~ /^\d+$/) {
+                MATTERDevice_RecordReceive(
+                    $modules{MATTERDevice}{defptr}{"$name:$decoded->{data}"}, {}
+                );
                 MATTER_RecordSnapshotEvent($hash, $decoded->{data}, $event);
                 MATTER_SetNodeStatus($hash, $decoded->{data}, 'removed');
                 Log3 $name, 3, "MATTER: Node $decoded->{data} removed from server; FHEM devices retained";
@@ -1135,6 +1147,32 @@ sub MATTER_ParseMessage($$) {
         # Antwort auf read_attribute (getConfig)
         if (my $pending = delete $hash->{helper}{pending_config}{$msg_id}) {
             my $node_id = ref($pending) eq 'HASH' ? $pending->{node_id} : $pending;
+            my $received = {};
+            my $owner = $modules{MATTERDevice}{defptr}{"$name:$node_id"};
+            # Correlated replies (including errors/empty results) are received
+            # messages even when their device values are quarantined or stale.
+            # A replacement device must never inherit an old request's traffic.
+            if ($owner && (ref($pending) ne 'HASH' ||
+                !defined($pending->{root_fuuid}) ||
+                ($owner->{FUUID} // '') eq $pending->{root_fuuid})) {
+                MATTERDevice_RecordReceive($owner, $received);
+                my %endpoints;
+                $endpoints{$pending->{endpoint_id}} = 1
+                    if ref($pending) eq 'HASH' &&
+                       defined($pending->{endpoint_id}) && $pending->{endpoint_id} > 0;
+                if (ref($decoded->{result}) eq 'HASH') {
+                    for my $path (keys %{$decoded->{result}}) {
+                        $endpoints{0 + $1} = 1 if $path =~ m{^(\d+)/\d+/\d+$};
+                    }
+                }
+                # Later freshness reconciliation can inject previous live
+                # values. Those are not new endpoint traffic in this reply.
+                $received->{endpoints} = \%endpoints;
+                for my $child (MATTERDevice_NodeChildren($owner)) {
+                    MATTERDevice_RecordReceive($child, $received)
+                        if $endpoints{$child->{endpoint_id}};
+                }
+            }
             if (ref($decoded->{result}) eq 'HASH') {
                 my $root_key = "$name:$node_id";
                 my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
@@ -1174,7 +1212,7 @@ sub MATTER_ParseMessage($$) {
                     } else {
                         MATTERDevice_Parse($root_hash, encode_json({
                             message_id => $msg_id, result => \%fresh
-                        })) if keys %fresh;
+                        }), $received) if keys %fresh;
                     }
                 }
             }
@@ -1190,6 +1228,11 @@ sub MATTER_ParseMessage($$) {
                 ($owner->{FUUID} // '') eq ($cmd_type->{fuuid} // '') &&
                 ($owner->{node_id} // '') eq ($cmd_type->{node_id} // '') &&
                 $owner->{IODev} && $owner->{IODev} eq $hash) {
+                my $received = {};
+                MATTERDevice_RecordReceive(
+                    $modules{MATTERDevice}{defptr}{"$name:$cmd_type->{node_id}"}, $received
+                );
+                MATTERDevice_RecordReceive($owner, $received);
                 MATTERDevice_HandleNodeOperation($owner, $cmd_type, $decoded);
             }
             return;
