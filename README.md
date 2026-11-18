@@ -204,6 +204,18 @@ MATTERDevice attributes include `IODev`, optional `diagnostics` / `rawReadings`,
 
 ## Device-level commands, ICD, network diagnostics and OTA
 
+Matter roots and endpoints expose FHEM's conventional receive internals:
+`<IODev>_TIME` (last server message, local `YYYY-MM-DD HH:MM:SS`),
+`LASTInputDev`, `MSGCNT` and `<IODev>_MSGCNT`. For an IO named `matterServer`,
+look for `matterServer_TIME`. Each incoming message counts once for the root
+and once per addressed endpoint, even with multiple attributes or unchanged
+values. Mirrored root availability alone does not count as endpoint reception.
+Cached/quarantined snapshots and correlated replies, including server errors,
+also count; this is **server reception, not a physical-device last-seen time**.
+These runtime internals generate no additional reading/DbLog events and reset
+on FHEM restart. An IO rename starts new fields under the new IO name while
+retaining the device's total `MSGCNT` and the old IO fields, as with FHEM dispatch.
+
 All new functionality remains within the existing FHEM root/endpoint model and
 uses the external Matter server. It does not install a server, export FHEM
 devices as a Matter bridge, upload firmware images or run a separate polling
