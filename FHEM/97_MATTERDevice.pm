@@ -2842,6 +2842,10 @@ physical limits or advertised command support.</p>
       currently does not set the slider minimum or clamp commands. The
       <code>brightness</code> slider starts at <code>0</code>.</li>
   <li><a id="MATTERDevice-attr-max_brightness"></a><b>max_brightness:</b>
+      <strong>Obsolete; retained for compatibility.</strong> Do not configure
+      manually in new setups. Existing values and automatic initialization
+      remain supported. Replacing this attribute with automatic use of the
+      reported device limit is a separate change and is not implemented yet.
       Integer <code>1</code>–<code>254</code> in native level units, default
       <code>254</code>. Initialized from the reported LevelControl maximum.
       With usable matching attribute metadata it sets the
@@ -3140,6 +3144,11 @@ die vom Gerät angebotenen Befehle.</p>
       begrenzt es Befehle. Der <code>brightness</code>-Slider beginnt bei
       <code>0</code>.</li>
   <li><a id="MATTERDevice-attr-max_brightness"></a><b>max_brightness:</b>
+      <strong>Obsolet; aus Kompatibilitätsgründen weiterhin unterstützt.</strong>
+      In neuen Konfigurationen nicht manuell setzen. Vorhandene Werte und die
+      automatische Vorbelegung bleiben unterstützt. Die Ablösung durch die
+      automatische Nutzung der gemeldeten Gerätegrenze ist eine separate,
+      noch nicht implementierte Änderung.
       Ganzzahl <code>1</code>–<code>254</code> in nativen Level-Einheiten,
       Standard <code>254</code>. Wird aus dem gemeldeten LevelControl-Maximum
       vorbelegt. Bei nutzbaren zugehörigen Attributmetadaten bestimmt der Wert

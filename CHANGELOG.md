@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-19  Documentation: mark max_brightness obsolete in German/English attribute help and README. Keep the declared attribute, existing settings, automatic initialization and all runtime behavior unchanged; automatic device-limit replacement is not implemented by this documentation change.
+
 - 2026-11-19  Documentation: describe all nine root-only Thread/Wi-Fi diagnostic readings in German and English commandref, including units, derived roles/types, neighbor limits, RSSI/LQI selection, passive updates and cached/stale value semantics. No runtime or version change.
 - 2026-11-19  Documentation: add native FHEMWEB inline help for every declared MATTER/MATTERDevice attribute in German and English, with defaults, scope and the actual use of reported limits; correct German commandref block endings. Module runtime and V0.20 remain unchanged.
 

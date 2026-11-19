@@ -203,6 +203,12 @@ Some limits only affect a control's displayed range, and PIN/RFID lengths are
 informational because credential management is not implemented. The individual
 attribute help describes these differences.
 
+`max_brightness` is **obsolete** and retained for compatibility; do not set it
+manually in new configurations. Existing values still affect the brightness
+slider and percentage/RGB scaling, and automatic initialization from the
+reported device maximum remains active. Automatic processing of the device
+limit without this attribute is a separate change and is not implemented yet.
+
 ## Known limitations
 
 - **Window coverings:** supports basic open/close, stop, lift percentage and tilt commands when exposed by the device; not every WindowCovering-cluster function is mapped.
