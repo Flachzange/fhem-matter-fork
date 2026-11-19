@@ -1367,7 +1367,7 @@ sub MATTER_ParseMessage($$) {
 
 =begin html
 
-<a name="MATTER"></a>
+<a id="MATTER" name="MATTER"></a>
 <h3>MATTER</h3>
 <p>The MATTER IO device communicates with an external Matter server over WebSocket.
 After connecting, <code>start_listening</code> supplies the complete node list.
@@ -1399,13 +1399,17 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
       network credentials. The synthetic FHEM set event is suppressed for
       Wi-Fi credentials; FHEM command history and plaintext WebSocket traffic
       remain sensitive.</li>
-  <li><b>Attribute commissionMode (network/auto):</b> Persistent default
+  <li><a id="MATTER-attr-commissionMode"></a><b>Attribute commissionMode (network/auto):</b> Persistent default
       for <code>commissionCode</code> when no mode argument is supplied.
-      Defaults to <code>network</code>. Explicit mode arguments take priority.</li>
-  <li><b>Attribute disable:</b> Disable or enable the IO connection. Setting
+      <code>network</code> uses IP discovery only; <code>auto</code> also
+      allows BLE through a connected proxy when enabled on the server.
+      Without the attribute, <code>network</code> applies. Explicit mode
+      arguments take priority.</li>
+  <li><a id="MATTER-attr-disable"></a><b>Attribute disable (0/1):</b> Default <code>0</code> (enabled).
+      Disable or enable the IO connection. Setting
       <code>1</code> immediately closes the socket and cancels all pending timers;
       setting <code>0</code> or removing the attribute reconnects.</li>
-  <li><b>Attribute autocreate (0/1):</b> Default <code>1</code>. Set to
+  <li><a id="MATTER-attr-autocreate"></a><b>Attribute autocreate (0/1):</b> Default <code>1</code>. Set to
       <code>0</code> to suppress automatic creation of new FHEM root and endpoint
       devices from node discovery, commissioning events and attribute updates.
       Existing devices remain synchronized; the Matter server keeps its nodes.
@@ -1436,7 +1440,7 @@ Incoming WebSocket frames larger than 32 MiB are rejected and trigger a reconnec
 
 =begin html_DE
 
-<a name="MATTER"></a>
+<a id="MATTER" name="MATTER"></a>
 <h3>MATTER</h3>
 <p>Das MATTER-IO-Device verbindet FHEM per WebSocket mit einem externen Matter-Server.
 Beim Verbindungsaufbau liefert <code>start_listening</code> die vollständige Node-Liste.
@@ -1469,14 +1473,17 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
       konfigurieren bzw. auslesen. Das synthetische FHEM-set-Event für WLAN-
       Zugangsdaten wird unterdrückt; Eingabeverlauf und unverschlüsselter
       WebSocket-Verkehr bleiben vertraulich zu behandeln.</li>
-  <li><b>Attribut commissionMode (network/auto):</b> Dauerhafter
+  <li><a id="MATTER-attr-commissionMode"></a><b>Attribut commissionMode (network/auto):</b> Dauerhafter
       Standard für <code>commissionCode</code> ohne Modusangabe.
+      <code>network</code> nutzt nur IP-Discovery; <code>auto</code> erlaubt
+      zusätzlich BLE über einen verbundenen Proxy, sofern am Server aktiviert.
       Ohne Attribut gilt <code>network</code>. Eine explizite Modusangabe
       im Befehl hat Vorrang.</li>
-  <li><b>Attribut disable:</b> IO-Verbindung deaktivieren oder aktivieren.
+  <li><a id="MATTER-attr-disable"></a><b>Attribut disable (0/1):</b> Standard <code>0</code> (aktiviert).
+      IO-Verbindung deaktivieren oder aktivieren.
       Bei <code>1</code> werden die Verbindung und alle Timer sofort beendet;
       <code>0</code> oder das Entfernen des Attributs startet einen neuen Verbindungsversuch.</li>
-  <li><b>Attribut autocreate (0/1):</b> Standard <code>1</code>. Mit
+  <li><a id="MATTER-attr-autocreate"></a><b>Attribut autocreate (0/1):</b> Standard <code>1</code>. Mit
       <code>0</code> werden weder neue Root- noch Endpoint-Devices in FHEM
       automatisch angelegt. Bestehende Devices werden weiterhin synchronisiert;
       die Nodes auf dem Matter-Server bleiben unverändert. Nach dem erneuten
@@ -1505,5 +1512,5 @@ erfolgt automatisch alle 30 Sekunden ein Wiederverbindungsversuch. Numerische
 IPv4-Adressen vermeiden eine blockierende DNS-Auflösung. Eingehende WebSocket-
 Frames über 32 MiB werden abgewiesen; anschließend wird neu verbunden.</p>
 
-=end html
+=end html_DE
 =cut
