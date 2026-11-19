@@ -1126,22 +1126,22 @@ like(MATTERDevice_Set($child, $child->{NAME}, 'rgb', 'GG0000'),
 is(scalar(@sent_requests), 0, 'invalid RGB sends no device command');
 $attr{$child->{NAME}}{max_brightness} = 0;
 is(MATTERDevice_MaxBrightness($child), 254,
-   'invalid zero maximum falls back without division by zero');
+   'obsolete zero maximum cannot change the protocol fallback');
 $attr{$child->{NAME}}{max_brightness} = 200;
 ok(MATTERDevice_AttributeUsable($child, 8, 3),
-   'legacy min/max attributes remain usable without AttributeList');
-ok(grep(/^brightness:slider,0,1,200$/, MATTERDevice_GetSetList($child)),
-   'existing max_brightness remains in the brightness slider without metadata');
+   'restored reports can be used until AttributeList arrives');
+ok(grep(/^brightness:slider,0,1,254$/, MATTERDevice_GetSetList($child)),
+   'obsolete max_brightness does not change the brightness slider');
 MATTERDevice_Parse($root, encode_json({
     node_id => 42, attributes => { '1/8/0' => 254 }
 }));
 is(ReadingsVal($child->{NAME}, 'pct', ''), 100,
-   'incoming device level above configured max is clamped to 100 percent');
+   'obsolete maximum cannot distort incoming percentage scaling');
 MATTERDevice_Parse($root, encode_json({
     node_id => 42, attributes => { '1/8/65531' => [0] }
 }));
 ok(!MATTERDevice_AttributeUsable($child, 8, 3),
-   'received AttributeList takes precedence over legacy max attribute');
+   'received AttributeList takes precedence over a stored report');
 
 # Older saved has_* attributes are inert: they neither enable nor
 # disable commands. Device capability metadata is the only authority.
@@ -3196,5 +3196,191 @@ $reading_event_hook = undef;
 is($count_at_mirrored_model, $before_nested + 1, 'snapshot recipient is stamped before mirrored model events');
 is($r1->{MSGCNT}, $before_nested + 2, 'nested independent message counts separately from outer snapshot');
 is($r1->{ioReceiveRenamed_TIME}, '2026-11-18 12:00:14', 'resumed older routing preserves newer nested receive time');
+
+
+# Device limits are telemetry, never configuration overrides. Exercise the
+# actual IO -> root -> endpoint -> command path with synthetic reports.
+my @limit_commands;
+my $limit_io = $defs{ioLimits} = {
+    NAME => 'ioLimits', TYPE => 'MATTER', READINGS => {}, helper => {},
+    CD => 1, websocket => 1, ws_status => 'connected',
+    fhem => {helper => {sendWS => sub {
+        push @limit_commands, JSON::decode_json($_[0]); return 1;
+    }}},
+};
+MATTER_ParseMessage($limit_io, encode_json({event => 'node_added', data => {
+    node_id => 6400, name => 'LimitProbe', available => JSON::true,
+    attributes => {
+        '1/8/65529' => [0, 4, 8], '1/8/65532' => 4,
+        '1/8/65531' => [0, 2, 3, 4, 5, 6],
+        '1/768/65529' => [6, 10], '1/768/65532' => 17,
+        '1/768/65531' => [0, 1, 7, 16395, 16396],
+        '2/8/65529' => [4], '2/8/65532' => 0,
+    },
+}}));
+my $limit_root = $defs{MATTER_LimitProbe};
+my $limit_ep = $defs{MATTER_LimitProbe_EP1};
+my $limit_ep2 = $defs{MATTER_LimitProbe_EP2};
+my @obsolete_limits = qw(color_temp_min color_temp_max min_brightness
+    max_brightness min_frequency max_frequency min_pin_code_length
+    max_pin_code_length min_rfid_code_length max_rfid_code_length);
+for my $old (@obsolete_limits) {
+    like(CommandAttr(undef, "$limit_ep->{NAME} $old 999") // '',
+       qr/unknown attribute/, "removed $old attribute is rejected");
+    ok(!exists($attr{$limit_ep->{NAME}}{$old}),
+       "rejected $old attribute is not stored");
+    ok(!exists($limit_ep->{READINGS}{$old}),
+       "saved $old is not migrated into a device reading");
+}
+ok(grep(/^ct:textField$/, MATTERDevice_GetSetList($limit_ep)),
+   'CT command remains usable without fabricated colorpicker limits');
+ok(grep(/^frequency:textField$/, MATTERDevice_GetSetList($limit_ep)),
+   'Frequency command remains usable without fabricated 50/60 boundaries');
+is(MATTERDevice_MaxBrightness($limit_ep), 254,
+   'protocol fallback applies while device data is missing');
+my $limit_report = sub {
+    my ($ep, $cluster, $id, $value) = @_;
+    MATTER_ParseMessage($limit_io, encode_json({event => 'attribute_updated',
+        data => [6400, "$ep/$cluster/$id", $value]}));
+};
+my @limit_reports = (
+    [8, 2, 'min_brightness', 1], [8, 3, 'max_brightness', 200],
+    [8, 5, 'min_frequency', 1000], [8, 6, 'max_frequency', 4000],
+    [768, 16395, 'color_temp_min', 200],
+    [768, 16396, 'color_temp_max', 454],
+    [257, 23, 'max_pin_code_length', 8],
+    [257, 24, 'min_pin_code_length', 4],
+    [257, 25, 'max_rfid_code_length', 20],
+    [257, 26, 'min_rfid_code_length', 8],
+);
+for my $r (@limit_reports) {
+    $limit_report->(1, $r->[0], $r->[1], $r->[3]);
+    is(ReadingsVal($limit_ep->{NAME}, $r->[2], ''), $r->[3],
+       "$r->[2] is reported at the addressed endpoint");
+    ok(!exists($attr{$limit_ep->{NAME}}{$r->[2]}),
+       "$r->[2] report never creates the removed attribute");
+    ok(!exists($limit_root->{READINGS}{$r->[2]}),
+       "$r->[2] is not copied to the root");
+}
+ok(grep(/^ct:colorpicker,CT,200,1,454$/, MATTERDevice_GetSetList($limit_ep)),
+   'colorpicker uses actual device limits');
+ok(grep(/^frequency:slider,1000,1,4000$/, MATTERDevice_GetSetList($limit_ep)),
+   'frequency slider uses actual device limits');
+$limit_report->(2, 8, 3, 100);
+is(MATTERDevice_MaxBrightness($limit_ep2), 100,
+   'second endpoint retains its independent reported maximum');
+$limit_report->(1, 8, 3, 180);
+is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 180,
+   'later limit reports replace the previous reading');
+@limit_commands = ();
+is(MATTERDevice_Set($limit_ep, $limit_ep->{NAME}, 'pct', 33), undef,
+   'percentage command accepted with reported maximum');
+is($limit_commands[-1]{args}{payload}{level}, 59,
+   'percentage maps to an integer device level using reported maximum');
+$limit_report->(1, 8, 0, 90);
+is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 50,
+   'received percentage uses the same reported scale');
+@limit_commands = ();
+is(MATTERDevice_Set($limit_ep, $limit_ep->{NAME}, 'rgb', 'FFFFFF'), undef,
+   'RGB command accepted with reported maximum');
+is($limit_commands[0]{args}{payload}{level}, 180,
+   'RGB brightness uses reported maximum');
+$limit_report->(1, 8, 3, 100);
+is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 90,
+   'changed maximum recalculates percentage without another brightness report');
+$limit_report->(1, 8, 3, 180);
+$limit_report->(1, 8, 65532, 6); # Frequency + Lighting
+is(MATTERDevice_MaxBrightness($limit_ep), 254,
+   'Lighting feature uses standardized 254 maximum despite contradictory report');
+is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 35,
+   'changed Lighting metadata updates percentage on the standardized scale');
+$limit_report->(1, 8, 65532, 4);
+is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 50,
+   'generic scale restoration updates percentage without physical level churn');
+for my $bad (undef, JSON::true, [], {}, 'nonsense', -1, 255, '1.5') {
+    $limit_report->(1, 8, 3, $bad);
+    is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 180,
+       'invalid maximum preserves last valid device report');
+}
+$limit_report->(1, 8, 3, 0);
+is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 0,
+   'generic uint8 MaxLevel zero is retained as reported, not replaced by fallback');
+is(MATTERDevice_MaxBrightness($limit_ep), 0,
+   'a reported generic zero maximum is not a missing attribute');
+ok(!defined(MATTERDevice_Percentage($limit_ep)),
+   'zero maximum never divides by zero or invents a percentage');
+$limit_report->(1, 8, 3, 180);
+$limit_report->(1, 8, 5, 0);
+ok(grep(/^frequency:textField$/, MATTERDevice_GetSetList($limit_ep)),
+   'zero means undefined frequency limit, not slider boundary');
+$limit_report->(1, 8, 5, 5000);
+ok(grep(/^frequency:textField$/, MATTERDevice_GetSetList($limit_ep)),
+   'reversed frequency range does not create misleading slider');
+$limit_report->(1, 8, 5, 1000);
+$limit_report->(1, 768, 16395, 500);
+ok(grep(/^ct:textField$/, MATTERDevice_GetSetList($limit_ep)),
+   'reversed CT range does not create misleading colorpicker');
+$limit_report->(1, 768, 16395, 200);
+$limit_report->(1, 768, 16396, 65535);
+is(ReadingsVal($limit_ep->{NAME}, 'color_temp_max', ''), 454,
+   'out-of-domain color temperature cannot replace hardware limit');
+$limit_report->(1, 257, 23, 256);
+is(ReadingsVal($limit_ep->{NAME}, 'max_pin_code_length', ''), 8,
+   'DoorLock length is validated as uint8');
+$limit_report->(1, 8, 65531, [0, 2]);
+is(MATTERDevice_MaxBrightness($limit_ep), 254,
+   'new AttributeList excludes unsupported saved maximum');
+is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 35,
+   'AttributeList change recalculates the derived percentage');
+$limit_report->(1, 8, 65531, [0, 2, 3, 4, 5, 6]);
+$limit_report->(1, 768, 65531, [7]);
+ok(grep(/^ct:textField$/, MATTERDevice_GetSetList($limit_ep)),
+   'fresh AttributeList can invalidate restored CT limits');
+$limit_report->(1, 768, 65531, [7, 16395, 16396]);
+# Simulate statefile restoration: readings survive, helper metadata does not.
+my $limit_saved_ct = $limit_ep->{READINGS}{color_temp_min}{VAL};
+$limit_ep->{READINGS}{color_temp_min}{VAL} = 'broken';
+ok(grep(/^ct:textField$/, MATTERDevice_GetSetList($limit_ep)),
+   'invalid restored boundary is validated before constructing a widget');
+$limit_ep->{READINGS}{color_temp_min}{VAL} = $limit_saved_ct;
+my $saved_limit_helper = delete $limit_ep->{helper};
+ok(!grep(/^ct:colorpicker,CT,200,1,454$/, MATTERDevice_GetSetList($limit_ep)),
+   'restored readings cannot invent commands without AcceptedCommandList');
+is(MATTERDevice_ReportedLimit($limit_ep, 768, 16395), 200,
+   'valid restored reading survives runtime capability rebuild');
+$limit_ep->{helper} = $saved_limit_helper;
+MATTER_ParseMessage($limit_io, encode_json({event => 'node_updated', data => {
+    node_id => 6400, available => JSON::false}}));
+readingsSingleUpdate($limit_ep, 'pct', 99, 1); # user's manual offline edit
+$limit_report->(1, 8, 3, 111);
+is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 180,
+   'offline live data cannot overwrite device limits');
+MATTER_ParseMessage($limit_io, encode_json({event => 'node_updated', data => {
+    node_id => 6400, available => JSON::true,
+    attributes => {'1/8/3' => 112}}}));
+is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 180,
+   'recovery snapshot remains quarantined for limit readings');
+MATTERDevice_ApplyCapabilityMetadata($limit_root, {'1/8/65532' => 6});
+is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 99,
+   'metadata-only recovery preserves manual percentage while brightness is quarantined');
+MATTERDevice_ApplyCapabilityMetadata($limit_root, {'1/8/65532' => 4});
+$limit_report->(1, 8, 3, 170);
+is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 170,
+   'fresh online limit report updates the reading after recovery');
+is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 99,
+   'live limit does not derive new state from quarantined brightness');
+$limit_report->(1, 8, 0, 85);
+is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 50,
+   'accepted fresh brightness report can refresh derived percentage during recovery');
+for my $r (@limit_reports) {
+    $limit_report->(1, $r->[0], $r->[1], $r->[3]);
+    ok(!exists($attr{$limit_ep->{NAME}}{$r->[2]}),
+       "$r->[2] is never auto-created as an attribute");
+}
+$limit_report->(1, 8, 3, 160);
+ok(!exists($attr{$limit_ep->{NAME}}{max_brightness}),
+   'reports never recreate removed obsolete attributes');
+is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 160,
+   'subsequent reports continue to update the reading');
 
 done_testing();
