@@ -195,6 +195,14 @@ Supported MATTER IO attributes include `disable:0,1`, `autocreate:0,1` (default 
 
 MATTERDevice attributes include `IODev`, optional `diagnostics` / `rawReadings`, `dimRate`, and separate device-specific level/color limits. Commands are offered only when the endpoint advertises them in its Matter `AcceptedCommandList` and satisfies the relevant `FeatureMap` / `ClusterRevision` constraints. Old `has_*` settings no longer enable or disable commands; they are not automatically created or deleted. After restart, control commands may be temporarily absent until the Matter server reports command metadata. **Upgrade note:** review and remove saved `has_*` attributes **before restarting into V0.18**. FHEM no longer recognizes them in the module `AttrList` and may reject those lines when restoring `fhem.cfg` or configDB. No automatic migration deletes old user settings. After the manual cleanup, save the configuration as usual.
 
+Selecting a module-specific attribute in FHEMWEB displays its inline commandref
+description, including defaults, scope and applicable units, in German or English.
+Reported device limits are initialized only when the corresponding FHEM attribute
+is unset; editing them changes local metadata, not the physical device's limits.
+Some limits only affect a control's displayed range, and PIN/RFID lengths are
+informational because credential management is not implemented. The individual
+attribute help describes these differences.
+
 ## Known limitations
 
 - **Window coverings:** supports basic open/close, stop, lift percentage and tilt commands when exposed by the device; not every WindowCovering-cluster function is mapped.

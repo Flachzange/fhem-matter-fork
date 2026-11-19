@@ -9,6 +9,7 @@ installed CHANGED baseline for each additional update source, so its output is
 ## History
 
 - 2026-11-19  Documentation: describe all nine root-only Thread/Wi-Fi diagnostic readings in German and English commandref, including units, derived roles/types, neighbor limits, RSSI/LQI selection, passive updates and cached/stale value semantics. No runtime or version change.
+- 2026-11-19  Documentation: add native FHEMWEB inline help for every declared MATTER/MATTERDevice attribute in German and English, with defaults, scope and the actual use of reported limits; correct German commandref block endings. Module runtime and V0.20 remain unchanged.
 
 - 2026-11-18  MATTER IO/Device V0.20: expose conventional per-device receive internals (`<IODev>_TIME`, `LASTInputDev`, `MSGCNT`, `<IODev>_MSGCNT`). Count each incoming server message once per root/addressed endpoint, including unchanged values, cached/quarantined snapshots and correlated replies; do not treat mirrored availability or local disconnects as endpoint traffic. Runtime-only internals add no reading events. The timestamp indicates server reception, not confirmed physical-device contact. Modeled regression coverage includes routing, response correlation, offline protection, multiple IOs and IO rename; live FHEM verification remains outstanding.
 
