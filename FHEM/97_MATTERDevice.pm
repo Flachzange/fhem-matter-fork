@@ -106,11 +106,11 @@ my %MATTER_CLUSTERS = (
         },
         attributes => {
             0x0000 => { name => "brightness", is_reading => 1, is_attribute => 0 },
-            0x0002 => { name => "min_brightness", is_reading => 0, is_attribute => 1 },
-            0x0003 => { name => "max_brightness", is_reading => 0, is_attribute => 1 },
+            0x0002 => { name => "min_brightness", is_reading => 1, is_attribute => 0, limit_range => [0, 254] },
+            0x0003 => { name => "max_brightness", is_reading => 1, is_attribute => 0, limit_range => [0, 254] },
             0x0004 => { name => "frequency", is_reading => 1, is_attribute => 0, required_features => ["frequency"] },
-            0x0005 => { name => "min_frequency", is_reading => 0, is_attribute => 1, required_features => ["frequency"] },
-            0x0006 => { name => "max_frequency", is_reading => 0, is_attribute => 1, required_features => ["frequency"] },
+            0x0005 => { name => "min_frequency", is_reading => 1, is_attribute => 0, limit_range => [0, 65535], required_features => ["frequency"] },
+            0x0006 => { name => "max_frequency", is_reading => 1, is_attribute => 0, limit_range => [0, 65535], required_features => ["frequency"] },
             0x4000 => { name => "startup_current_level", is_reading => 1, is_attribute => 0, required_features => ["lighting"] },
         },
         commands   => {
@@ -352,10 +352,10 @@ my %MATTER_CLUSTERS = (
             0x0014 => { name => "num_week_day_schedule_per_user", is_reading => 1, is_attribute => 0 },
             0x0015 => { name => "num_year_day_schedule_per_user", is_reading => 1, is_attribute => 0 },
             0x0016 => { name => "num_holiday_schedules", is_reading => 1, is_attribute => 0 },
-            0x0017 => { name => "max_pin_code_length", is_reading => 0, is_attribute => 1 },
-            0x0018 => { name => "min_pin_code_length", is_reading => 0, is_attribute => 1 },
-            0x0019 => { name => "max_rfid_code_length", is_reading => 0, is_attribute => 1 },
-            0x001A => { name => "min_rfid_code_length", is_reading => 0, is_attribute => 1 },
+            0x0017 => { name => "max_pin_code_length", is_reading => 1, is_attribute => 0, limit_range => [0, 255] },
+            0x0018 => { name => "min_pin_code_length", is_reading => 1, is_attribute => 0, limit_range => [0, 255] },
+            0x0019 => { name => "max_rfid_code_length", is_reading => 1, is_attribute => 0, limit_range => [0, 255] },
+            0x001A => { name => "min_rfid_code_length", is_reading => 1, is_attribute => 0, limit_range => [0, 255] },
             0x001B => { name => "credential_rules_support", is_reading => 1, is_attribute => 0 },
             0x001C => { name => "num_credentials_per_user", is_reading => 1, is_attribute => 0 },
             0x0021 => { name => "language", is_reading => 1, is_attribute => 0 },
@@ -475,8 +475,8 @@ my %MATTER_CLUSTERS = (
             0x0004 => { name => "current_y", is_reading => 1, is_attribute => 0, required_features => ["xy"] },
             0x0007 => { name => "color_temperature_mireds", is_reading => 1, is_attribute => 0, required_features => ["color_temperature"] },
             0x0008 => { name => "color_mode", is_reading => 1, is_attribute => 0 },
-            0x400B => { name => "color_temp_min", is_reading => 0, is_attribute => 1, required_features => ["color_temperature"] },
-            0x400C => { name => "color_temp_max", is_reading => 0, is_attribute => 1, required_features => ["color_temperature"] },
+            0x400B => { name => "color_temp_min", is_reading => 1, is_attribute => 0, limit_range => [1, 65279], required_features => ["color_temperature"] },
+            0x400C => { name => "color_temp_max", is_reading => 1, is_attribute => 0, limit_range => [0, 65279], required_features => ["color_temperature"] },
         },
         commands => {
             0x06 => { name => "MoveToHueAndSaturation", required_features => ["hue_saturation"] },
@@ -497,6 +497,8 @@ sub MATTERDevice_Initialize($) {
     $hash->{NotifyFn} = "MATTERDevice_Notify";
     $hash->{FW_detailFn} = "MATTERDevice_FWDetail";
     $hash->{FW_deviceOverview} = 1; # Keep FHEMWEB DeviceOverview above the endpoint links.
+    # The ten obsolete limit attributes remain declared only so saved
+    # configurations load. Never create, consume or migrate them to readings.
     $hash->{AttrList} = "IODev " .
                         "dimRate:slider,1,1,254 " .
                         "diagnostics:0,1 " .
@@ -826,6 +828,14 @@ sub MATTERDevice_ProcessGlobalAttribute($$$$) {
         $cap->{$key} = $revision if (defined($revision));
     }
 
+    # A changed FeatureMap/AttributeList can change the usable brightness
+    # scale without another CurrentLevel report (including metadata recovery).
+    if ($cluster_id == 0x0008 && ($attr_id == 0xFFFB || $attr_id == 0xFFFC)) {
+        my $pct = MATTERDevice_Percentage($hash);
+        readingsSingleUpdate($hash, 'pct', $pct, 1)
+            if defined($pct) && ReadingsVal($hash->{NAME}, 'pct', '') ne "$pct";
+    }
+
     return 1;
 }
 
@@ -911,8 +921,8 @@ sub MATTERDevice_ClusterRevisionAtLeast($$$) {
 # aus der lokalen Matter-Abbildung geprüft.
 sub MATTERDevice_AttributeUsable($$$) {
     my ($hash, $cluster_id, $attr_id) = @_;
-    # The legacy module permitted user-supplied max/min attributes without
-    # an AttributeList. Keep that behavior until actual metadata is available.
+    # A persisted device report remains usable before runtime AttributeList
+    # metadata arrives. A received list takes precedence over the saved report.
     my $list = $hash->{helper}{capabilities}{$cluster_id}{attribute_list};
     return 1 if ref($list) ne 'HASH';
     return 0 if (!MATTERDevice_AttributeSupported($hash, $cluster_id, $attr_id));
@@ -959,14 +969,45 @@ sub MATTERDevice_CommandSupported($$$) {
     return 1;
 }
 
-# Keep brightness bounds consistent across controls, commands and readings.
+# Read device-reported limits, including statefile-restored readings. Saved
+# FHEM attributes are never evidence of a physical device limit.
+sub MATTERDevice_ReportedLimit($$$) {
+    my ($hash, $cluster_id, $attr_id) = @_;
+    return undef unless MATTERDevice_AttributeUsable($hash, $cluster_id, $attr_id);
+    my $attribute = $MATTER_CLUSTERS{$cluster_id}{attributes}{$attr_id};
+    return undef unless $attribute && $attribute->{limit_range};
+    my $value = ReadingsVal($hash->{NAME}, $attribute->{name}, undef);
+    my ($min, $max) = @{$attribute->{limit_range}};
+    return undef unless defined($value) && !ref($value) &&
+        $value =~ /\A[0-9]+\z/ && $value >= $min && $value <= $max;
+    return 0 + $value;
+}
+
+# Matter Lighting uses the standardized 1..254 level scale. The generic
+# LevelControl MaxLevel report may narrow other devices' level ranges;
+# 254 is the protocol fallback when no usable maximum was reported.
 sub MATTERDevice_MaxBrightness {
     my ($hash) = @_;
-    my $max = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0003)
-        ? AttrVal($hash->{NAME}, 'max_brightness', 254) : 254;
-    return 254 unless defined($max) && !ref($max) &&
-        $max =~ /^\d+$/ && $max > 0 && $max <= 254;
-    return $max;
+    return 254 if MATTERDevice_FeatureSupported($hash, 0x0008, 'lighting');
+    return MATTERDevice_ReportedLimit($hash, 0x0008, 0x0003) // 254;
+}
+
+# Recalculate derived percentage without manufacturing a CurrentLevel report.
+sub MATTERDevice_Percentage($;$) {
+    my ($hash, $level_report) = @_;
+    my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : '';
+    my $root = ($hash->{endpoint_id} // 0) == 0 ? $hash :
+        $modules{MATTERDevice}{defptr}{"$io_name:$hash->{node_id}"};
+    # Metadata-only recovery and limit reports must not derive physical
+    # state from quarantined brightness or overwrite manual offline edits.
+    return undef if !$level_report && $root && $root->{helper}{quarantine_snapshots};
+    my $level = ReadingsVal($hash->{NAME}, 'brightness', undef);
+    return undef unless defined($level) && !ref($level) &&
+        $level =~ /\A[0-9]+\z/ && $level <= 254;
+    my $max = MATTERDevice_MaxBrightness($hash);
+    return undef unless $max > 0;
+    my $pct = int($level * 100 / $max);
+    return $pct > 100 ? 100 : $pct;
 }
 
 sub MATTERDevice_Set($$@) {
@@ -1224,7 +1265,7 @@ sub MATTERDevice_Set($$@) {
                     endpoint_id  => int($endpoint_id),
                     cluster_id   => 0x0008,
                     command_name => ($use_with_onoff ? "MoveToLevelWithOnOff" : "MoveToLevel"),
-                    payload      => { level => int($args[0]) * $max_level / 100, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
+                    payload      => { level => int($args[0] * $max_level / 100 + 0.5), transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
                 }
             };
         }
@@ -1999,6 +2040,13 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     my $is_attribute = $attr_info->{is_attribute} // 0;
     my $transform = $attr_info->{transform};
 
+    # Validate reported limit types before boolean coercion or publication.
+    # Null, malformed and out-of-domain reports preserve the last valid value.
+    if (my $range = $attr_info->{limit_range}) {
+        return unless defined($value) && !ref($value) &&
+            $value =~ /\A[0-9]+\z/ && $value >= $range->[0] && $value <= $range->[1];
+    }
+
     my $boolean = MATTERDevice_NormalizeBoolean($value);
     $value = $boolean if blessed($value) && defined($boolean);
     return if !defined($value);
@@ -2052,13 +2100,9 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         if ($is_attribute) {
             MATTERDevice_SetAttributeIfNotExists($name, $attr_name, $value);
         }
-        if ($attr_name eq "brightness") {
-            # Metadata and user overrides are interpreted consistently with
-            # the set slider and outgoing LevelControl commands.
-            my $max_level = MATTERDevice_MaxBrightness($hash);
-            my $pct_value = int($value * 100 / $max_level);
-            $pct_value = 100 if $pct_value > 100;
-            readingsBulkUpdate($hash, "pct", $pct_value);
+        if ($cluster_id == 0x0008 && ($attr_id == 0 || $attr_id == 3)) {
+            my $pct = MATTERDevice_Percentage($hash, $attr_id == 0);
+            readingsBulkUpdate($hash, 'pct', $pct) if defined $pct;
         }
     }
 
@@ -2364,7 +2408,7 @@ sub MATTERDevice_GetSetList($) {
         MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
     if ($can_level) {
         my $max_level = MATTERDevice_MaxBrightness($hash);
-        $add->("brightness:slider,0,1,$max_level");
+        $add->($max_level > 0 ? "brightness:slider,0,1,$max_level" : 'brightness:textField');
         $add->("pct:slider,0,1,100");
     }
 
@@ -2385,23 +2429,18 @@ sub MATTERDevice_GetSetList($) {
         MATTERDevice_CommandSupported($hash, 0x0008, 0x06));
 
     if (MATTERDevice_CommandSupported($hash, 0x0300, 0x0A)) {
-        my $min_mired = MATTERDevice_AttributeUsable($hash, 0x0300, 0x400B)
-            ? AttrVal($name, "color_temp_min", 153)
-            : 153;
-        my $max_mired = MATTERDevice_AttributeUsable($hash, 0x0300, 0x400C)
-            ? AttrVal($name, "color_temp_max", 500)
-            : 500;
-        $add->("ct:colorpicker,CT,$min_mired,1,$max_mired");
+        my $min = MATTERDevice_ReportedLimit($hash, 0x0300, 0x400B);
+        my $max = MATTERDevice_ReportedLimit($hash, 0x0300, 0x400C);
+        $add->(defined($min) && defined($max) && $min <= $max
+            ? "ct:colorpicker,CT,$min,1,$max" : 'ct:textField');
     }
 
     if (MATTERDevice_CommandSupported($hash, 0x0008, 0x08)) {
-        my $min_freq = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0005)
-            ? AttrVal($name, "min_frequency", 50)
-            : 50;
-        my $max_freq = MATTERDevice_AttributeUsable($hash, 0x0008, 0x0006)
-            ? AttrVal($name, "max_frequency", 60)
-            : 60;
-        $add->("frequency:slider,$min_freq,1,$max_freq");
+        my $min = MATTERDevice_ReportedLimit($hash, 0x0008, 0x0005);
+        my $max = MATTERDevice_ReportedLimit($hash, 0x0008, 0x0006);
+        # Frequency zero means undefined, not a usable slider boundary.
+        $add->(defined($min) && defined($max) && $min > 0 && $min <= $max
+            ? "frequency:slider,$min,1,$max" : 'frequency:textField');
     }
 
     $add->($MATTER_CLUSTERS{0x0006}{commands}{0x40}{set_list})
@@ -2788,10 +2827,11 @@ The server's advertised metadata is not proof of a fresh physical interview.</li
       corresponding attributes.</li>
 </ul>
 <h4>Attributes</h4>
-<p>Select an attribute in FHEMWEB to show its description. Device-reported
-limits below are copied to FHEM attributes only when unset; existing values
-are preserved. Editing them changes local FHEM metadata, not the device's
-physical limits or advertised command support.</p>
+<p>Select an attribute in FHEMWEB to show its description. Active device
+settings are <code>IODev</code>, <code>dimRate</code>, <code>diagnostics</code>
+and <code>rawReadings</code>. The ten obsolete limit attributes remain declared
+only so older saved configurations load without unknown-attribute errors;
+they no longer influence commands or controls and are never auto-created.</p>
 <ul>
   <li><a id="MATTERDevice-attr-IODev"></a><b>IODev:</b> Name of the
       <code>MATTER</code> IO device providing the server connection for this
@@ -2823,61 +2863,91 @@ physical limits or advertised command support.</p>
       Adds no polling; disabling retains existing readings. Hardware
       validation: <strong>untested</strong>.</li>
   <li><a id="MATTERDevice-attr-color_temp_min"></a><b>color_temp_min:</b>
-      Integer lower color-temperature bound in mired for the
-      <code>ct</code> color picker; lower mired means higher Kelvin.
-      Initialized from ColorControl's reported physical minimum when
-      available. The picker uses this value only with usable matching
-      attribute metadata; otherwise, or when unset, it uses <code>153</code>.
-      Does not clamp manually entered <code>ct</code> commands.</li>
+      <strong>Obsolete; ignored.</strong> The reported minimum color-temperature bound in mireds
+      is now stored in the reading <code>color_temp_min</code>. This attribute
+      remains accepted only for loading older configurations. It is not
+      copied into the reading or deleted automatically.</li>
   <li><a id="MATTERDevice-attr-color_temp_max"></a><b>color_temp_max:</b>
-      Integer upper color-temperature bound in mired for the
-      <code>ct</code> color picker; higher mired means lower Kelvin.
-      Initialized from ColorControl's reported physical maximum when
-      available. The picker uses this value only with usable matching
-      attribute metadata; otherwise, or when unset, it uses <code>500</code>.
-      Does not clamp manually entered <code>ct</code> commands.</li>
+      <strong>Obsolete; ignored.</strong> The reported maximum color-temperature bound in mireds
+      is now stored in the reading <code>color_temp_max</code>. This attribute
+      remains accepted only for loading older configurations. It is not
+      copied into the reading or deleted automatically.</li>
   <li><a id="MATTERDevice-attr-min_brightness"></a><b>min_brightness:</b>
-      Device-reported integer LevelControl minimum level, in native level
-      units rather than percent. No fixed default. Stored as local metadata;
-      currently does not set the slider minimum or clamp commands. The
-      <code>brightness</code> slider starts at <code>0</code>.</li>
+      <strong>Obsolete; ignored.</strong> The reported minimum LevelControl level
+      is now stored in the reading <code>min_brightness</code>. This attribute
+      remains accepted only for loading older configurations. It is not
+      copied into the reading or deleted automatically.</li>
   <li><a id="MATTERDevice-attr-max_brightness"></a><b>max_brightness:</b>
-      Integer <code>1</code>–<code>254</code> in native level units, default
-      <code>254</code>. Initialized from the reported LevelControl maximum.
-      With usable matching attribute metadata it sets the
-      <code>brightness</code> slider maximum and the scale for percent/RGB
-      conversion; otherwise the module uses <code>254</code>. Invalid local
-      values also fall back to <code>254</code>. This is not a physical
-      brightness limit enforced on the device.</li>
+      <strong>Obsolete; ignored.</strong> The reported maximum LevelControl level
+      is now stored in the reading <code>max_brightness</code>. This attribute
+      remains accepted only for loading older configurations. It is not
+      copied into the reading or deleted automatically.</li>
   <li><a id="MATTERDevice-attr-min_frequency"></a><b>min_frequency:</b>
-      Device-reported integer LevelControl minimum frequency (unconverted
-      Matter value), unrelated to Thread/Wi-Fi radio channels. Sets the <code>frequency</code> slider
-      minimum only with usable matching attribute metadata; otherwise, or
-      when unset, the slider uses <code>50</code>. Does not clamp manually
-      entered commands or enable unsupported commands.</li>
+      <strong>Obsolete; ignored.</strong> The reported minimum LevelControl frequency
+      is now stored in the reading <code>min_frequency</code>. This attribute
+      remains accepted only for loading older configurations. It is not
+      copied into the reading or deleted automatically.</li>
   <li><a id="MATTERDevice-attr-max_frequency"></a><b>max_frequency:</b>
-      Device-reported integer LevelControl maximum frequency (unconverted
-      Matter value), unrelated to Thread/Wi-Fi radio channels. Sets the <code>frequency</code> slider
-      maximum only with usable matching attribute metadata; otherwise, or
-      when unset, the slider uses <code>60</code>. Does not clamp manually
-      entered commands or enable unsupported commands.</li>
+      <strong>Obsolete; ignored.</strong> The reported maximum LevelControl frequency
+      is now stored in the reading <code>max_frequency</code>. This attribute
+      remains accepted only for loading older configurations. It is not
+      copied into the reading or deleted automatically.</li>
   <li><a id="MATTERDevice-attr-min_pin_code_length"></a><b>min_pin_code_length:</b>
-      Device-reported integer DoorLock minimum PIN length. No fixed default;
-      unset until reported or configured. Local metadata only: PIN/user
-      management and length enforcement are not implemented.</li>
+      <strong>Obsolete; ignored.</strong> The reported minimum PIN length in bytes
+      is now stored in the reading <code>min_pin_code_length</code>. This attribute
+      remains accepted only for loading older configurations. It is not
+      copied into the reading or deleted automatically.</li>
   <li><a id="MATTERDevice-attr-max_pin_code_length"></a><b>max_pin_code_length:</b>
-      Device-reported integer DoorLock maximum PIN length. No fixed default;
-      unset until reported or configured. Local metadata only: PIN/user
-      management and length enforcement are not implemented.</li>
+      <strong>Obsolete; ignored.</strong> The reported maximum PIN length in bytes
+      is now stored in the reading <code>max_pin_code_length</code>. This attribute
+      remains accepted only for loading older configurations. It is not
+      copied into the reading or deleted automatically.</li>
   <li><a id="MATTERDevice-attr-min_rfid_code_length"></a><b>min_rfid_code_length:</b>
-      Device-reported integer DoorLock minimum RFID code length. No fixed
-      default; unset until reported or configured. Local metadata only:
-      RFID credential management and length enforcement are not implemented.</li>
+      <strong>Obsolete; ignored.</strong> The reported minimum RFID code length in bytes
+      is now stored in the reading <code>min_rfid_code_length</code>. This attribute
+      remains accepted only for loading older configurations. It is not
+      copied into the reading or deleted automatically.</li>
   <li><a id="MATTERDevice-attr-max_rfid_code_length"></a><b>max_rfid_code_length:</b>
-      Device-reported integer DoorLock maximum RFID code length. No fixed
-      default; unset until reported or configured. Local metadata only:
-      RFID credential management and length enforcement are not implemented.</li>
+      <strong>Obsolete; ignored.</strong> The reported maximum RFID code length in bytes
+      is now stored in the reading <code>max_rfid_code_length</code>. This attribute
+      remains accepted only for loading older configurations. It is not
+      copied into the reading or deleted automatically.</li>
 </ul>
+<h4>Device-limit readings and upgrade from V0.20</h4>
+<p>The following ordinary readings are populated from accepted device reports
+or snapshots, independently for each endpoint. They survive normal FHEM
+statefile/configDB restoration. No extra reads or polling are introduced.</p>
+<table>
+<tr><th>Readings</th><th>Source / unit</th></tr>
+<tr><td><code>min_brightness</code>, <code>max_brightness</code></td><td>LevelControl MinLevel / MaxLevel, native level units.</td></tr>
+<tr><td><code>min_frequency</code>, <code>max_frequency</code></td><td>LevelControl MinFrequency / MaxFrequency, unchanged Matter values. Zero means undefined.</td></tr>
+<tr><td><code>color_temp_min</code>, <code>color_temp_max</code></td><td>ColorControl ColorTempPhysicalMinMireds / ColorTempPhysicalMaxMireds, mireds. Lower mireds mean higher Kelvin.</td></tr>
+<tr><td><code>min_pin_code_length</code>, <code>max_pin_code_length</code></td><td>DoorLock MinPINCodeLength / MaxPINCodeLength, bytes. Informational; no PIN management is added.</td></tr>
+<tr><td><code>min_rfid_code_length</code>, <code>max_rfid_code_length</code></td><td>DoorLock MinRFIDCodeLength / MaxRFIDCodeLength, bytes. Informational; no RFID management is added.</td></tr>
+</table>
+<p>Valid CT limits determine the colorpicker range. Valid positive frequency
+limits determine the frequency slider range. Missing, undefined, reversed or
+metadata-excluded boundaries leave the advertised command available with a
+text field instead; no 153&ndash;500 or 50&ndash;60 device range is invented.
+The Lighting feature uses the standardized level maximum 254. Other
+LevelControl endpoints use a usable reported <code>max_brightness</code>,
+otherwise the protocol fallback 254. The same maximum is used by the
+brightness slider, command validation, percentage and RGB scaling.
+A reported generic maximum of zero is retained; it permits no positive
+brightness and cannot produce a derived percentage.
+During quarantine, only an accepted CurrentLevel report recalculates percentage;
+metadata or limit reports cannot overwrite manual percentage edits using cached
+brightness. Command availability still requires advertised Matter commands/features.</p>
+<p><b>Transition:</b> Saved attributes with these ten names are retained but
+ignored. They are never treated as device reports, so old manual overrides
+stop affecting controls and scaling in V0.21. Remove obsolete attributes
+manually after reviewing dependent automation and saving any old settings
+you still need for reference. No automatic configuration deletion occurs.
+Readings appear only when corresponding data is received. Invalid/null
+reports preserve the last valid reading; offline/quarantine protection also
+applies to limits. Restored readings are cached information, not proof of
+current reachability. Device-class hardware status remains
+<strong>untested</strong>.</p>
 <h4>Hardware validation status</h4>
 <p>The following classes are implemented but have no class-wide hardware validation
 recorded in this repository. <strong>untested</strong> refers to missing documented
@@ -3084,10 +3154,11 @@ Server-Metadaten beweisen keine neue physische Geräteabfrage.</li>
 </ul>
 <h4>Attribute</h4>
 <p>Bei Auswahl eines Attributs in FHEMWEB erscheint dessen Beschreibung.
-Die folgenden gemeldeten Gerätegrenzen werden nur in noch ungesetzte
-FHEM-Attribute übernommen; vorhandene Werte bleiben erhalten. Änderungen
-betreffen lokale FHEM-Metadaten, nicht die physischen Gerätegrenzen oder
-die vom Gerät angebotenen Befehle.</p>
+Aktive Geräteeinstellungen sind <code>IODev</code>, <code>dimRate</code>,
+<code>diagnostics</code> und <code>rawReadings</code>. Die zehn obsoleten
+Grenzwertattribute bleiben nur zum fehlerfreien Laden älterer Konfigurationen
+deklariert. Sie beeinflussen keine Befehle oder Bedienelemente mehr und
+werden nicht mehr automatisch angelegt.</p>
 <ul>
   <li><a id="MATTERDevice-attr-IODev"></a><b>IODev:</b> Name des
       <code>MATTER</code>-IO-Devices mit der Serververbindung für diesen
@@ -3120,64 +3191,94 @@ die vom Gerät angebotenen Befehle.</p>
       sind. Kein Polling; Abschalten erhält vorhandene Readings.
       Hardwarestatus: <strong>ungetestet</strong>.</li>
   <li><a id="MATTERDevice-attr-color_temp_min"></a><b>color_temp_min:</b>
-      Ganzzahlige untere Farbtemperaturgrenze in Mired für den
-      <code>ct</code>-Farbwähler; kleinere Mired-Werte bedeuten höhere Kelvin.
-      Wird, soweit verfügbar, aus dem gemeldeten physischen ColorControl-Minimum
-      vorbelegt. Der Farbwähler nutzt den Wert nur bei nutzbaren zugehörigen
-      Attributmetadaten; andernfalls oder ohne gesetzten Wert gilt
-      <code>153</code>. Begrenzt manuell eingegebene <code>ct</code>-Befehle nicht.</li>
+      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
+      (untere Farbtemperaturgrenze in Mired) steht jetzt im Reading <code>color_temp_min</code>.
+      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
+      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
   <li><a id="MATTERDevice-attr-color_temp_max"></a><b>color_temp_max:</b>
-      Ganzzahlige obere Farbtemperaturgrenze in Mired für den
-      <code>ct</code>-Farbwähler; größere Mired-Werte bedeuten niedrigere Kelvin.
-      Wird, soweit verfügbar, aus dem gemeldeten physischen ColorControl-Maximum
-      vorbelegt. Der Farbwähler nutzt den Wert nur bei nutzbaren zugehörigen
-      Attributmetadaten; andernfalls oder ohne gesetzten Wert gilt
-      <code>500</code>. Begrenzt manuell eingegebene <code>ct</code>-Befehle nicht.</li>
+      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
+      (obere Farbtemperaturgrenze in Mired) steht jetzt im Reading <code>color_temp_max</code>.
+      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
+      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
   <li><a id="MATTERDevice-attr-min_brightness"></a><b>min_brightness:</b>
-      Vom Gerät gemeldetes ganzzahliges LevelControl-Minimum in nativen
-      Level-Einheiten, nicht Prozent. Kein fester Standardwert. Dient derzeit
-      nur als lokale Metadaten; verändert weder das Slider-Minimum noch
-      begrenzt es Befehle. Der <code>brightness</code>-Slider beginnt bei
-      <code>0</code>.</li>
+      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
+      (minimale LevelControl-Stufe) steht jetzt im Reading <code>min_brightness</code>.
+      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
+      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
   <li><a id="MATTERDevice-attr-max_brightness"></a><b>max_brightness:</b>
-      Ganzzahl <code>1</code>–<code>254</code> in nativen Level-Einheiten,
-      Standard <code>254</code>. Wird aus dem gemeldeten LevelControl-Maximum
-      vorbelegt. Bei nutzbaren zugehörigen Attributmetadaten bestimmt der Wert
-      das Maximum des <code>brightness</code>-Sliders und die Skalierung der
-      Prozent-/RGB-Umrechnung; andernfalls nutzt das Modul <code>254</code>.
-      Auch ungültige lokale Werte führen zum Ersatzwert <code>254</code>.
-      Keine geräteseitig durchgesetzte physische Helligkeitsgrenze.</li>
+      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
+      (maximale LevelControl-Stufe) steht jetzt im Reading <code>max_brightness</code>.
+      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
+      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
   <li><a id="MATTERDevice-attr-min_frequency"></a><b>min_frequency:</b>
-      Vom Gerät gemeldete ganzzahlige LevelControl-Mindestfrequenz (Matter-Rohwert),
-      unabhängig von Thread-/WLAN-Funkkanälen. Bestimmt nur bei nutzbaren
-      zugehörigen Attributmetadaten das Minimum des <code>frequency</code>-Sliders;
-      andernfalls oder ohne gesetzten Wert gilt <code>50</code>. Begrenzt
-      manuell eingegebene Befehle nicht und aktiviert keine ununterstützten Befehle.</li>
+      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
+      (minimale LevelControl-Frequenz) steht jetzt im Reading <code>min_frequency</code>.
+      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
+      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
   <li><a id="MATTERDevice-attr-max_frequency"></a><b>max_frequency:</b>
-      Vom Gerät gemeldete ganzzahlige LevelControl-Höchstfrequenz (Matter-Rohwert),
-      unabhängig von Thread-/WLAN-Funkkanälen. Bestimmt nur bei nutzbaren
-      zugehörigen Attributmetadaten das Maximum des <code>frequency</code>-Sliders;
-      andernfalls oder ohne gesetzten Wert gilt <code>60</code>. Begrenzt
-      manuell eingegebene Befehle nicht und aktiviert keine ununterstützten Befehle.</li>
+      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
+      (maximale LevelControl-Frequenz) steht jetzt im Reading <code>max_frequency</code>.
+      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
+      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
   <li><a id="MATTERDevice-attr-min_pin_code_length"></a><b>min_pin_code_length:</b>
-      Vom DoorLock-Cluster gemeldete ganzzahlige PIN-Mindestlänge. Kein fester
-      Standardwert; bis zur Meldung oder manuellen Angabe ungesetzt. Nur lokale
-      Metadaten: PIN-/Benutzerverwaltung und Längenprüfung sind nicht implementiert.</li>
+      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
+      (minimale PIN-Länge in Byte) steht jetzt im Reading <code>min_pin_code_length</code>.
+      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
+      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
   <li><a id="MATTERDevice-attr-max_pin_code_length"></a><b>max_pin_code_length:</b>
-      Vom DoorLock-Cluster gemeldete ganzzahlige PIN-Höchstlänge. Kein fester
-      Standardwert; bis zur Meldung oder manuellen Angabe ungesetzt. Nur lokale
-      Metadaten: PIN-/Benutzerverwaltung und Längenprüfung sind nicht implementiert.</li>
+      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
+      (maximale PIN-Länge in Byte) steht jetzt im Reading <code>max_pin_code_length</code>.
+      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
+      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
   <li><a id="MATTERDevice-attr-min_rfid_code_length"></a><b>min_rfid_code_length:</b>
-      Vom DoorLock-Cluster gemeldete ganzzahlige RFID-Code-Mindestlänge. Kein
-      fester Standardwert; bis zur Meldung oder manuellen Angabe ungesetzt.
-      Nur lokale Metadaten: RFID-Zugangsdatenverwaltung und Längenprüfung
-      sind nicht implementiert.</li>
+      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
+      (minimale RFID-Code-Länge in Byte) steht jetzt im Reading <code>min_rfid_code_length</code>.
+      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
+      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
   <li><a id="MATTERDevice-attr-max_rfid_code_length"></a><b>max_rfid_code_length:</b>
-      Vom DoorLock-Cluster gemeldete ganzzahlige RFID-Code-Höchstlänge. Kein
-      fester Standardwert; bis zur Meldung oder manuellen Angabe ungesetzt.
-      Nur lokale Metadaten: RFID-Zugangsdatenverwaltung und Längenprüfung
-      sind nicht implementiert.</li>
+      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
+      (maximale RFID-Code-Länge in Byte) steht jetzt im Reading <code>max_rfid_code_length</code>.
+      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
+      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
 </ul>
+<h4>Gerätegrenzen als Readings und Umstieg von V0.20</h4>
+<p>Die folgenden normalen Readings entstehen aus akzeptierten Gerätemeldungen
+oder Snapshots, getrennt je Endpunkt. Sie überstehen die normale FHEM-
+Wiederherstellung über Statefile/configDB. Es entstehen keine zusätzlichen
+Abfragen und kein Polling.</p>
+<table>
+<tr><th>Readings</th><th>Quelle / Einheit</th></tr>
+<tr><td><code>min_brightness</code>, <code>max_brightness</code></td><td>LevelControl MinLevel / MaxLevel, native Level-Einheiten.</td></tr>
+<tr><td><code>min_frequency</code>, <code>max_frequency</code></td><td>LevelControl MinFrequency / MaxFrequency, unveränderte Matter-Werte. Null als Zahlenwert bedeutet undefiniert.</td></tr>
+<tr><td><code>color_temp_min</code>, <code>color_temp_max</code></td><td>ColorControl ColorTempPhysicalMinMireds / ColorTempPhysicalMaxMireds, Mired. Kleinere Mired-Werte bedeuten höhere Kelvin-Werte.</td></tr>
+<tr><td><code>min_pin_code_length</code>, <code>max_pin_code_length</code></td><td>DoorLock MinPINCodeLength / MaxPINCodeLength, Byte. Rein informativ; keine neue PIN-Verwaltung.</td></tr>
+<tr><td><code>min_rfid_code_length</code>, <code>max_rfid_code_length</code></td><td>DoorLock MinRFIDCodeLength / MaxRFIDCodeLength, Byte. Rein informativ; keine neue RFID-Verwaltung.</td></tr>
+</table>
+<p>Gültige CT-Grenzen bestimmen den Farbwähler. Gültige positive
+Frequenzgrenzen bestimmen den Frequenz-Slider. Bei fehlenden, undefinierten,
+vertauschten oder durch Metadaten ausgeschlossenen Grenzen bleibt der
+angebotene Befehl mit Texteingabe verfügbar. Es werden keine Gerätegrenzen
+153&ndash;500 oder 50&ndash;60 angenommen. Beim Lighting-Feature gilt die
+standardisierte maximale Level-Stufe 254. Andere LevelControl-Endpunkte
+verwenden ein nutzbares gemeldetes <code>max_brightness</code>, andernfalls
+den Protokoll-Ersatzwert 254. Dasselbe Maximum gilt für Helligkeits-Slider,
+Befehlsprüfung sowie Prozent- und RGB-Skalierung. Ein gemeldetes generisches
+Maximum null als Zahlenwert bleibt erhalten; es erlaubt keine positive
+Helligkeit und keine abgeleitete Prozentberechnung. Befehle benötigen weiterhin
+die angekündigten Matter-Befehle und Features. Während der Quarantäne berechnet
+nur ein akzeptierter CurrentLevel-Bericht den Prozentwert neu; Metadaten oder
+Grenzwerte dürfen manuelle Prozentwerte nicht aus alter Helligkeit überschreiben.</p>
+<p><b>Übergang:</b> Gespeicherte Attribute dieser zehn Namen bleiben erhalten,
+werden aber ignoriert. Sie gelten niemals als Gerätemeldung; alte manuelle
+Übersteuerungen beeinflussen Bedienelemente und Skalierung ab V0.21 nicht
+mehr. Obsolete Attribute nach Prüfung abhängiger Automationen und Sicherung
+noch benötigter Altwerte manuell entfernen. Es erfolgt keine automatische
+Löschung in der Konfiguration. Readings entstehen erst beim Empfang passender
+Daten. Ungültige/null Meldungen erhalten den letzten gültigen Reading-Wert;
+Offline-Sperre und Snapshot-Quarantäne gelten auch für Grenzen. Wiederhergestellte
+Readings sind gespeicherte Informationen und kein Beleg aktueller
+Erreichbarkeit. Hardwarestatus der Geräteklassen weiterhin
+<strong>ungetestet</strong>.</p>
 <h4>Hardware-Teststatus</h4>
 <p>Die folgenden Geräteklassen sind implementiert, aber es liegt im Repository
 kein klassenweiter Hardware-Nachweis vor. <strong>ungetestet</strong> bedeutet:
