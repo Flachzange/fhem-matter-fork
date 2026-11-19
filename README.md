@@ -193,7 +193,7 @@ The available commands depend on the endpoint's reported clusters and commands. 
 
 Supported MATTER IO attributes include `disable:0,1`, `autocreate:0,1` (default `1`) and `commissionMode:network,auto` (default `network`). Setting `autocreate` to `0` prevents newly discovered FHEM root/endpoint devices from being created; it does not delete Matter-server nodes or stop updates to existing FHEM devices. `commissionMode` affects subsequent `commissionCode` requests without an explicit mode.
 
-MATTERDevice attributes include `IODev`, optional `diagnostics` / `rawReadings`, `dimRate`; the old device-limit attributes are obsolete compatibility entries. Commands are offered only when the endpoint advertises them in its Matter `AcceptedCommandList` and satisfies the relevant `FeatureMap` / `ClusterRevision` constraints. Old `has_*` settings no longer enable or disable commands; they are not automatically created or deleted. After restart, control commands may be temporarily absent until the Matter server reports command metadata. **Upgrade note:** review and remove saved `has_*` attributes **before restarting into V0.18**. FHEM no longer recognizes them in the module `AttrList` and may reject those lines when restoring `fhem.cfg` or configDB. No automatic migration deletes old user settings. After the manual cleanup, save the configuration as usual.
+MATTERDevice attributes include `IODev`, optional `diagnostics` / `rawReadings`, `dimRate`; device limits are readings rather than attributes. Commands are offered only when the endpoint advertises them in its Matter `AcceptedCommandList` and satisfies the relevant `FeatureMap` / `ClusterRevision` constraints. Old `has_*` settings no longer enable or disable commands; they are not automatically created or deleted. After restart, control commands may be temporarily absent until the Matter server reports command metadata. **Upgrade note:** review and remove saved `has_*` attributes **before restarting into V0.18**. FHEM no longer recognizes them in the module `AttrList` and may reject those lines when restoring `fhem.cfg` or configDB. No automatic migration deletes old user settings. After the manual cleanup, save the configuration as usual.
 
 Selecting a module-specific attribute in FHEMWEB displays its German/English
 inline commandref help. Active MATTERDevice settings are `IODev`, `dimRate`,
@@ -204,12 +204,24 @@ inline commandref help. Active MATTERDevice settings are `IODev`, `dimRate`,
 `color_temp_min`, `color_temp_max`, `min_pin_code_length`, `max_pin_code_length`,
 `min_rfid_code_length` and `max_rfid_code_length` are populated from received
 device data and updated as ordinary endpoint readings. No old attribute value
-is copied into a reading. Existing attributes remain declared solely for
-loading older configurations; they are ignored and never auto-created.
-Review automations using `AttrVal` and any manual overrides before updating:
-those settings no longer affect controls or scaling. Retain a copy of old
-settings if needed and remove obsolete attributes manually; the module does
-not delete user configuration.
+is copied into a reading. The ten attribute declarations are removed entirely;
+there is no compatibility or automatic migration. Review automations using
+`AttrVal` and retain any old settings needed for reference: manual overrides
+no longer affect controls or scaling.
+
+**Before restarting into V0.21**, remove saved limit attributes and save the
+configuration. Otherwise FHEM may reject their lines while restoring
+`fhem.cfg` or configDB. Execute each line separately in the **FHEM command
+line**, not in the DEF editor or a shell:
+
+```text
+deleteattr TYPE=MATTERDevice (color_temp_(min|max)|(min|max)_(brightness|frequency|pin_code_length|rfid_code_length))
+save
+```
+
+This removes only the ten retired attributes from MATTERDevice devices;
+readings and other attributes remain unchanged. The module does not delete
+user configuration automatically.
 
 CT and frequency controls use valid reported boundaries; when boundaries are
 missing, undefined, reversed or excluded by metadata, their supported command

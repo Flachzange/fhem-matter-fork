@@ -3225,8 +3225,10 @@ my @obsolete_limits = qw(color_temp_min color_temp_max min_brightness
     max_brightness min_frequency max_frequency min_pin_code_length
     max_pin_code_length min_rfid_code_length max_rfid_code_length);
 for my $old (@obsolete_limits) {
-    is(CommandAttr(undef, "$limit_ep->{NAME} $old 999"), undef,
-       "obsolete $old remains loadable for saved configuration");
+    like(CommandAttr(undef, "$limit_ep->{NAME} $old 999") // '',
+       qr/unknown attribute/, "removed $old attribute is rejected");
+    ok(!exists($attr{$limit_ep->{NAME}}{$old}),
+       "rejected $old attribute is not stored");
     ok(!exists($limit_ep->{READINGS}{$old}),
        "saved $old is not migrated into a device reading");
 }
@@ -3235,7 +3237,7 @@ ok(grep(/^ct:textField$/, MATTERDevice_GetSetList($limit_ep)),
 ok(grep(/^frequency:textField$/, MATTERDevice_GetSetList($limit_ep)),
    'Frequency command remains usable without fabricated 50/60 boundaries');
 is(MATTERDevice_MaxBrightness($limit_ep), 254,
-   'saved maximum is inert while device data is missing');
+   'protocol fallback applies while device data is missing');
 my $limit_report = sub {
     my ($ep, $cluster, $id, $value) = @_;
     MATTER_ParseMessage($limit_io, encode_json({event => 'attribute_updated',
@@ -3255,8 +3257,8 @@ for my $r (@limit_reports) {
     $limit_report->(1, $r->[0], $r->[1], $r->[3]);
     is(ReadingsVal($limit_ep->{NAME}, $r->[2], ''), $r->[3],
        "$r->[2] is reported at the addressed endpoint");
-    is($attr{$limit_ep->{NAME}}{$r->[2]}, 999,
-       "$r->[2] does not overwrite the preserved obsolete attribute");
+    ok(!exists($attr{$limit_ep->{NAME}}{$r->[2]}),
+       "$r->[2] report never creates the removed attribute");
     ok(!exists($limit_root->{READINGS}{$r->[2]}),
        "$r->[2] is not copied to the root");
 }
@@ -3370,7 +3372,6 @@ is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 99,
 $limit_report->(1, 8, 0, 85);
 is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 50,
    'accepted fresh brightness report can refresh derived percentage during recovery');
-for my $old (@obsolete_limits) { delete $attr{$limit_ep->{NAME}}{$old}; }
 for my $r (@limit_reports) {
     $limit_report->(1, $r->[0], $r->[1], $r->[3]);
     ok(!exists($attr{$limit_ep->{NAME}}{$r->[2]}),
@@ -3380,6 +3381,6 @@ $limit_report->(1, 8, 3, 160);
 ok(!exists($attr{$limit_ep->{NAME}}{max_brightness}),
    'reports never recreate removed obsolete attributes');
 is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 160,
-   'cleanup does not prevent new device reports');
+   'subsequent reports continue to update the reading');
 
 done_testing();

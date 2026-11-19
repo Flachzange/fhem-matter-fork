@@ -497,22 +497,10 @@ sub MATTERDevice_Initialize($) {
     $hash->{NotifyFn} = "MATTERDevice_Notify";
     $hash->{FW_detailFn} = "MATTERDevice_FWDetail";
     $hash->{FW_deviceOverview} = 1; # Keep FHEMWEB DeviceOverview above the endpoint links.
-    # The ten obsolete limit attributes remain declared only so saved
-    # configurations load. Never create, consume or migrate them to readings.
     $hash->{AttrList} = "IODev " .
                         "dimRate:slider,1,1,254 " .
                         "diagnostics:0,1 " .
                         "rawReadings:0,1 " .
-                        "color_temp_min " .
-                        "color_temp_max " .
-                        "min_brightness " .
-                        "max_brightness " .
-                        "min_frequency " .
-                        "max_frequency " .
-                        "min_pin_code_length " .
-                        "max_pin_code_length " .
-                        "min_rfid_code_length " .
-                        "max_rfid_code_length " .
                         $readingFnAttributes;
     $hash->{MatchList} = { "1" => ".*" };
 }
@@ -2829,9 +2817,9 @@ The server's advertised metadata is not proof of a fresh physical interview.</li
 <h4>Attributes</h4>
 <p>Select an attribute in FHEMWEB to show its description. Active device
 settings are <code>IODev</code>, <code>dimRate</code>, <code>diagnostics</code>
-and <code>rawReadings</code>. The ten obsolete limit attributes remain declared
-only so older saved configurations load without unknown-attribute errors;
-they no longer influence commands or controls and are never auto-created.</p>
+and <code>rawReadings</code>. Device limits are readings, not configurable
+attributes. Remove saved limit attributes before restarting into V0.21,
+as described below.</p>
 <ul>
   <li><a id="MATTERDevice-attr-IODev"></a><b>IODev:</b> Name of the
       <code>MATTER</code> IO device providing the server connection for this
@@ -2862,56 +2850,6 @@ they no longer influence commands or controls and are never auto-created.</p>
       dump or a guarantee that all device information is non-sensitive.
       Adds no polling; disabling retains existing readings. Hardware
       validation: <strong>untested</strong>.</li>
-  <li><a id="MATTERDevice-attr-color_temp_min"></a><b>color_temp_min:</b>
-      <strong>Obsolete; ignored.</strong> The reported minimum color-temperature bound in mireds
-      is now stored in the reading <code>color_temp_min</code>. This attribute
-      remains accepted only for loading older configurations. It is not
-      copied into the reading or deleted automatically.</li>
-  <li><a id="MATTERDevice-attr-color_temp_max"></a><b>color_temp_max:</b>
-      <strong>Obsolete; ignored.</strong> The reported maximum color-temperature bound in mireds
-      is now stored in the reading <code>color_temp_max</code>. This attribute
-      remains accepted only for loading older configurations. It is not
-      copied into the reading or deleted automatically.</li>
-  <li><a id="MATTERDevice-attr-min_brightness"></a><b>min_brightness:</b>
-      <strong>Obsolete; ignored.</strong> The reported minimum LevelControl level
-      is now stored in the reading <code>min_brightness</code>. This attribute
-      remains accepted only for loading older configurations. It is not
-      copied into the reading or deleted automatically.</li>
-  <li><a id="MATTERDevice-attr-max_brightness"></a><b>max_brightness:</b>
-      <strong>Obsolete; ignored.</strong> The reported maximum LevelControl level
-      is now stored in the reading <code>max_brightness</code>. This attribute
-      remains accepted only for loading older configurations. It is not
-      copied into the reading or deleted automatically.</li>
-  <li><a id="MATTERDevice-attr-min_frequency"></a><b>min_frequency:</b>
-      <strong>Obsolete; ignored.</strong> The reported minimum LevelControl frequency
-      is now stored in the reading <code>min_frequency</code>. This attribute
-      remains accepted only for loading older configurations. It is not
-      copied into the reading or deleted automatically.</li>
-  <li><a id="MATTERDevice-attr-max_frequency"></a><b>max_frequency:</b>
-      <strong>Obsolete; ignored.</strong> The reported maximum LevelControl frequency
-      is now stored in the reading <code>max_frequency</code>. This attribute
-      remains accepted only for loading older configurations. It is not
-      copied into the reading or deleted automatically.</li>
-  <li><a id="MATTERDevice-attr-min_pin_code_length"></a><b>min_pin_code_length:</b>
-      <strong>Obsolete; ignored.</strong> The reported minimum PIN length in bytes
-      is now stored in the reading <code>min_pin_code_length</code>. This attribute
-      remains accepted only for loading older configurations. It is not
-      copied into the reading or deleted automatically.</li>
-  <li><a id="MATTERDevice-attr-max_pin_code_length"></a><b>max_pin_code_length:</b>
-      <strong>Obsolete; ignored.</strong> The reported maximum PIN length in bytes
-      is now stored in the reading <code>max_pin_code_length</code>. This attribute
-      remains accepted only for loading older configurations. It is not
-      copied into the reading or deleted automatically.</li>
-  <li><a id="MATTERDevice-attr-min_rfid_code_length"></a><b>min_rfid_code_length:</b>
-      <strong>Obsolete; ignored.</strong> The reported minimum RFID code length in bytes
-      is now stored in the reading <code>min_rfid_code_length</code>. This attribute
-      remains accepted only for loading older configurations. It is not
-      copied into the reading or deleted automatically.</li>
-  <li><a id="MATTERDevice-attr-max_rfid_code_length"></a><b>max_rfid_code_length:</b>
-      <strong>Obsolete; ignored.</strong> The reported maximum RFID code length in bytes
-      is now stored in the reading <code>max_rfid_code_length</code>. This attribute
-      remains accepted only for loading older configurations. It is not
-      copied into the reading or deleted automatically.</li>
 </ul>
 <h4>Device-limit readings and upgrade from V0.20</h4>
 <p>The following ordinary readings are populated from accepted device reports
@@ -2938,12 +2876,18 @@ brightness and cannot produce a derived percentage.
 During quarantine, only an accepted CurrentLevel report recalculates percentage;
 metadata or limit reports cannot overwrite manual percentage edits using cached
 brightness. Command availability still requires advertised Matter commands/features.</p>
-<p><b>Transition:</b> Saved attributes with these ten names are retained but
-ignored. They are never treated as device reports, so old manual overrides
-stop affecting controls and scaling in V0.21. Remove obsolete attributes
-manually after reviewing dependent automation and saving any old settings
-you still need for reference. No automatic configuration deletion occurs.
-Readings appear only when corresponding data is received. Invalid/null
+<p><b>Transition:</b> These ten attribute names are removed from
+<code>AttrList</code> in V0.21; there is no compatibility or automatic migration.
+Review automation using <code>AttrVal</code> and save any old settings needed
+for reference. Old overrides no longer affect controls or scaling. Before
+restarting into V0.21, remove these attributes and save the configuration;
+otherwise FHEM may reject saved attribute lines during startup. Execute each
+line separately in the <b>FHEM command line</b>:</p>
+<pre>deleteattr TYPE=MATTERDevice (color_temp_(min|max)|(min|max)_(brightness|frequency|pin_code_length|rfid_code_length))
+save</pre>
+<p>The command removes only these ten attributes from MATTERDevice devices,
+not their readings. No values are automatically copied or deleted by the
+module. Readings appear only when corresponding data is received. Invalid/null
 reports preserve the last valid reading; offline/quarantine protection also
 applies to limits. Restored readings are cached information, not proof of
 current reachability. Device-class hardware status remains
@@ -3155,10 +3099,9 @@ Server-Metadaten beweisen keine neue physische Geräteabfrage.</li>
 <h4>Attribute</h4>
 <p>Bei Auswahl eines Attributs in FHEMWEB erscheint dessen Beschreibung.
 Aktive Geräteeinstellungen sind <code>IODev</code>, <code>dimRate</code>,
-<code>diagnostics</code> und <code>rawReadings</code>. Die zehn obsoleten
-Grenzwertattribute bleiben nur zum fehlerfreien Laden älterer Konfigurationen
-deklariert. Sie beeinflussen keine Befehle oder Bedienelemente mehr und
-werden nicht mehr automatisch angelegt.</p>
+<code>diagnostics</code> und <code>rawReadings</code>. Gerätegrenzen sind
+Readings und keine konfigurierbaren Attribute. Gespeicherte Grenzwertattribute
+vor dem Neustart mit V0.21 wie unten beschrieben entfernen.</p>
 <ul>
   <li><a id="MATTERDevice-attr-IODev"></a><b>IODev:</b> Name des
       <code>MATTER</code>-IO-Devices mit der Serververbindung für diesen
@@ -3190,56 +3133,6 @@ werden nicht mehr automatisch angelegt.</p>
       Dump und keine Garantie, dass sämtliche Geräteinformationen unkritisch
       sind. Kein Polling; Abschalten erhält vorhandene Readings.
       Hardwarestatus: <strong>ungetestet</strong>.</li>
-  <li><a id="MATTERDevice-attr-color_temp_min"></a><b>color_temp_min:</b>
-      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
-      (untere Farbtemperaturgrenze in Mired) steht jetzt im Reading <code>color_temp_min</code>.
-      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
-      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
-  <li><a id="MATTERDevice-attr-color_temp_max"></a><b>color_temp_max:</b>
-      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
-      (obere Farbtemperaturgrenze in Mired) steht jetzt im Reading <code>color_temp_max</code>.
-      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
-      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
-  <li><a id="MATTERDevice-attr-min_brightness"></a><b>min_brightness:</b>
-      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
-      (minimale LevelControl-Stufe) steht jetzt im Reading <code>min_brightness</code>.
-      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
-      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
-  <li><a id="MATTERDevice-attr-max_brightness"></a><b>max_brightness:</b>
-      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
-      (maximale LevelControl-Stufe) steht jetzt im Reading <code>max_brightness</code>.
-      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
-      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
-  <li><a id="MATTERDevice-attr-min_frequency"></a><b>min_frequency:</b>
-      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
-      (minimale LevelControl-Frequenz) steht jetzt im Reading <code>min_frequency</code>.
-      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
-      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
-  <li><a id="MATTERDevice-attr-max_frequency"></a><b>max_frequency:</b>
-      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
-      (maximale LevelControl-Frequenz) steht jetzt im Reading <code>max_frequency</code>.
-      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
-      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
-  <li><a id="MATTERDevice-attr-min_pin_code_length"></a><b>min_pin_code_length:</b>
-      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
-      (minimale PIN-Länge in Byte) steht jetzt im Reading <code>min_pin_code_length</code>.
-      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
-      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
-  <li><a id="MATTERDevice-attr-max_pin_code_length"></a><b>max_pin_code_length:</b>
-      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
-      (maximale PIN-Länge in Byte) steht jetzt im Reading <code>max_pin_code_length</code>.
-      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
-      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
-  <li><a id="MATTERDevice-attr-min_rfid_code_length"></a><b>min_rfid_code_length:</b>
-      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
-      (minimale RFID-Code-Länge in Byte) steht jetzt im Reading <code>min_rfid_code_length</code>.
-      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
-      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
-  <li><a id="MATTERDevice-attr-max_rfid_code_length"></a><b>max_rfid_code_length:</b>
-      <strong>Obsolet; ohne Wirkung.</strong> Die gemeldete Geräteinformation
-      (maximale RFID-Code-Länge in Byte) steht jetzt im Reading <code>max_rfid_code_length</code>.
-      Das Attribut wird nur zum Laden älterer Konfigurationen noch akzeptiert.
-      Es wird weder ins Reading kopiert noch automatisch gelöscht.</li>
 </ul>
 <h4>Gerätegrenzen als Readings und Umstieg von V0.20</h4>
 <p>Die folgenden normalen Readings entstehen aus akzeptierten Gerätemeldungen
@@ -3268,13 +3161,20 @@ Helligkeit und keine abgeleitete Prozentberechnung. Befehle benötigen weiterhin
 die angekündigten Matter-Befehle und Features. Während der Quarantäne berechnet
 nur ein akzeptierter CurrentLevel-Bericht den Prozentwert neu; Metadaten oder
 Grenzwerte dürfen manuelle Prozentwerte nicht aus alter Helligkeit überschreiben.</p>
-<p><b>Übergang:</b> Gespeicherte Attribute dieser zehn Namen bleiben erhalten,
-werden aber ignoriert. Sie gelten niemals als Gerätemeldung; alte manuelle
-Übersteuerungen beeinflussen Bedienelemente und Skalierung ab V0.21 nicht
-mehr. Obsolete Attribute nach Prüfung abhängiger Automationen und Sicherung
-noch benötigter Altwerte manuell entfernen. Es erfolgt keine automatische
-Löschung in der Konfiguration. Readings entstehen erst beim Empfang passender
-Daten. Ungültige/null Meldungen erhalten den letzten gültigen Reading-Wert;
+<p><b>Übergang:</b> Diese zehn Attributnamen sind ab V0.21 aus der
+<code>AttrList</code> entfernt; es gibt keine Kompatibilitäts- oder
+Migrationslogik. Automationen mit <code>AttrVal</code> prüfen und noch benötigte
+Altwerte sichern. Alte Übersteuerungen beeinflussen Bedienelemente und
+Skalierung nicht mehr. Vor dem Neustart mit V0.21 die Attribute entfernen und
+die Konfiguration speichern; andernfalls kann FHEM gespeicherte Attributzeilen
+beim Start zurückweisen. Jede Zeile einzeln in der <b>FHEM-Kommandozeile</b>
+ausführen:</p>
+<pre>deleteattr TYPE=MATTERDevice (color_temp_(min|max)|(min|max)_(brightness|frequency|pin_code_length|rfid_code_length))
+save</pre>
+<p>Der Befehl entfernt nur diese zehn Attribute an MATTERDevice-Geräten,
+keine Readings. Das Modul kopiert oder löscht keine Altwerte automatisch.
+Readings entstehen erst beim Empfang passender Daten. Ungültige/null Meldungen
+erhalten den letzten gültigen Reading-Wert;
 Offline-Sperre und Snapshot-Quarantäne gelten auch für Grenzen. Wiederhergestellte
 Readings sind gespeicherte Informationen und kein Beleg aktueller
 Erreichbarkeit. Hardwarestatus der Geräteklassen weiterhin
