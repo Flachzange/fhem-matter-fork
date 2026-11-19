@@ -2831,6 +2831,34 @@ Hardware validation: <strong>untested</strong>.</p>
 Device <code>rawReadings=1</code> exposes limited non-sensitive unmatched
 attributes. Both default to off, add no polling, retain existing readings
 on disable, and are <strong>untested</strong> on hardware.</p>
+<a name="MATTERDevice-diagnostic-readings"></a>
+<h4>Diagnostic readings</h4>
+<p>These readings are created only on the root (endpoint 0), with
+<code>diagnostics=1</code> set on that root and suitable reported attributes.
+They are not mirrored to child endpoints; setting <code>diagnostics</code>
+on a child endpoint has no effect.</p>
+<table>
+<tr><th>Reading</th><th>Meaning / unit</th></tr>
+<tr><td><code>thread_channel</code></td><td>Reported Thread radio channel.</td></tr>
+<tr><td><code>thread_role</code></td><td>Reported routing role: <code>unspecified</code>, <code>unassigned</code>, <code>sleepy_end_device</code>, <code>end_device</code>, <code>reed</code>, <code>router</code> or <code>leader</code>.</td></tr>
+<tr><td><code>thread_device_type</code></td><td>Derived from the role: <code>MTD</code> (Minimal Thread Device) for sleepy end devices; <code>MTD or FTD</code> for end devices; <code>FTD</code> (Full Thread Device) for REED, router and leader. This is not a separate device-type report.</td></tr>
+<tr><td><code>thread_network</code></td><td>Reported Thread network name.</td></tr>
+<tr><td><code>thread_neighbors</code></td><td>Number of entries in the reported neighbor table, including children. The displayed list can contain fewer entries.</td></tr>
+<tr><td><code>thread_neighbor_list</code></td><td>Up to 16 neighbors with usable RSSI, strongest first, with extended address, child/router label and RSSI in dBm; at most 600 characters. <code>none</code> means no usable entries in that report. The module labels every non-child as <code>router</code>.</td></tr>
+<tr><td><code>rssi</code></td><td>Strongest usable RSSI among neighbors not marked as children, in dBm. For each neighbor, average RSSI is preferred; last RSSI is used only if the average is absent/null. This does not identify the selected parent or the route used by a command.</td></tr>
+<tr><td><code>lqi</code></td><td>Reported link quality of the same neighbor selected for <code>rssi</code>, if supplied as 0&ndash;3; higher values indicate better quality. It is not selected independently from the strongest RSSI.</td></tr>
+<tr><td><code>wifi_rssi</code></td><td>Reported Wi-Fi RSSI in dBm, when Wi-Fi diagnostics are available.</td></tr>
+</table>
+<p>Enabling the attribute sends no request and does not replay previously
+received data. Updates use subsequent accepted server reports or snapshots;
+the device/server determines which attributes arrive and when. Normal offline
+and snapshot-quarantine protection also applies to diagnostic attributes.
+Snapshots may contain cached values, so these readings do not prove fresh
+physical-device contact. A reading is written only when its value changes;
+its timestamp therefore records a value change, not every received report.
+Missing or unusable values leave earlier readings unchanged, including old
+RSSI/LQI when a new neighbor table has no eligible neighbor. Disabling
+diagnostics preserves all existing readings.</p>
 <p>Native LevelControl dimming: <code>dim_up</code>, <code>dim_down</code>,
 <code>dim_step_up</code>, <code>dim_step_down</code> and <code>dim_stop</code>
 only when the corresponding commands are advertised. Optional per-device
@@ -3010,6 +3038,35 @@ Diagnose. <code>rawReadings=1</code> zeigt begrenzte, nicht sensitive
 unbekannte Attribute. Beides ist standardmäßig aus, verursacht kein Polling,
 löscht vorhandene Readings beim Abschalten nicht und ist an Hardware
 <strong>ungetestet</strong>.</p>
+<a name="MATTERDevice-diagnostic-readings_DE"></a>
+<h4>Diagnose-Readings</h4>
+<p>Diese Readings entstehen ausschließlich am Root (Endpoint 0), wenn dort
+<code>diagnostics=1</code> gesetzt ist und passende Attribute gemeldet werden.
+Sie werden nicht an die Kind-Endpunkte gespiegelt; <code>diagnostics</code>
+an einem Kind-Endpunkt hat keine Wirkung.</p>
+<table>
+<tr><th>Reading</th><th>Bedeutung / Einheit</th></tr>
+<tr><td><code>thread_channel</code></td><td>Gemeldeter Thread-Funkkanal.</td></tr>
+<tr><td><code>thread_role</code></td><td>Gemeldete Routing-Rolle: <code>unspecified</code>, <code>unassigned</code>, <code>sleepy_end_device</code>, <code>end_device</code>, <code>reed</code>, <code>router</code> oder <code>leader</code>.</td></tr>
+<tr><td><code>thread_device_type</code></td><td>Aus der Rolle abgeleitet: <code>MTD</code> (Minimal Thread Device) für Sleepy End Devices; <code>MTD or FTD</code> für End Devices; <code>FTD</code> (Full Thread Device) für REED, Router und Leader. Keine separate Gerätetypmeldung.</td></tr>
+<tr><td><code>thread_network</code></td><td>Gemeldeter Name des Thread-Netzes.</td></tr>
+<tr><td><code>thread_neighbors</code></td><td>Anzahl der Einträge in der gemeldeten Nachbartabelle einschließlich Children. Die dargestellte Liste kann weniger Einträge enthalten.</td></tr>
+<tr><td><code>thread_neighbor_list</code></td><td>Bis zu 16 Nachbarn mit verwertbarem RSSI, absteigend nach Signalstärke, mit Extended Address, Child-/Router-Kennzeichnung und RSSI in dBm; höchstens 600 Zeichen. <code>none</code> bedeutet keine verwertbaren Einträge in dieser Meldung. Das Modul bezeichnet jeden Nicht-Child als <code>router</code>.</td></tr>
+<tr><td><code>rssi</code></td><td>Stärkster verwertbarer RSSI unter den nicht als Child markierten Nachbarn, in dBm. Je Nachbar wird der Durchschnitts-RSSI bevorzugt; nur bei fehlendem/null Durchschnitt wird der letzte RSSI verwendet. Daraus lässt sich weder der gewählte Parent noch der Übertragungsweg eines Befehls bestimmen.</td></tr>
+<tr><td><code>lqi</code></td><td>Gemeldete Verbindungsqualität desselben für <code>rssi</code> gewählten Nachbarn, sofern als 0&ndash;3 geliefert; höhere Werte bedeuten bessere Qualität. Keine vom stärksten RSSI unabhängige Auswahl.</td></tr>
+<tr><td><code>wifi_rssi</code></td><td>Gemeldeter WLAN-RSSI in dBm, sofern WLAN-Diagnosedaten verfügbar sind.</td></tr>
+</table>
+<p>Das Einschalten sendet keine Abfrage und verarbeitet bereits empfangene
+Daten nicht erneut. Aktualisierungen nutzen anschließend akzeptierte
+Servermeldungen oder Snapshots; Gerät und Server bestimmen Datenumfang und
+Zeitpunkt. Die normale Offline-Sperre und Snapshot-Quarantäne gelten auch für
+Diagnoseattribute. Snapshots können zwischengespeicherte Werte enthalten;
+diese Readings belegen deshalb keinen frischen Kontakt zum physischen Gerät.
+Ein Reading wird nur bei einer Wertänderung geschrieben; sein Zeitstempel
+zeigt daher eine Wertänderung und nicht jede empfangene Meldung an. Fehlende
+oder unverwertbare Werte lassen ältere Readings unverändert, auch alte
+RSSI-/LQI-Werte bei einer neuen Nachbartabelle ohne geeigneten Nachbarn.
+Das Abschalten erhält alle vorhandenen Readings.</p>
 <p>Natives LevelControl-Dimmen: <code>dim_up</code>, <code>dim_down</code>,
 <code>dim_step_up</code>, <code>dim_step_down</code> und <code>dim_stop</code>
 nur bei gemeldeten Befehlen. <code>dimRate</code> (1–254, Standard 30) legt
