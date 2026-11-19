@@ -2697,7 +2697,7 @@ sub MATTERDevice_GetOrCreateChild($$) {
 
 =begin html
 
-<a name="MATTERDevice"></a>
+<a id="MATTERDevice" name="MATTERDevice"></a>
 <h3>MATTERDevice</h3>
 <p>A MATTERDevice represents a Matter node (root endpoint 0) or one of its
 additional endpoints. It uses the assigned MATTER IO device to receive attribute
@@ -2787,6 +2787,97 @@ The server's advertised metadata is not proof of a fresh physical interview.</li
       power and cumulative energy clusters, where the server supplies the
       corresponding attributes.</li>
 </ul>
+<h4>Attributes</h4>
+<p>Select an attribute in FHEMWEB to show its description. Device-reported
+limits below are copied to FHEM attributes only when unset; existing values
+are preserved. Editing them changes local FHEM metadata, not the device's
+physical limits or advertised command support.</p>
+<ul>
+  <li><a id="MATTERDevice-attr-IODev"></a><b>IODev:</b> Name of the
+      <code>MATTER</code> IO device providing the server connection for this
+      node/endpoint. Autocreated devices receive the discovering IO; manually
+      defined roots use FHEM's IO assignment when no IO is specified.
+      With multiple servers, select the correct IO explicitly: node IDs are
+      specific to their server.</li>
+  <li><a id="MATTERDevice-attr-dimRate"></a><b>dimRate:</b> Integer
+      <code>1</code>–<code>254</code>, default <code>30</code>. Native
+      LevelControl move rate in level units per second for the next
+      <code>dim_up</code> / <code>dim_down</code> command on this endpoint.
+      Does not change the fixed step size of <code>dim_step_up/down</code>
+      or add a FHEM timer. Native dimming hardware validation:
+      <strong>untested</strong>.</li>
+  <li><a id="MATTERDevice-attr-diagnostics"></a><b>diagnostics (0/1):</b>
+      Default <code>0</code>. Set <code>1</code> on the root (endpoint 0)
+      to process already received Thread/Wi-Fi diagnostic reports, such as
+      role, channel, neighbors and RSSI. Has no effect on child endpoints.
+      Adds no polling or extra reads. Setting <code>0</code> or removing
+      the attribute stops updates without deleting existing readings.
+      Hardware validation: <strong>untested</strong>.</li>
+  <li><a id="MATTERDevice-attr-rawReadings"></a><b>rawReadings (0/1):</b>
+      Default <code>0</code>. Set <code>1</code> on the receiving root or
+      endpoint to expose otherwise unmapped attributes as
+      <code>raw_&lt;endpoint&gt;_&lt;cluster&gt;_&lt;attribute&gt;</code> readings.
+      Values longer than 512 characters, global metadata and selected
+      sensitive administration clusters are excluded. This is not a complete
+      dump or a guarantee that all device information is non-sensitive.
+      Adds no polling; disabling retains existing readings. Hardware
+      validation: <strong>untested</strong>.</li>
+  <li><a id="MATTERDevice-attr-color_temp_min"></a><b>color_temp_min:</b>
+      Integer lower color-temperature bound in mired for the
+      <code>ct</code> color picker; lower mired means higher Kelvin.
+      Initialized from ColorControl's reported physical minimum when
+      available. The picker uses this value only with usable matching
+      attribute metadata; otherwise, or when unset, it uses <code>153</code>.
+      Does not clamp manually entered <code>ct</code> commands.</li>
+  <li><a id="MATTERDevice-attr-color_temp_max"></a><b>color_temp_max:</b>
+      Integer upper color-temperature bound in mired for the
+      <code>ct</code> color picker; higher mired means lower Kelvin.
+      Initialized from ColorControl's reported physical maximum when
+      available. The picker uses this value only with usable matching
+      attribute metadata; otherwise, or when unset, it uses <code>500</code>.
+      Does not clamp manually entered <code>ct</code> commands.</li>
+  <li><a id="MATTERDevice-attr-min_brightness"></a><b>min_brightness:</b>
+      Device-reported integer LevelControl minimum level, in native level
+      units rather than percent. No fixed default. Stored as local metadata;
+      currently does not set the slider minimum or clamp commands. The
+      <code>brightness</code> slider starts at <code>0</code>.</li>
+  <li><a id="MATTERDevice-attr-max_brightness"></a><b>max_brightness:</b>
+      Integer <code>1</code>–<code>254</code> in native level units, default
+      <code>254</code>. Initialized from the reported LevelControl maximum.
+      With usable matching attribute metadata it sets the
+      <code>brightness</code> slider maximum and the scale for percent/RGB
+      conversion; otherwise the module uses <code>254</code>. Invalid local
+      values also fall back to <code>254</code>. This is not a physical
+      brightness limit enforced on the device.</li>
+  <li><a id="MATTERDevice-attr-min_frequency"></a><b>min_frequency:</b>
+      Device-reported integer LevelControl minimum frequency (unconverted
+      Matter value), unrelated to Thread/Wi-Fi radio channels. Sets the <code>frequency</code> slider
+      minimum only with usable matching attribute metadata; otherwise, or
+      when unset, the slider uses <code>50</code>. Does not clamp manually
+      entered commands or enable unsupported commands.</li>
+  <li><a id="MATTERDevice-attr-max_frequency"></a><b>max_frequency:</b>
+      Device-reported integer LevelControl maximum frequency (unconverted
+      Matter value), unrelated to Thread/Wi-Fi radio channels. Sets the <code>frequency</code> slider
+      maximum only with usable matching attribute metadata; otherwise, or
+      when unset, the slider uses <code>60</code>. Does not clamp manually
+      entered commands or enable unsupported commands.</li>
+  <li><a id="MATTERDevice-attr-min_pin_code_length"></a><b>min_pin_code_length:</b>
+      Device-reported integer DoorLock minimum PIN length. No fixed default;
+      unset until reported or configured. Local metadata only: PIN/user
+      management and length enforcement are not implemented.</li>
+  <li><a id="MATTERDevice-attr-max_pin_code_length"></a><b>max_pin_code_length:</b>
+      Device-reported integer DoorLock maximum PIN length. No fixed default;
+      unset until reported or configured. Local metadata only: PIN/user
+      management and length enforcement are not implemented.</li>
+  <li><a id="MATTERDevice-attr-min_rfid_code_length"></a><b>min_rfid_code_length:</b>
+      Device-reported integer DoorLock minimum RFID code length. No fixed
+      default; unset until reported or configured. Local metadata only:
+      RFID credential management and length enforcement are not implemented.</li>
+  <li><a id="MATTERDevice-attr-max_rfid_code_length"></a><b>max_rfid_code_length:</b>
+      Device-reported integer DoorLock maximum RFID code length. No fixed
+      default; unset until reported or configured. Local metadata only:
+      RFID credential management and length enforcement are not implemented.</li>
+</ul>
 <h4>Hardware validation status</h4>
 <p>The following classes are implemented but have no class-wide hardware validation
 recorded in this repository. <strong>untested</strong> refers to missing documented
@@ -2866,7 +2957,7 @@ Decommissioned devices are retained in FHEM rather than automatically deleted.</
 
 =begin html_DE
 
-<a name="MATTERDevice"></a>
+<a id="MATTERDevice" name="MATTERDevice"></a>
 <h3>MATTERDevice</h3>
 <p>Ein MATTERDevice repräsentiert einen Matter-Knoten (Root-Endpunkt 0) oder einen
 seiner weiteren Endpunkte. Über das zugeordnete MATTER-IO-Device empfängt es
@@ -2963,6 +3054,102 @@ Server-Metadaten beweisen keine neue physische Geräteabfrage.</li>
       Kohlenmonoxidkonzentration, elektrische Leistung und kumulierte Energie,
       soweit die Geräte die jeweiligen Attribute liefern.</li>
 </ul>
+<h4>Attribute</h4>
+<p>Bei Auswahl eines Attributs in FHEMWEB erscheint dessen Beschreibung.
+Die folgenden gemeldeten Gerätegrenzen werden nur in noch ungesetzte
+FHEM-Attribute übernommen; vorhandene Werte bleiben erhalten. Änderungen
+betreffen lokale FHEM-Metadaten, nicht die physischen Gerätegrenzen oder
+die vom Gerät angebotenen Befehle.</p>
+<ul>
+  <li><a id="MATTERDevice-attr-IODev"></a><b>IODev:</b> Name des
+      <code>MATTER</code>-IO-Devices mit der Serververbindung für diesen
+      Knoten/Endpunkt. Automatisch angelegte Geräte erhalten das erkennende IO;
+      manuell definierte Roots verwenden ohne Angabe FHEMs IO-Zuordnung.
+      Bei mehreren Servern das richtige IO ausdrücklich wählen: Node-IDs
+      gelten jeweils nur innerhalb ihres Servers.</li>
+  <li><a id="MATTERDevice-attr-dimRate"></a><b>dimRate:</b> Ganzzahl
+      <code>1</code>–<code>254</code>, Standard <code>30</code>. Native
+      LevelControl-Geschwindigkeit in Level-Einheiten pro Sekunde für den
+      nächsten Befehl <code>dim_up</code> / <code>dim_down</code> dieses
+      Endpunkts. Verändert weder die feste Schrittweite von
+      <code>dim_step_up/down</code> noch erzeugt es einen FHEM-Timer.
+      Hardwarestatus für natives Dimmen: <strong>ungetestet</strong>.</li>
+  <li><a id="MATTERDevice-attr-diagnostics"></a><b>diagnostics (0/1):</b>
+      Standard <code>0</code>. Mit <code>1</code> am Root (Endpunkt 0)
+      bereits empfangene Thread-/WLAN-Diagnosemeldungen verarbeiten,
+      beispielsweise Rolle, Kanal, Nachbarn und RSSI. An untergeordneten
+      Endpunkten ohne Wirkung. Keine zusätzlichen Abfragen und kein Polling.
+      <code>0</code> oder das Löschen des Attributs beendet die Aktualisierung;
+      vorhandene Readings bleiben erhalten. Hardwarestatus:
+      <strong>ungetestet</strong>.</li>
+  <li><a id="MATTERDevice-attr-rawReadings"></a><b>rawReadings (0/1):</b>
+      Standard <code>0</code>. Mit <code>1</code> am empfangenden Root oder
+      Endpunkt sonst nicht zugeordnete Attribute als
+      <code>raw_&lt;Endpunkt&gt;_&lt;Cluster&gt;_&lt;Attribut&gt;</code>-Readings
+      ausgeben. Werte über 512 Zeichen, globale Metadaten und ausgewählte
+      sensitive Verwaltungscluster sind ausgeschlossen. Kein vollständiger
+      Dump und keine Garantie, dass sämtliche Geräteinformationen unkritisch
+      sind. Kein Polling; Abschalten erhält vorhandene Readings.
+      Hardwarestatus: <strong>ungetestet</strong>.</li>
+  <li><a id="MATTERDevice-attr-color_temp_min"></a><b>color_temp_min:</b>
+      Ganzzahlige untere Farbtemperaturgrenze in Mired für den
+      <code>ct</code>-Farbwähler; kleinere Mired-Werte bedeuten höhere Kelvin.
+      Wird, soweit verfügbar, aus dem gemeldeten physischen ColorControl-Minimum
+      vorbelegt. Der Farbwähler nutzt den Wert nur bei nutzbaren zugehörigen
+      Attributmetadaten; andernfalls oder ohne gesetzten Wert gilt
+      <code>153</code>. Begrenzt manuell eingegebene <code>ct</code>-Befehle nicht.</li>
+  <li><a id="MATTERDevice-attr-color_temp_max"></a><b>color_temp_max:</b>
+      Ganzzahlige obere Farbtemperaturgrenze in Mired für den
+      <code>ct</code>-Farbwähler; größere Mired-Werte bedeuten niedrigere Kelvin.
+      Wird, soweit verfügbar, aus dem gemeldeten physischen ColorControl-Maximum
+      vorbelegt. Der Farbwähler nutzt den Wert nur bei nutzbaren zugehörigen
+      Attributmetadaten; andernfalls oder ohne gesetzten Wert gilt
+      <code>500</code>. Begrenzt manuell eingegebene <code>ct</code>-Befehle nicht.</li>
+  <li><a id="MATTERDevice-attr-min_brightness"></a><b>min_brightness:</b>
+      Vom Gerät gemeldetes ganzzahliges LevelControl-Minimum in nativen
+      Level-Einheiten, nicht Prozent. Kein fester Standardwert. Dient derzeit
+      nur als lokale Metadaten; verändert weder das Slider-Minimum noch
+      begrenzt es Befehle. Der <code>brightness</code>-Slider beginnt bei
+      <code>0</code>.</li>
+  <li><a id="MATTERDevice-attr-max_brightness"></a><b>max_brightness:</b>
+      Ganzzahl <code>1</code>–<code>254</code> in nativen Level-Einheiten,
+      Standard <code>254</code>. Wird aus dem gemeldeten LevelControl-Maximum
+      vorbelegt. Bei nutzbaren zugehörigen Attributmetadaten bestimmt der Wert
+      das Maximum des <code>brightness</code>-Sliders und die Skalierung der
+      Prozent-/RGB-Umrechnung; andernfalls nutzt das Modul <code>254</code>.
+      Auch ungültige lokale Werte führen zum Ersatzwert <code>254</code>.
+      Keine geräteseitig durchgesetzte physische Helligkeitsgrenze.</li>
+  <li><a id="MATTERDevice-attr-min_frequency"></a><b>min_frequency:</b>
+      Vom Gerät gemeldete ganzzahlige LevelControl-Mindestfrequenz (Matter-Rohwert),
+      unabhängig von Thread-/WLAN-Funkkanälen. Bestimmt nur bei nutzbaren
+      zugehörigen Attributmetadaten das Minimum des <code>frequency</code>-Sliders;
+      andernfalls oder ohne gesetzten Wert gilt <code>50</code>. Begrenzt
+      manuell eingegebene Befehle nicht und aktiviert keine ununterstützten Befehle.</li>
+  <li><a id="MATTERDevice-attr-max_frequency"></a><b>max_frequency:</b>
+      Vom Gerät gemeldete ganzzahlige LevelControl-Höchstfrequenz (Matter-Rohwert),
+      unabhängig von Thread-/WLAN-Funkkanälen. Bestimmt nur bei nutzbaren
+      zugehörigen Attributmetadaten das Maximum des <code>frequency</code>-Sliders;
+      andernfalls oder ohne gesetzten Wert gilt <code>60</code>. Begrenzt
+      manuell eingegebene Befehle nicht und aktiviert keine ununterstützten Befehle.</li>
+  <li><a id="MATTERDevice-attr-min_pin_code_length"></a><b>min_pin_code_length:</b>
+      Vom DoorLock-Cluster gemeldete ganzzahlige PIN-Mindestlänge. Kein fester
+      Standardwert; bis zur Meldung oder manuellen Angabe ungesetzt. Nur lokale
+      Metadaten: PIN-/Benutzerverwaltung und Längenprüfung sind nicht implementiert.</li>
+  <li><a id="MATTERDevice-attr-max_pin_code_length"></a><b>max_pin_code_length:</b>
+      Vom DoorLock-Cluster gemeldete ganzzahlige PIN-Höchstlänge. Kein fester
+      Standardwert; bis zur Meldung oder manuellen Angabe ungesetzt. Nur lokale
+      Metadaten: PIN-/Benutzerverwaltung und Längenprüfung sind nicht implementiert.</li>
+  <li><a id="MATTERDevice-attr-min_rfid_code_length"></a><b>min_rfid_code_length:</b>
+      Vom DoorLock-Cluster gemeldete ganzzahlige RFID-Code-Mindestlänge. Kein
+      fester Standardwert; bis zur Meldung oder manuellen Angabe ungesetzt.
+      Nur lokale Metadaten: RFID-Zugangsdatenverwaltung und Längenprüfung
+      sind nicht implementiert.</li>
+  <li><a id="MATTERDevice-attr-max_rfid_code_length"></a><b>max_rfid_code_length:</b>
+      Vom DoorLock-Cluster gemeldete ganzzahlige RFID-Code-Höchstlänge. Kein
+      fester Standardwert; bis zur Meldung oder manuellen Angabe ungesetzt.
+      Nur lokale Metadaten: RFID-Zugangsdatenverwaltung und Längenprüfung
+      sind nicht implementiert.</li>
+</ul>
 <h4>Hardware-Teststatus</h4>
 <p>Die folgenden Geräteklassen sind implementiert, aber es liegt im Repository
 kein klassenweiter Hardware-Nachweis vor. <strong>ungetestet</strong> bedeutet:
@@ -3041,5 +3228,5 @@ eigene Gruppen bleiben erhalten. Die Root-Detailansicht verlinkt die Endpunkte.<
 <p>Nur neu automatisch erzeugte Geräte werden dem Raum <code>Matter</code>
 zugeordnet. Entfernte Geräte bleiben in FHEM erhalten.</p>
 
-=end html
+=end html_DE
 =cut
