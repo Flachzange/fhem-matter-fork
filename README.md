@@ -245,6 +245,12 @@ engine.
   an advertised Identify command.
 - `attr <root> diagnostics 1` enables passive Thread and Wi-Fi diagnostic
   readings, including roles, channels, neighbors and received signal levels.
+  These readings exist only on the root and are not mirrored to endpoints.
+  The German/English commandref's **Diagnostic readings / Diagnose-Readings**
+  section in [97_MATTERDevice.pm](FHEM/97_MATTERDevice.pm)
+  lists all nine readings, units, RSSI/LQI selection and freshness limits.
+  Enabling diagnostics sends no request; reading timestamps advance only
+  when values change, and snapshots may contain cached server data.
   `attr <endpoint> rawReadings 1` permits bounded additional readings for
   otherwise unmapped attributes. Both attributes are off by default.
   Deactivating them stops new diagnostic updates but does not delete existing
