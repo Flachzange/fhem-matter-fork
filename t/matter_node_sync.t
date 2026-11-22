@@ -2776,6 +2776,85 @@ MATTERDevice_Parse($dr, encode_json({
 is(ReadingsVal($dr->{NAME}, 'wifi_rssi', ''), -67,
    'disable stops updating diagnostics without deleting old data');
 
+subtest 'Issue #35 passive diagnostics and raw boundaries' => sub {
+    my $node = 3501;
+    my ($primary, $other) = @defs{qw(ioA ioB)};
+    for my $pair ([$primary, 'DiagFirst'], [$other, 'DiagSecond']) {
+        my ($io, $name) = @$pair;
+        MATTER_ProcessNode($io, {node_id => $node, name => $name, available => JSON::true,
+            attributes => {'0/54/4' => -63, '1/987/3' => 'initial'}});
+        CommandAttr(undef, "MATTER_${name} diagnostics 1");
+        CommandAttr(undef, "MATTER_${name}_EP1 rawReadings 1");
+        MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {
+            node_id => $node, available => JSON::true,
+            attributes => {'0/54/4' => -63, '1/987/3' => 'baseline'},
+        }}));
+    }
+    my $report = sub {
+        my ($path, $value) = @_;
+        MATTER_ParseMessage($primary, encode_json({event => 'attribute_updated',
+            data => [$node, $path, $value]}));
+    };
+    my $root = 'MATTER_DiagFirst';
+    my $ep = 'MATTER_DiagFirst_EP1';
+    $report->('0/54/4', -47);
+    for my $bad (undef, {}, -129, 1, 'invalid') {
+        $report->('0/54/4', $bad);
+        is(ReadingsVal($root, 'wifi_rssi', ''), -47, 'invalid RSSI preserves last valid report');
+    }
+    is(ReadingsVal('MATTER_DiagSecond', 'wifi_rssi', ''), -63, 'other IO retains snapshot RSSI');
+    my @rows = map { {extAddress => "n$_", averageRssi => -$_, isChild => JSON::false} } 1..17;
+    $report->('0/53/7', [reverse @rows]);
+    is(ReadingsVal($root, 'thread_neighbors', -1), 17, 'count includes all neighbors');
+    is(ReadingsVal($root, 'thread_neighbor_list', ''), join(', ', map {"n$_ (router, -$_ dBm)"} 1..16),
+       'list contains exactly the strongest sixteen in signal order');
+    my @long = map { {extAddress => 'a' x 24, averageRssi => -$_} } 1..16;
+    $report->('0/53/7', \@long);
+    is(length(ReadingsVal($root, 'thread_neighbor_list', '')), 600, 'formatted list capped at 600 characters');
+    $report->('0/53/7', [($rows[0]) x 256]);
+    is(ReadingsVal($root, 'thread_neighbors', -1), 256, '256 rows accepted');
+    my $list = ReadingsVal($root, 'thread_neighbor_list', '');
+    for my $invalid (undef, {}, [($rows[-1]) x 257]) {
+        $report->('0/53/7', $invalid);
+        is(ReadingsVal($root, 'thread_neighbors', -1), 256, 'invalid table preserves count');
+        is(ReadingsVal($root, 'thread_neighbor_list', ''), $list, 'invalid table preserves list');
+        is(ReadingsVal($root, 'rssi', ''), -1, 'invalid table preserves RSSI');
+    }
+    $report->('0/53/7', []);
+    is(ReadingsVal($root, 'thread_neighbors', -1), 0, 'empty table clears count');
+    is(ReadingsVal($root, 'thread_neighbor_list', ''), 'none', 'empty table clears list');
+
+    my $limit = 'x' x 512;
+    $report->('1/987/3', $limit);
+    is(ReadingsVal($ep, 'raw_1_987_3', ''), $limit, '512-character scalar accepted');
+    for my $invalid (undef, $limit . 'x') {
+        $report->('1/987/3', $invalid);
+        is(ReadingsVal($ep, 'raw_1_987_3', ''), $limit, 'null or oversized raw value preserves reading');
+    }
+    my $unicode = chr(0x20ac) x 512;
+    $report->('1/987/3', $unicode);
+    is(ReadingsVal($ep, 'raw_1_987_3', ''), $unicode, 'scalar limit counts characters');
+    $report->('1/987/3', [$unicode]);
+    is(ReadingsVal($ep, 'raw_1_987_3', ''), $unicode, 'encoded structure exceeds byte limit');
+    my $string = 'x' x 508;
+    $report->('1/987/3', [$string]);
+    is(ReadingsVal($ep, 'raw_1_987_3', ''), encode_json([$string]), '512-byte JSON array accepted');
+    $report->('1/987/3', [$string . 'x']);
+    is(ReadingsVal($ep, 'raw_1_987_3', ''), encode_json([$string]), '513-byte JSON array ignored');
+    is(ReadingsVal('MATTER_DiagSecond_EP1', 'raw_1_987_3', ''), 'baseline', 'raw reading isolated by IO');
+    for my $cluster (31, 48, 49, 60, 62, 63, 64, 65) {
+        $report->("1/$cluster/234", 'probe');
+        ok(!exists $defs{$ep}{READINGS}{"raw_1_${cluster}_234"}, "cluster $cluster excluded");
+    }
+    $report->('1/987/65519', 0);
+    is(ReadingsVal($ep, 'raw_1_987_65519', ''), 0, 'unmapped zero below global boundary retained');
+    $report->('1/987/65520', 1);
+    ok(!exists $defs{$ep}{READINGS}{raw_1_987_65520}, 'global boundary excluded');
+    CommandAttr(undef, "$ep rawReadings 0");
+    $report->('1/987/3', 'changed');
+    is(ReadingsVal($ep, 'raw_1_987_3', ''), encode_json([$string]), 'disabling raw retains cached value');
+};
+
 # Issue #28: passive ICD detection, LIT gating, explicit ICD query and
 # asynchronous correlation. Never infer awake status from availability.
 MATTER_ProcessNode($defs{ioA}, {

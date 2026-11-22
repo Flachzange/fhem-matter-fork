@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-22  Tests/documentation (#35): clarify raw reading exclusions and per-value limits. Cover diagnostic table boundaries, invalid reports and isolation between Matter IOs.
+
 - 2026-11-22  MATTER IO/Device V0.26 (draft): consolidate all device-command and attribute-write sends, IDs, ownership and reply/timeout/disconnect completion in a shared request path. Permit overlapping everyday setters/writes; retain each response association while only the latest setter publishes lastError. Aggregate RGB level/color results without hiding component failure. Accept successful device-command replies with any result value. Preserve API-specific write status/path validation, report-only physical readings and existing OTA/ICD administrative policies. Validate native dim arguments/rate and retain regular/WithOnOff selection, native steps and immediate Stop. Update DE/EN documentation, evidence and targeted all-setter/lifecycle regression tests; no extra polling, dim timers or retries. Real hardware remains untested.
 
 - 2026-11-22  MATTER IO/Device V0.25 (draft): add feature-gated desired-temp-cool writes; constrain thermostat/fan mode choices using standard writable targets, FeatureMap and operation/mode sequences, shared by FHEMWEB and explicit setters. Replace the arbitrary heating slider with Celsius text inputs. Correlate write status lists with the requested attribute path and reject nonzero/malformed/mismatched results; retain existing null acknowledgements and report-only telemetry. Keep bounded global metadata recovery aware of missing HVAC features. Add focused regression coverage and DE/EN documentation; hardware remains untested.
