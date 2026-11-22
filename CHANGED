@@ -1,1 +1,1 @@
-2026-11-18  MATTER IO/Device V0.20: expose per-device receive time, last input IO and message counters; count server reception once per root/addressed endpoint without additional reading events.
+2026-11-19  MATTER IO/Device V0.21: device limits are endpoint readings; old limit attributes are removed without compatibility; remove saved attributes before restart. CT/frequency controls use reported boundaries or text input; brightness scaling uses device metadata. Review manual overrides and AttrVal automations before updating; save configuration after cleanup.

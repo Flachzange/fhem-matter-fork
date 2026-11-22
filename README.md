@@ -193,15 +193,49 @@ The available commands depend on the endpoint's reported clusters and commands. 
 
 Supported MATTER IO attributes include `disable:0,1`, `autocreate:0,1` (default `1`) and `commissionMode:network,auto` (default `network`). Setting `autocreate` to `0` prevents newly discovered FHEM root/endpoint devices from being created; it does not delete Matter-server nodes or stop updates to existing FHEM devices. `commissionMode` affects subsequent `commissionCode` requests without an explicit mode.
 
-MATTERDevice attributes include `IODev`, optional `diagnostics` / `rawReadings`, `dimRate`, and separate device-specific level/color limits. Commands are offered only when the endpoint advertises them in its Matter `AcceptedCommandList` and satisfies the relevant `FeatureMap` / `ClusterRevision` constraints. Old `has_*` settings no longer enable or disable commands; they are not automatically created or deleted. After restart, control commands may be temporarily absent until the Matter server reports command metadata. **Upgrade note:** review and remove saved `has_*` attributes **before restarting into V0.18**. FHEM no longer recognizes them in the module `AttrList` and may reject those lines when restoring `fhem.cfg` or configDB. No automatic migration deletes old user settings. After the manual cleanup, save the configuration as usual.
+MATTERDevice attributes include `IODev`, optional `diagnostics` / `rawReadings`, `dimRate`; device limits are readings rather than attributes. Commands are offered only when the endpoint advertises them in its Matter `AcceptedCommandList` and satisfies the relevant `FeatureMap` / `ClusterRevision` constraints. Old `has_*` settings no longer enable or disable commands; they are not automatically created or deleted. After restart, control commands may be temporarily absent until the Matter server reports command metadata. **Upgrade note:** review and remove saved `has_*` attributes **before restarting into V0.18**. FHEM no longer recognizes them in the module `AttrList` and may reject those lines when restoring `fhem.cfg` or configDB. No automatic migration deletes old user settings. After the manual cleanup, save the configuration as usual.
 
-Selecting a module-specific attribute in FHEMWEB displays its inline commandref
-description, including defaults, scope and applicable units, in German or English.
-Reported device limits are initialized only when the corresponding FHEM attribute
-is unset; editing them changes local metadata, not the physical device's limits.
-Some limits only affect a control's displayed range, and PIN/RFID lengths are
-informational because credential management is not implemented. The individual
-attribute help describes these differences.
+Selecting a module-specific attribute in FHEMWEB displays its German/English
+inline commandref help. Active MATTERDevice settings are `IODev`, `dimRate`,
+`diagnostics` and `rawReadings`.
+
+**V0.21 transition: device limits are readings.** The ten names
+`min_brightness`, `max_brightness`, `min_frequency`, `max_frequency`,
+`color_temp_min`, `color_temp_max`, `min_pin_code_length`, `max_pin_code_length`,
+`min_rfid_code_length` and `max_rfid_code_length` are populated from received
+device data and updated as ordinary endpoint readings. No old attribute value
+is copied into a reading. The ten attribute declarations are removed entirely;
+there is no compatibility or automatic migration. Review automations using
+`AttrVal` and retain any old settings needed for reference: manual overrides
+no longer affect controls or scaling.
+
+**Before restarting into V0.21**, remove saved limit attributes and save the
+configuration. Otherwise FHEM may reject their lines while restoring
+`fhem.cfg` or configDB. Execute each line separately in the **FHEM command
+line**, not in the DEF editor or a shell:
+
+```text
+deleteattr TYPE=MATTERDevice (color_temp_(min|max)|(min|max)_(brightness|frequency|pin_code_length|rfid_code_length))
+save
+```
+
+This removes only the ten retired attributes from MATTERDevice devices;
+readings and other attributes remain unchanged. The module does not delete
+user configuration automatically.
+
+CT and frequency controls use valid reported boundaries; when boundaries are
+missing, undefined, reversed or excluded by metadata, their supported command
+remains available with a text field instead of a colorpicker/slider. No 153–500
+or 50–60 device range is assumed. Lighting uses the Matter maximum level 254;
+other LevelControl endpoints use a usable reported maximum, with protocol
+fallback 254. Brightness, percentage and RGB use the same scale. PIN/RFID lengths
+are informational bytes, not a new credential-management feature. Limits obey
+normal snapshot freshness and offline quarantine rules. During quarantine only
+an accepted brightness report recalculates percentage; limit/metadata recovery
+cannot overwrite manual percentage edits using old brightness. Readings survive ordinary
+statefile/configDB restoration. No new polling or automatic reads are added.
+See the embedded DE/EN commandref for per-reading details and
+[protocol evidence](docs/device-limits.md) for source references and test scope.
 
 ## Known limitations
 
