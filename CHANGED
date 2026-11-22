@@ -1,1 +1,1 @@
-2026-11-22  MATTER IO/Device V0.26: validate native dimming arguments and correlate server replies. Report dim errors/timeouts in lastError; send Stop without waiting for Move. Preserve device-reported brightness and state; no extra polling or dim timers.
+2026-11-22  MATTER IO/Device V0.26: unify response correlation for all device commands and attribute writes. Allow overlapping setters; older replies cannot overwrite newer status. Preserve RGB component errors and reported device state. Validate native dim arguments; no extra polling or retries.

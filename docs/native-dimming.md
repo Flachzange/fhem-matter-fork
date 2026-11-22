@@ -26,26 +26,14 @@ Matter 1.4 cluster definition; no guessed OnOff feature gate is added.
 
 ## Responses and failure semantics
 
-Only these five FHEM dim commands join the existing asynchronous request
-registry. The IO parser correlates message_id, IO, FUUID, node and endpoint.
-Server errors and unexpected responses go to the endpoint's existing
-`lastError`. A result of null acknowledges these status-only commands and
-sets lastError to none; it does not confirm movement or a particular level.
-Physical state, brightness and pct still come solely from device reports.
-The SetFn list-context return suppresses FHEM's synthetic command event.
-
-After a newer dim request has been enqueued, response tracking for an older
-dim request on the same endpoint is discarded. This bounds pending state
-and prevents an older reply from clearing the latest error. It does not
-cancel a hardware command or guarantee device execution order. Stop is
-always sent without waiting for a pending Move/Step response. Failed enqueue
-returns an immediate error and retains the older pending request if the IO
-stays connected. Independent endpoints and IOs retain separate requests.
-
-The existing heartbeat checks the 120-second request timeout; no extra timer
-is created. Timeout or IO loss produces an unknown outcome, never an assumed
-Stop. Late/disconnected replies are ignored; reconnect sends no replay,
-automatic Stop, polling or readback. There is no persistent motion flag.
+These commands use the [shared device request path](device-requests.md),
+exactly like on/off, colors, coverings, locks, Identify and attribute writes.
+Each request remains independently correlated until response/timeout/IO loss.
+A pending Move does not block Stop. Only the latest setter changes lastError;
+older replies are still handled and retired, without overwriting that result.
+Null acknowledges a status-only command; physical state/brightness/pct require
+actual device reports. No persistent motion flag, polling, extra timer, replay
+or automatic Stop is added.
 
 ## Inspected sources, 2026-11-22
 
@@ -71,13 +59,13 @@ automatic Stop, polling or readback. There is no persistent motion flag.
 
 ## Verification and limits
 
-The full suite passes 887 top-level entries, including 169 focused dimming
-assertions. Separate temporary-copy negative controls fail when argument
-validation or dim reply correlation is removed. Modeled FHEM callbacks
-exercise real module setters/parsers, socket-backed IOs and an injected
-WebSocket response. Tests cover regular/WithOnOff preference,
+The full suite passes 888 top-level entries, including 170 focused native
+variant/lifecycle assertions and 249 shared request assertions. Modeled FHEM
+callbacks exercise real module setters/parsers, socket-backed IOs and an
+injected WebSocket response. Tests cover regular/WithOnOff preference,
 partial/replaced command lists, exact payloads, argument/rate rejection and
 boundaries, Move followed immediately by Stop, delayed/malformed/error replies,
 failed enqueue, timeout, reconnect, endpoint/IO isolation and report-only state.
+All-setter correlation and compound RGB results are documented separately.
 No physical dimmable device, running FHEM/configDB or installed Matter server
 was exercised. Hardware behavior remains **ungetestet / untested**.

@@ -1138,7 +1138,7 @@ sub MATTERDevice_Set($$@) {
 
         if ($can_onoff) {
             $payload = {
-                message_id => MATTER_NextMessageId($io_hash),
+
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
@@ -1150,7 +1150,7 @@ sub MATTERDevice_Set($$@) {
         }
         elsif ($can_wc) {
             $payload = {
-                message_id => MATTER_NextMessageId($io_hash),
+
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
@@ -1163,7 +1163,6 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "toggle") {
         $payload = {
-            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id     => $node_id,
@@ -1200,7 +1199,6 @@ sub MATTERDevice_Set($$@) {
         return "Unknown EffectVariant '$variant_name' for $effect_name" if (!exists($effect_variant{$effect_name}{$variant_name}));
 
         $payload = {
-            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -1216,7 +1214,6 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "on_with_recall_global_scene") {
         $payload = {
-            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -1240,7 +1237,6 @@ sub MATTERDevice_Set($$@) {
         return "offWaitTime must be between 0 and 65534 (0.1 s units)" if ($off_wait_time > 65534);
 
         $payload = {
-            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -1257,7 +1253,6 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "stop") {
         $payload = {
-            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -1270,7 +1265,6 @@ sub MATTERDevice_Set($$@) {
     elsif ($cmd eq "brightness") {
         my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
         $payload = {
-            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -1286,7 +1280,7 @@ sub MATTERDevice_Set($$@) {
         if ($can_wc_pct) {
             my $position = $args[0] * 100;
             $payload = {
-                message_id => MATTER_NextMessageId($io_hash),
+
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
@@ -1300,7 +1294,7 @@ sub MATTERDevice_Set($$@) {
             my $max_level = MATTERDevice_MaxBrightness($hash);
             my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
             $payload = {
-                message_id => MATTER_NextMessageId($io_hash),
+
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
@@ -1315,7 +1309,6 @@ sub MATTERDevice_Set($$@) {
     elsif ($cmd eq "tilt") {
         my $tilt = $args[0] * 100;
         $payload = {
-            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -1361,7 +1354,6 @@ sub MATTERDevice_Set($$@) {
                 $y = 65279 if $y > 65279;
 
                 $payload = {
-                    message_id => MATTER_NextMessageId($io_hash),
                     command    => "device_command",
                     args       => {
                         node_id      => $node_id,
@@ -1381,7 +1373,6 @@ sub MATTERDevice_Set($$@) {
                 my $max_level = MATTERDevice_MaxBrightness($hash);
                 my $level = int(($rgb_max / 255) * $max_level + 0.5);
                 $level_payload = {
-                    message_id => MATTER_NextMessageId($io_hash),
                     command    => "device_command",
                     args       => {
                         node_id      => $node_id,
@@ -1416,7 +1407,6 @@ sub MATTERDevice_Set($$@) {
                 my $max_level = MATTERDevice_MaxBrightness($hash);
                 my $level = int($max * $max_level + 0.5);
                 $level_payload = {
-                    message_id => MATTER_NextMessageId($io_hash),
                     command    => "device_command",
                     args       => {
                         node_id      => $node_id,
@@ -1429,7 +1419,7 @@ sub MATTERDevice_Set($$@) {
             }
 
             $payload = {
-                message_id => MATTER_NextMessageId($io_hash),
+
                 command    => "device_command",
                 args       => {
                     node_id      => $node_id,
@@ -1443,7 +1433,6 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "ct") {
         $payload = {
-            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -1489,7 +1478,6 @@ sub MATTERDevice_Set($$@) {
             $arguments->{transitionTime} = 0;
         }
         $payload = {
-            message_id => MATTER_NextMessageId($io_hash),
             command    => 'device_command',
             args       => {
                 node_id => $node_id, endpoint_id => int($endpoint_id),
@@ -1502,7 +1490,6 @@ sub MATTERDevice_Set($$@) {
         return 'Identify not accepted by this endpoint'
             unless MATTERDevice_CommandSupported($hash, 0x0003, 0x00);
         $payload = {
-            message_id => MATTER_NextMessageId($io_hash),
             command => 'device_command',
             args => {
                 node_id => $node_id, endpoint_id => int($endpoint_id),
@@ -1542,7 +1529,6 @@ sub MATTERDevice_Set($$@) {
         return "Matter attribute for $cmd is not advertised"
             unless MATTERDevice_AttributeWritable($hash, $cluster_id, $attr_id);
         $payload = {
-            message_id => MATTER_NextMessageId($io_hash),
             command => 'write_attribute',
             args => {
                 node_id => $node_id,
@@ -1639,7 +1625,6 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "frequency") {
         $payload = {
-            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -1652,7 +1637,6 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "lock") {
         $payload = {
-            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -1664,7 +1648,6 @@ sub MATTERDevice_Set($$@) {
     }
     elsif ($cmd eq "unlock") {
         $payload = {
-            message_id => MATTER_NextMessageId($io_hash),
             command    => "device_command",
             args       => {
                 node_id      => $node_id,
@@ -1677,59 +1660,10 @@ sub MATTERDevice_Set($$@) {
 
     return "No payload generated" if (!$payload && !$level_payload);
 
-    if ($hash->{IODev} && $hash->{IODev}{fhem}{helper}{sendWS}) {
-        my $sendWS = $hash->{IODev}{fhem}{helper}{sendWS};
-        return "MATTER: Unable to send brightness command on $name"
-            if $level_payload && !$sendWS->(encode_json($level_payload));
-        # Correlate attribute writes and native dim commands with server
-        # responses; socket enqueue alone does not confirm physical state.
-        my $tracked_write = $payload && ($payload->{command} // '') eq 'write_attribute';
-        my $tracked_dim = $cmd =~ /\A(?:dim_up|dim_down|dim_stop|dim_step_up|dim_step_down)\z/;
-        my $tracked = $tracked_write || $tracked_dim;
-        if ($tracked_write) {
-            for my $pending (values %{$hash->{IODev}{helper}{pending_command} // {}}) {
-                next unless ref($pending) eq 'HASH' &&
-                            ($pending->{type} // '') eq 'node_operation';
-                next if ($pending->{operation} // '') eq 'device_command';
-                return 'Another Matter operation is already pending for this node'
-                    if ($pending->{node_id} // '') eq $node_id &&
-                       ($pending->{fuuid} // '') eq ($hash->{FUUID} // '');
-            }
-        }
-        # A newer dim command supersedes response tracking for this endpoint,
-        # not the hardware operation. Stop must never wait for a Move reply.
-        my @older_dim;
-        if ($tracked_dim) {
-            @older_dim = grep {
-                my $p = $io_hash->{helper}{pending_command}{$_};
-                ref($p) eq 'HASH' && ($p->{operation} // '') eq 'device_command' &&
-                ($p->{fuuid} // '') eq ($hash->{FUUID} // '') &&
-                ($p->{node_id} // '') eq $node_id &&
-                ($p->{endpoint_id} // -1) == $endpoint_id
-            } keys %{$io_hash->{helper}{pending_command} // {}};
-        }
-        my $id = $tracked ? $payload->{message_id} : undef;
-        if ($tracked) {
-            $hash->{IODev}{helper}{pending_command}{$id} = {
-                type => 'node_operation', operation => $payload->{command},
-                name => $name, fuuid => $hash->{FUUID}, node_id => $node_id,
-                $tracked_write ? (attribute_path => $payload->{args}{attribute_path}) : (),
-                $tracked_dim ? (endpoint_id => $endpoint_id) : (),
-                started_at => gettimeofday(), timeout => 120,
-            };
-        }
-        if ($payload && !$sendWS->(encode_json($payload))) {
-            delete $hash->{IODev}{helper}{pending_command}{$id}
-                if $tracked;
-            return "MATTER: Unable to send device command on $name";
-        }
-        delete $io_hash->{helper}{pending_command}{$_} for @older_dim;
-        return wantarray ? (undef, 1) : undef if $tracked;
-    } else {
-        return "No send function found in IODev for $name";
-    }
-
-    return undef;
+    my @requests = grep { defined $_ } ($level_payload, $payload);
+    my $error = MATTERDevice_SendRequests($hash, \@requests, 'lastError', 120);
+    return $error if defined $error;
+    return wantarray ? (undef, 1) : undef;
 }
 
 sub MATTERDevice_Get($$@) {
@@ -1915,42 +1849,130 @@ sub MATTERDevice_IcdCapabilityReport {
         MATTERDevice_RefreshIcdCapability($hash);
     }
 }
-sub MATTERDevice_SendNodeOperation {
-    my ($hash, $command, $args, $timeout) = @_;
-    my $name = $hash->{NAME};
+# Transport correlation is independent of FHEM command names. One setter may
+# emit several API requests (RGB); all belong to one diagnostic result.
+sub MATTERDevice_SendRequests {
+    my ($hash, $requests, $reading, $timeout) = @_;
     my $io = $hash->{IODev};
-    return 'No active Matter server connection'
+    return "MATTER: No active WebSocket connection for $hash->{NAME}"
         unless $io && $io->{CD} && $io->{websocket} &&
                ($io->{ws_status} // '') eq 'connected' &&
                $io->{fhem}{helper}{sendWS};
-    # Per-node serialization: a late response from an older operation must
-    # never be mistaken for the result of a newer ICD/OTA operation.
+    my $pending = ($io->{helper}{pending_command} //= {});
+    # Bound unanswered requests without serializing ordinary commands.
+    return 'MATTER: Too many pending device requests'
+        if scalar(keys %$pending) + @$requests > 1024;
+    my $group = { remaining => scalar @$requests };
+    my @ids;
+    for my $payload (@$requests) {
+        my $id = MATTER_NextMessageId($io);
+        unless (defined $id) {
+            delete $pending->{$_} for @ids;
+            return 'MATTER: No available request ID';
+        }
+        $payload->{message_id} = $id;
+        push @ids, $id;
+        $pending->{$id} = {
+            type => 'node_operation', operation => $payload->{command},
+            owner => $hash, fuuid => $hash->{FUUID},
+            node_id => $hash->{node_id}, endpoint_id => $hash->{endpoint_id} // 0,
+            attribute_path => $payload->{args}{attribute_path},
+            reading => $reading, group => $group,
+            started_at => gettimeofday(), timeout => $timeout,
+        };
+    }
+    # Install ownership before send: a callback may complete or close the IO.
+    $hash->{helper}{latest_request}{$reading} = $group;
+    for my $i (0 .. $#$requests) {
+        next if $io->{fhem}{helper}{sendWS}->(encode_json($requests->[$i]));
+        for my $unsent ($i .. $#ids) {
+            my $request = delete $io->{helper}{pending_command}{$ids[$unsent]};
+            MATTERDevice_CompleteRequest($io, $request, undef,
+                'failed: unable to send device command') if $request;
+        }
+        return "MATTER: Unable to send device command on $hash->{NAME}";
+    }
+    return undef;
+}
+
+# One completion path for replies, timeout and disconnect. Every request is
+# retired independently; only the latest setter may update its status reading.
+sub MATTERDevice_CompleteRequest {
+    my ($io, $request, $reply, $failure) = @_;
+    my $owner = $request->{owner};
+    return unless $owner && ($defs{$owner->{NAME}} // '') eq $owner &&
+        ($owner->{TYPE} // '') eq 'MATTERDevice' &&
+        ($owner->{FUUID} // '') eq ($request->{fuuid} // '') &&
+        ($owner->{node_id} // '') eq ($request->{node_id} // '') &&
+        ($owner->{endpoint_id} // 0) == $request->{endpoint_id} &&
+        $owner->{IODev} && $owner->{IODev} eq $io;
+    if (defined $reply) {
+        my $received = {};
+        MATTERDevice_RecordReceive($modules{MATTERDevice}{defptr}{
+            "$io->{NAME}:$request->{node_id}"}, $received);
+        MATTERDevice_RecordReceive($owner, $received);
+    }
+    my $group = $request->{group};
+    --$group->{remaining};
+    my $reading = $request->{reading};
+    my $error = defined($failure) ? $failure :
+        $reading eq 'lastError' ? MATTERDevice_RequestError($request, $reply) : undef;
+    $group->{error} //= $error if defined $error;
+    return unless ($owner->{helper}{latest_request}{$reading} // '') eq $group;
+    delete $owner->{helper}{latest_request}{$reading} unless $group->{remaining};
+    if ($reading eq 'lastError' || defined $failure) {
+        return if !defined($group->{error}) && $group->{remaining};
+        my $status = $group->{error} // 'none';
+        readingsSingleUpdate($owner, $reading, $status, 1)
+            if ReadingsVal($owner->{NAME}, $reading, '') ne $status;
+    } else {
+        MATTERDevice_HandleNodeOperation($owner, $request, $reply);
+    }
+}
+
+# API envelopes and operation result types, not FHEM setter names.
+sub MATTERDevice_RequestError {
+    my ($request, $reply) = @_;
+    if (exists($reply->{error_code}) || exists($reply->{error})) {
+        my $error = ref($reply->{error}) eq 'HASH' ?
+            $reply->{error}{message} : $reply->{details};
+        $error = 'Matter server rejected the request' unless defined($error) && !ref($error);
+        $error =~ s/[\x00-\x1f\x7f]/ /g;
+        return 'failed: ' . substr($error, 0, 200);
+    }
+    if ($request->{operation} eq 'write_attribute') {
+        my $error = MATTERDevice_WriteResponseError($request, $reply);
+        return defined($error) ? "failed: $error" : undef;
+    }
+    if ($request->{operation} eq 'device_command') {
+        # Currently mapped Matter commands all have status-only responses.
+        return exists($reply->{result}) && !defined($reply->{result}) ?
+            undef : 'failed: invalid device command response';
+    }
+    return undef;
+}
+
+sub MATTERDevice_SendNodeOperation {
+    my ($hash, $command, $args, $timeout) = @_;
+    my $io = $hash->{IODev};
+    return 'No active Matter server connection' unless $io;
+    # Preserve the existing OTA/ICD administrative serialization, separately
+    # from unrestricted everyday device commands and attribute writes.
     for my $pending (values %{$io->{helper}{pending_command} // {}}) {
         next unless ref($pending) eq 'HASH' &&
-                    ($pending->{type} // '') eq 'node_operation';
-        next if ($pending->{operation} // '') eq 'device_command';
+                    ($pending->{type} // '') eq 'node_operation' &&
+                    ($pending->{reading} // '') ne 'lastError';
         return 'Another Matter operation is already pending for this node'
-            if ($pending->{node_id} // '') eq $hash->{node_id} &&
-               ($pending->{fuuid} // '') eq ($hash->{FUUID} // '');
-    }
-    my $id = MATTER_NextMessageId($io);
-    return 'No available Matter request ID' unless defined $id;
-    my $pending = {
-        type => 'node_operation', operation => $command,
-        name => $name, fuuid => $hash->{FUUID}, node_id => $hash->{node_id},
-        started_at => gettimeofday(), timeout => ($timeout // 120),
-    };
-    $io->{helper}{pending_command}{$id} = $pending;
-    my $payload = {
-        message_id => $id, command => $command,
-        args => { node_id => 0 + $hash->{node_id}, %{$args // {}} }
-    };
-    unless ($io->{fhem}{helper}{sendWS}->(encode_json($payload))) {
-        delete $io->{helper}{pending_command}{$id};
-        return "Could not send $command";
+            if ($pending->{fuuid} // '') eq ($hash->{FUUID} // '') &&
+               ($pending->{node_id} // '') eq $hash->{node_id};
     }
     my $reading = $command =~ /icd/ ? 'icd_request' : 'firmware_update';
-    readingsSingleUpdate($hash, $reading, 'requested', 1);
+    my $error = MATTERDevice_SendRequests($hash, [{command => $command,
+        args => {node_id => 0 + $hash->{node_id}, %{$args // {}}}}],
+        $reading, $timeout // 120);
+    return $error if defined $error;
+    readingsSingleUpdate($hash, $reading, 'requested', 1)
+        if $hash->{helper}{latest_request}{$reading};
     return undef;
 }
 # null retains the existing API-ack contract. A unicast status list must
@@ -1985,20 +2007,14 @@ sub MATTERDevice_WriteResponseError($$) {
 sub MATTERDevice_HandleNodeOperation {
     my ($hash, $request, $reply) = @_;
     my $cmd = $request->{operation};
-    my $reading = $cmd =~ /icd/ ? 'icd_request' :
-                  $cmd =~ /\A(?:write_attribute|device_command)\z/ ? 'lastError' : 'firmware_update';
-    if (exists($reply->{error_code}) || exists($reply->{error})) {
+    my $reading = $request->{reading};
+    my $error = MATTERDevice_RequestError($request, $reply);
+    if (defined $error) {
         if ($cmd eq 'check_node_update') {
             delete $hash->{helper}{firmware_available};
             readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
         }
-        my $error = ref($reply->{error}) eq 'HASH'
-            ? $reply->{error}{message} : $reply->{details};
-        $error = 'Matter server rejected the request'
-            unless defined($error) && !ref($error);
-        $error =~ s/[\x00-\x1f\x7f]/ /g;
-        readingsSingleUpdate($hash, $reading,
-                             'failed: ' . substr($error, 0, 200), 1);
+        readingsSingleUpdate($hash, $reading, $error, 1);
         return;
     }
     if ($cmd =~ /icd/) {
@@ -2067,15 +2083,6 @@ sub MATTERDevice_HandleNodeOperation {
             readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
             readingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
         }
-    } elsif ($cmd eq 'device_command') {
-        # Tracked native Move/Step/Stop commands have no response data.
-        # An API acknowledgement does not report the actual level or motion.
-        readingsSingleUpdate($hash, 'lastError',
-            exists($reply->{result}) && !defined($reply->{result}) ?
-                'none' : 'failed: invalid dim response', 1);
-    } elsif ($cmd eq 'write_attribute') {
-        my $error = MATTERDevice_WriteResponseError($request, $reply);
-        readingsSingleUpdate($hash, 'lastError', defined($error) ? "failed: $error" : 'none', 1);
     } elsif ($cmd eq 'update_node') {
         if (exists($reply->{result}) && !defined($reply->{result})) {
             $hash->{helper}{firmware_update_in_flight} = 1;
@@ -3195,6 +3202,33 @@ its timestamp therefore records a value change, not every received report.
 Missing or unusable values leave earlier readings unchanged, including old
 RSSI/LQI when a new neighbor table has no eligible neighbor. Disabling
 diagnostics preserves all existing readings.</p>
+<h4>Shared command responses</h4>
+<p>All device commands (including on/off, levels/colors, coverings, locks,
+Identify and dimming) and attribute writes use the same request handling.
+Each outgoing API request has its own message_id and device/IO ownership.
+Pending commands and writes do not lock a following setter, including Stop.
+All responses are correlated and retired, but only the latest setter changes
+<code>lastError</code>. For a compound RGB setter, success requires both
+level/color acknowledgements; success of one component never clears a failure
+of the other. This ordering applies only to command diagnostics, not incoming
+physical device reports.</p>
+<p>The currently mapped device commands have status-only responses: a null
+result acknowledges the command. Attribute writes validate the returned
+path/status list; existing null API acknowledgements remain accepted.
+<code>lastError=none</code> is not a physical state confirmation. Server
+refusals and malformed results produce <code>failed: ...</code>. At the next
+existing heartbeat after 120 seconds, an unanswered ordinary request reports
+<code>timeout (outcome unknown)</code>; IO loss reports
+<code>interrupted (outcome unknown)</code>. No replay, automatic Stop, polling,
+readback or new timers. At most 1024 pending commands per IO are allowed;
+excess requests return an explicit error. An immediate send failure is returned
+to FHEM; an accepted compound setter can have partial delivery.</p>
+<p>OTA/ICD use this same request lifecycle with their existing administrative
+serialization, dedicated status readings and operation timeouts. Explicit
+getConfig and capability reads retain their separate read reconciliation.
+Asynchronous setters suppress FHEM's synthetic command event; physical readings
+change only with device reports. Real-device/server integration of this shared
+path is <strong>untested</strong>.</p>
 <p>Native LevelControl dimming: <code>dim_up</code>, <code>dim_down</code>,
 <code>dim_step_up</code>, <code>dim_step_down</code> and <code>dim_stop</code>
 only when the corresponding commands are advertised. Optional per-device
@@ -3203,15 +3237,8 @@ The commands take no arguments. Steps use 20 native level units with
 transition time zero. Prefer the regular Move/Step/Stop command; use its
 WithOnOff variant only when the regular variant is not advertised. WithOnOff
 may also change on/off state. OptionsMask/Override are zero, leaving device
-options in effect. Correlated server failures, unexpected replies, timeouts
-and disconnects appear in <code>lastError</code>; <code>none</code> after a
-null reply means command acknowledgement, not a reported level or movement.
-Only the latest dim request per endpoint is tracked. A new command, including
-Stop, is sent without waiting for the older reply; older replies are ignored
-after successful enqueue. Timeout is checked by the existing heartbeat after
-120 seconds and means an unknown outcome. There is no automatic retry or
-Stop after timeout/reconnect. Physical readings change only with device
-reports. No FHEM dimming loop. Physical device variants <strong>untested</strong>.</p>
+options in effect. These commands use the shared request handling described above.
+No FHEM dimming loop. Physical device variants <strong>untested</strong>.</p>
 <p>Additional environmental measurements: pressure (hPa), CO2, PM2.5 and TVOC
 with separately reported measurement units. These classes are
 <strong>untested</strong> on real devices.</p>
@@ -3560,6 +3587,34 @@ zeigt daher eine Wertänderung und nicht jede empfangene Meldung an. Fehlende
 oder unverwertbare Werte lassen ältere Readings unverändert, auch alte
 RSSI-/LQI-Werte bei einer neuen Nachbartabelle ohne geeigneten Nachbarn.
 Das Abschalten erhält alle vorhandenen Readings.</p>
+<h4>Gemeinsame Antwortzuordnung</h4>
+<p>Alle Gerätebefehle (auch on/off, Helligkeit/Farbe, Rollläden, Türschlösser,
+Identify und Dimmen) sowie Attribut-Schreibzugriffe verwenden dieselbe
+Anfrageverwaltung. Jede API-Anfrage hat eine eigene message_id und eine
+geprüfte Geräte-/IO-Zuordnung. Ausstehende Befehle oder Schreibzugriffe sperren
+keinen folgenden Setter, auch keinen Stop. Jede Antwort wird zugeordnet und
+abgeschlossen; nur der letzte Setter verändert <code>lastError</code>.
+Bei einem zusammengesetzten RGB-Setter müssen Helligkeit und Farbe bestätigt
+sein: Eine erfolgreiche Teilantwort verdeckt keinen Fehler der anderen.
+Diese Reihenfolge betrifft nur die Befehlsdiagnose, keine Gerätemeldungen.</p>
+<p>Die derzeit gemappten Gerätebefehle liefern reine Statusantworten: Eine
+null-Antwort bestätigt den Auftrag. Attribut-Schreibzugriffe prüfen die
+zurückgemeldete Pfad-/Statusliste; vorhandene null-API-Bestätigungen bleiben
+akzeptiert. <code>lastError=none</code> bestätigt keinen physischen Zustand.
+Serverablehnungen und ungültige Antworten erzeugen <code>failed: ...</code>.
+Die nächste vorhandene Heartbeat-Prüfung nach 120 Sekunden meldet für einen
+unbeantworteten normalen Auftrag <code>timeout (outcome unknown)</code>,
+IO-Verlust <code>interrupted (outcome unknown)</code>. Kein automatisches
+Wiederholen oder Stoppen, Polling, Rücklesen oder zusätzlicher Timer.
+Maximal 1024 offene Aufträge pro IO; weitere Anfragen liefern einen expliziten
+Fehler. Unmittelbare Sendefehler werden an FHEM zurückgegeben; bei einem
+zusammengesetzten Setter ist eine teilweise Übermittlung möglich.</p>
+<p>OTA/ICD nutzen denselben Anfrage-Lebenszyklus mit ihrer bestehenden
+Verwaltungssperre, eigenen Statusreadings und Operations-Timeouts. Explizites
+getConfig und Capability-Abfragen behalten ihren gesonderten Leseabgleich.
+Asynchrone Setter unterdrücken FHEMs synthetisches Befehlsereignis; physische
+Readings ändern sich nur durch Gerätemeldungen. Die reale Geräte-/Serverintegration
+dieses gemeinsamen Pfades ist <strong>ungetestet</strong>.</p>
 <p>Natives LevelControl-Dimmen: <code>dim_up</code>, <code>dim_down</code>,
 <code>dim_step_up</code>, <code>dim_step_down</code> und <code>dim_stop</code>
 nur bei gemeldeten Befehlen. <code>dimRate</code> (1–254, Standard 30) legt
@@ -3569,15 +3624,8 @@ FHEM-Dimmschleife. Die Befehle nehmen keine Argumente an. Schritte verwenden
 bevorzugt; die jeweilige WithOnOff-Variante wird nur verwendet, wenn die
 normale Variante nicht gemeldet ist. WithOnOff kann auch den Schaltzustand
 verändern. OptionsMask/Override bleiben null; die Geräteoptionen gelten.
-Zugeordnete Serverfehler, unerwartete Antworten, Timeouts und Verbindungsabbrüche
-erscheinen in <code>lastError</code>. <code>none</code> nach einer null-Antwort
-bestätigt den Befehl, keinen Helligkeitswert oder eine Bewegung.
-Nur der letzte Dimmauftrag pro Endpoint wird nachverfolgt. Ein neuer Befehl,
-auch Stop, wird ohne Warten auf die ältere Antwort gesendet. Nach erfolgreicher
-Übergabe werden ältere Antworten ignoriert. Die vorhandene Heartbeat-Prüfung
-meldet nach 120 Sekunden einen Timeout mit unbekanntem Ausgang. Kein
-automatisches Wiederholen oder Stoppen nach Timeout/Reconnect. Physische
-Readings ändern sich nur durch Gerätemeldungen. Hardwarevarianten
+Für diese Befehle gilt die oben beschriebene gemeinsame Antwortzuordnung.
+Hardwarevarianten
 <strong>ungetestet</strong>.</p>
 <p>Weitere Umweltmesswerte: Luftdruck (hPa), CO2, PM2.5 und TVOC mit
 separaten, geräteseitig angegebenen Einheiten. Hardwarestatus:
