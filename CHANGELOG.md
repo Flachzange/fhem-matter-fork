@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-22  Tests/documentation (#32): verify existing pressure, CO2, PM2.5 and TVOC readings through snapshots and live reports, valid zero versus null/invalid values, pressure type bounds, sibling endpoints, separately supplied/unknown units and qualitative-only concentration features. No runtime, V0.24, commandref or updater change; hardware remains untested.
+
 - 2026-11-22  Tests/documentation (#30): verify persisted/manual contact, leak, rain, occupancy, temperature, humidity and illuminance readings through INITIALIZED/REREADCFG, offline/online snapshots and live reports. Cover saved DeviceTypeList interpretation, renamed devices, unknown BooleanState types, null/invalid values and same-node multi-IO isolation, including reading write counts. Existing V0.24 module behavior, commandref and updater manifest remain unchanged; real FHEM/configDB/hardware integration remains untested.
 
 - 2026-11-22  MATTER IO/Device V0.24 (draft): reconcile prior ICD support from valid root Descriptor.ServerList, preserving partial/invalid reports and newer live metadata over older responses. Read ServerList in the existing root getConfig request. Require current-connection OHF matterjs-server identification plus schema >= 12 for controller ICD get/set operations; clear that authority before disconnect events. Preserve dynamic ICD readings and their normal timestamps. Add focused regression coverage and DE/EN documentation; real ICD hardware remains untested.

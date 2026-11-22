@@ -3983,4 +3983,137 @@ subtest 'Issue 30: persisted sensors follow the shared availability lifecycle' =
     MATTER_Close($_) for ($io, $other);
 };
 
+subtest 'Issue 32: environmental values, units and optional numeric measurements' => sub {
+    my @requests;
+    socketpair(my $socket, my $peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die 'environment socketpair';
+    my $io = $defs{ioEnvironment} = {
+        NAME => 'ioEnvironment', TYPE => 'MATTER', READINGS => {}, helper => {},
+        CD => $socket, websocket => 1, ws_status => 'connected',
+        fhem => {helper => {sendWS => sub {
+            push @requests, JSON::decode_json($_[0]); return 1;
+        }}},
+    };
+    # ep, cluster, value reading, unit reading/id/label, initial/live/snapshot,
+    # invalid raw value. Synthetic payloads use Matter 1.4 attribute IDs.
+    my @rows = (
+        [1, 1027, 'pressure', undef, undef, undef, 1013, 1008, 999, -32768],
+        [2, 1037, 'co2', 'co2_unit', 0, 'ppm', 650, 720.5, 500.25, -5],
+        [3, 1066, 'pm25', 'pm25_unit', 4, 'ug/m3', 12.5, 4.5, 0.1, -0.1],
+        [4, 1070, 'tvoc', 'tvoc_unit', 1, 'ppb', 3.5, 0.25, 12, -1],
+    );
+    my %initial;
+    for my $row (@rows) {
+        my ($ep, $cluster) = @$row;
+        $initial{"$ep/$cluster/0"} = $row->[6];
+        $initial{"$ep/$cluster/65532"} = $ep == 1 ? 0 : 1;
+        $initial{"$ep/$cluster/65531"} = $ep == 1 ? [0] : [0, 8];
+        $initial{"$ep/$cluster/8"} = $row->[4] if defined $row->[3];
+    }
+    # LEV only (bit 1), with LevelValue (attribute 10), never a MeasuredValue.
+    my @qualitative = ([5, 1037, 'co2'], [6, 1066, 'pm25'], [7, 1070, 'tvoc']);
+    for my $q (@qualitative) {
+        $initial{"$q->[0]/$q->[1]/65532"} = 2;
+        $initial{"$q->[0]/$q->[1]/65531"} = [10];
+        $initial{"$q->[0]/$q->[1]/10"} = 3;
+    }
+    $initial{'8/1037/65532'} = 1;
+    $initial{'8/1037/0'} = 0.75; # No unit supplied yet: never assume ppm.
+    $initial{'9/1070/65532'} = 1;
+    $initial{'9/1070/8'} = 1; # Unit supplied before any value.
+    MATTER_ProcessNode($io, {node_id => 6400, name => 'EnvironmentMatrix',
+        available => JSON::true, attributes => \%initial});
+    my $root = $modules{MATTERDevice}{defptr}{'ioEnvironment:6400'};
+    my %ep = map { $_->{endpoint_id} => $_ } MATTERDevice_NodeChildren($root);
+    my $report = sub {
+        my ($endpoint, $cluster, $attr, $value) = @_;
+        MATTER_ParseMessage($io, encode_json({event => 'attribute_updated',
+            data => [6400, "$endpoint/$cluster/$attr", $value]}));
+    };
+    my $snapshot = sub {
+        MATTER_ParseMessage($io, encode_json({event => 'node_updated',
+            data => {node_id => 6400, attributes => $_[0]}}));
+    };
+    my $capture = sub {
+        my %state;
+        for my $row (@rows) {
+            for my $reading ($row->[2], defined($row->[3]) ? ($row->[3]) : ()) {
+                my $name = $ep{$row->[0]}{NAME};
+                $state{$row->[0]}{$reading} = {
+                    %{$ep{$row->[0]}{READINGS}{$reading}},
+                    writes => $single_writes{$name}{$reading} // 0,
+                };
+            }
+        }
+        return \%state;
+    };
+    for my $row (@rows) {
+        is(ReadingsVal($ep{$row->[0]}{NAME}, $row->[2], ''), $row->[6], "$row->[2]: initial snapshot preserves the specified value");
+        is(ReadingsVal($ep{$row->[0]}{NAME}, $row->[3], ''), $row->[5], "$row->[2]: initial unit is mapped")
+            if defined $row->[3];
+    }
+    for my $q (@qualitative) {
+        ok(!exists($ep{$q->[0]}{READINGS}{$q->[2]}), "$q->[2]: LevelValue alone cannot fabricate a numeric concentration");
+        ok(!exists($ep{$q->[0]}{READINGS}{$q->[2] . '_unit'}), 'qualitative feature metadata cannot fabricate a measurement unit');
+    }
+    is(ReadingsVal($ep{8}{NAME}, 'co2', ''), 0.75, 'numeric concentration without a unit remains the supplied raw number');
+    ok(!exists($ep{8}{READINGS}{co2_unit}), 'missing unit is not assumed to be ppm');
+    $report->(8, 1037, 8, 255);
+    ok(!exists($ep{8}{READINGS}{co2_unit}), 'unknown unit on a new endpoint does not create a unit reading');
+    $report->(8, 1037, 8, undef);
+    ok(!exists($ep{8}{READINGS}{co2_unit}), 'null unit on a new endpoint does not create a unit reading');
+    my $raw_writes = $single_writes{$ep{8}{NAME}}{co2};
+    $report->(8, 1037, 8, 3);
+    is(ReadingsVal($ep{8}{NAME}, 'co2_unit', ''), 'mg/m3', 'a later supplied unit is accepted without a ppm default');
+    is(ReadingsVal($ep{8}{NAME}, 'co2', ''), 0.75, 'mg/m3 concentration is not silently converted to ppm');
+    is($single_writes{$ep{8}{NAME}}{co2}, $raw_writes, 'unit-only report does not rewrite the measured value');
+    ok(!exists($ep{9}{READINGS}{tvoc}), 'unit and NumericMeasurement metadata alone do not create a zero measurement');
+    $report->(9, 1070, 0, 0);
+    is(ReadingsVal($ep{9}{NAME}, 'tvoc', ''), 0, 'explicit numeric zero is a valid first measurement');
+    is(ReadingsVal($ep{9}{NAME}, 'tvoc_unit', ''), 'ppb', 'unit-first ordering retains the supplied unit');
+
+    $snapshot->({map { ("$_->[0]/$_->[1]/0" => 0) } @rows});
+    for my $row (@rows) {
+        is(ReadingsVal($ep{$row->[0]}{NAME}, $row->[2], ''), 0, "$row->[2]: explicit zero in an online snapshot is valid");
+    }
+    for my $row (@rows) {
+        my $before = $capture->();
+        $report->($row->[0], $row->[1], 0, $row->[7]);
+        is(ReadingsVal($ep{$row->[0]}{NAME}, $row->[2], ''), $row->[7], "$row->[2]: live value is mapped to its endpoint");
+        my $after = $capture->();
+        delete $before->{$row->[0]}; delete $after->{$row->[0]};
+        is_deeply($after, $before, 'live value preserves sibling measurements and units');
+    }
+    $snapshot->({map { ("$_->[0]/$_->[1]/0" => $_->[8]) } @rows});
+    for my $row (@rows) {
+        is(ReadingsVal($ep{$row->[0]}{NAME}, $row->[2], ''), $row->[8], "$row->[2]: node_updated synchronizes without repeated FeatureMap metadata");
+    }
+    my $valid = $capture->();
+    for my $values ({map { ("$_->[0]/$_->[1]/0" => undef) } @rows},
+                    {map { ("$_->[0]/$_->[1]/0" => $_->[9]) } @rows},
+                    {map { ("$_->[0]/$_->[1]/0" => 'unknown') } @rows},
+                    {map { ("$_->[0]/$_->[1]/0" => []) } @rows}, {}) {
+        $snapshot->($values);
+        is_deeply($capture->(), $valid, 'null/invalid/malformed/omitted snapshot values preserve readings, timestamps and write counts');
+    }
+    for my $row (@rows) {
+        $report->($row->[0], $row->[1], 0, undef);
+        $report->($row->[0], $row->[1], 0, $row->[9]);
+        if (defined $row->[3]) {
+            $report->($row->[0], $row->[1], 8, $_) for (undef, 255, 'unknown', {});
+        }
+    }
+    is_deeply($capture->(), $valid, 'invalid live values and units preserve the last valid readings without rewrites');
+    for my $bad (0.5, 32768, -32769) {
+        $report->(1, 1027, 0, $bad);
+    }
+    is_deeply($capture->(), $valid, 'fractional and out-of-int16 pressure reports are ignored');
+    for my $bound (-32767, 32767) {
+        $report->(1, 1027, 0, $bound);
+        is(ReadingsVal($ep{1}{NAME}, 'pressure', ''), $bound, 'valid int16 pressure boundary is retained');
+    }
+    is(ReadingsVal($root->{NAME}, 'state', ''), 'online', 'environment measurements do not replace root reachability');
+    is(scalar @requests, 0, 'all measurement handling uses supplied data without extra reads or polling');
+    MATTER_Close($io);
+};
+
 done_testing();
