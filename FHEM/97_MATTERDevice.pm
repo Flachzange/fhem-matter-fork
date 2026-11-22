@@ -589,8 +589,7 @@ sub MATTERDevice_RequestCapabilityRefresh($) {
     my ($root) = @_;
     my $io = $root->{IODev};
     return (undef, 'No connected Matter IO') unless $io && $io->{CD} &&
-        $io->{websocket} && ($io->{ws_status} // '') eq 'connected' &&
-        $io->{fhem}{helper}{sendWS};
+        $io->{websocket} && ($io->{ws_status} // '') eq 'connected';
     my $pending = ($io->{helper}{pending_config} //= {});
     return (undef, 'Too many pending Matter reads')
         if scalar(keys %$pending) >= 128;
@@ -616,7 +615,7 @@ sub MATTERDevice_RequestCapabilityRefresh($) {
             ],
         },
     };
-    unless ($io->{fhem}{helper}{sendWS}->(encode_json($payload))) {
+    unless (MATTER_SendJsonCommand($io, $payload)) {
         delete $pending->{$id};
         return (undef, 'Unable to send Matter capability read');
     }
@@ -638,8 +637,7 @@ sub MATTERDevice_MaybeRefreshCapabilities($) {
 
     my $io = $root->{IODev};
     return unless $io && $io->{CD} && $io->{websocket} &&
-                  ($io->{ws_status} // '') eq 'connected' &&
-                  $io->{fhem}{helper}{sendWS};
+                  ($io->{ws_status} // '') eq 'connected';
 
     my $recovery = $root->{helper}{capability_refresh};
 
@@ -1107,8 +1105,7 @@ sub MATTERDevice_Set($$@) {
     my $io_hash = $hash->{IODev};
     return "MATTER: No active WebSocket connection for $name"
         unless $io_hash && $io_hash->{CD} && $io_hash->{websocket} &&
-            ($io_hash->{ws_status} // '') eq 'connected' &&
-            $io_hash->{fhem}{helper}{sendWS};
+            ($io_hash->{ws_status} // '') eq 'connected';
 
     # Direct FHEM commands must not coerce malformed numeric arguments to zero.
     if ($cmd =~ /^(?:brightness|pct|tilt|ct|frequency)$/) {
@@ -1625,7 +1622,7 @@ sub MATTERDevice_Set($$@) {
                 }
             };
             
-            unless ($ioHash->{fhem}{helper}{sendWS}->(encode_json($config_payload))) {
+            unless (MATTER_SendJsonCommand($ioHash, $config_payload)) {
                 delete $pending_reads->{$msg_id};
                 return "MATTER: Unable to send getConfig on $name";
             }
@@ -1874,8 +1871,7 @@ sub MATTERDevice_SendRequests {
     my $io = $hash->{IODev};
     return "MATTER: No active WebSocket connection for $hash->{NAME}"
         unless $io && $io->{CD} && $io->{websocket} &&
-               ($io->{ws_status} // '') eq 'connected' &&
-               $io->{fhem}{helper}{sendWS};
+               ($io->{ws_status} // '') eq 'connected';
     my $pending = ($io->{helper}{pending_command} //= {});
     # Bound unanswered requests without serializing ordinary commands.
     return 'MATTER: Too many pending device requests'
@@ -1902,7 +1898,7 @@ sub MATTERDevice_SendRequests {
     # Install ownership before send: a callback may complete or close the IO.
     $hash->{helper}{latest_request}{$reading} = $group;
     for my $i (0 .. $#$requests) {
-        next if $io->{fhem}{helper}{sendWS}->(encode_json($requests->[$i]));
+        next if MATTER_SendJsonCommand($io, $requests->[$i]);
         for my $unsent ($i .. $#ids) {
             my $request = delete $io->{helper}{pending_command}{$ids[$unsent]};
             MATTERDevice_CompleteRequest($io, $request, undef,
