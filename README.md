@@ -376,6 +376,12 @@ It checks reading write counts as well as values/timestamps. See the
 [sensor acceptance matrix](docs/sensor-lifecycle.md) for covered cases and the
 limits of this modeled persistence check.
 
+The environmental measurement regression for #32 covers pressure, CO2,
+PM2.5 and TVOC in snapshots and live reports, including valid zero values,
+invalid/null data, separately supplied units and qualitative-only clusters.
+See the [environmental measurement acceptance matrix](docs/environment-measurements.md)
+for source evidence and test limits.
+
 For module changes, run `bash make_controls.sh` and commit its updated `controls_matter.txt` alongside the changed Perl source. `bash make_controls.sh --check` and `.github/workflows/controls-matter.yml` verify the generated manifest. Its Git-blob sizes match the raw published files and its timestamps advance for changed modules, including same-size edits. Keep `CHANGED` to the current published notes and append historical changes to [CHANGELOG.md](CHANGELOG.md).
 
 Follow [AGENTS.md](AGENTS.md) and [AGENTS-MATTER.md](AGENTS-MATTER.md) for documentation and release metadata maintenance. The existing MATTER IO `VERSION` internal identifies the module version; server/device firmware versions are separate. Changes on feature branches are not automatically published.
