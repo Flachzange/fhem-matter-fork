@@ -366,13 +366,18 @@ engine.
   `available=false`. Dynamic controller readings describe the last explicit
   query and keep their normal FHEM timestamps across reconnect. See
   [ICD evidence and limits](docs/icd-capabilities.md).
-- Nodes with OTA Software Update Requestor support offer
-  `set <root> checkFirmwareUpdate`. Only after the server reports a newer
-  software version is `set <root> updateFirmware` offered. The external
-  server handles lookup, downloading and delivery. No upload, automatic
-  update or manufacturer's own update repository is implied. Status
-  `update requested` is not proof of installation; the matching new
-  software version or OTA device reports are needed.
+- Roots reporting the OTA Requestor cluster expose
+  `checkFirmwareUpdate` after the current server handshake identifies
+  matterjs-server (schema 11+) or Python Matter Server (schema 10+).
+  Both commands remain available under their usual prerequisites when FHEM
+  shows the root as offline. The server decides whether it can fulfill the request.
+  Before the first check, an absent status means unknown. A check returning
+  `none reported` says only that this server supplied no offer. A manufacturer
+  app may have other updates. Local server settings can also disable OTA.
+  `updateFirmware` consumes the offered uint32 version. A matching device
+  SoftwareVersion confirms installation, including when the server reply
+  arrives later. Progress readings are optional. Timeout or server disconnect
+  requires a fresh manual check. The server handles image delivery.
 - Device attributes and `getConfig` require current-session `available=true`.
   Unknown/offline nodes retain saved values and local corrections. IO loss,
   node removal and INITIALIZED/REREADCFG invalidate runtime availability;

@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.26 22.11.2026";
+my $MATTER_version = "V0.27 22.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -479,7 +479,7 @@ sub MATTER_Close($) {
     delete $hash->{helper}{ws_expected_accept};
     delete $hash->{helper}{ws_fragment_opcode};
     delete $hash->{helper}{ws_fragment_buffer};
-    delete $hash->{helper}{icd_api_supported};
+    delete @{$hash->{helper}}{qw(icd_api_supported ota_api_supported)};
     $hash->{websocket} = 0;
     $hash->{ws_status} = 'disconnected';
     $hash->{BUF} = '';
@@ -506,15 +506,11 @@ sub MATTER_Close($) {
     MATTERDevice_SetRootState($_, 'unknown') for @roots;
     # A server reconnect invalidates old OTA offers even if no update request
     # was pending. Installing a version requires a fresh server check.
-    for my $dev (values %defs) {
-        next unless ($dev->{TYPE} // '') eq 'MATTERDevice' &&
-                    ($dev->{endpoint_id} // 0) == 0 &&
-                    $dev->{IODev} && $dev->{IODev} eq $hash;
-        if (exists($dev->{helper}{firmware_available})) {
-            delete $dev->{helper}{firmware_available};
-            readingsSingleUpdate($dev, 'firmware_update', 'unknown (server disconnected)', 1)
-                if ReadingsVal($dev->{NAME}, 'firmware_update', '') eq 'available';
-        }
+    for my $dev (@roots) {
+        my $offer = delete $dev->{helper}{firmware_available};
+        my $target = delete $dev->{helper}{firmware_update_in_flight};
+        readingsSingleUpdate($dev, 'firmware_update', 'unknown (server disconnected)', 1)
+            if defined($offer) || defined($target);
     }
     MATTERDevice_CompleteRequest($hash, $_, undef,
         'interrupted (outcome unknown)') for @incomplete_node_ops;
@@ -1072,10 +1068,15 @@ sub MATTER_ParseMessage($$) {
         # ICD controller operations are an OHF matterjs-server extension.
         # Establish support from this connection, never restored readings.
         my ($schema, $sdk) = @{$decoded}{qw(schema_version sdk_version)};
-        $hash->{helper}{icd_api_supported} =
-            defined($schema) && !ref($schema) && $schema =~ /\A\d+\z/ && $schema >= 12 &&
-            defined($sdk) && !ref($sdk) &&
-            $sdk =~ /\Amatter-server\/[^\s()]+ \(matter\.js\/[^\s()]+\)\z/ ? 1 : 0;
+        my $js = defined($sdk) && !ref($sdk) &&
+            $sdk =~ /\Amatter-server\/[^\s()]+ \(matter\.js\/[^\s()]+\)\z/;
+        # Python Matter Server identifies its CHIP SDK by the package version.
+        my $python_sdk = defined($sdk) && !ref($sdk) &&
+            $sdk =~ /\A20[0-9]{2}\.[0-9]+\.[0-9]+(?:[a-z0-9.+-]*)\z/;
+        my $valid_schema = defined($schema) && !ref($schema) && $schema =~ /\A[0-9]+\z/;
+        $hash->{helper}{icd_api_supported} = $valid_schema && $js && $schema >= 12;
+        $hash->{helper}{ota_api_supported} = $valid_schema &&
+            (($js && $schema >= 11) || ($python_sdk && $schema >= 10));
         readingsBeginUpdate($hash);
         readingsBulkUpdate($hash, "state", "connected");
         readingsBulkUpdate($hash, "schema_version", $decoded->{schema_version});

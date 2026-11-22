@@ -2964,6 +2964,142 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'installed',
    'installation requires matching new reported software version');
 
+subtest 'Issue 36 OTA eligibility and install lifecycle' => sub {
+    my @requests;
+    my @peers;
+    my $io = $defs{ioOta} = {NAME => 'ioOta', TYPE => 'MATTER', READINGS => {}, helper => {}};
+    my $connect = sub {
+        socketpair(my $socket, my $peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die 'OTA socketpair';
+        push @peers, $peer;
+        $io->{CD} = $socket;
+        $io->{websocket} = 1;
+        $io->{ws_status} = 'connected';
+        $io->{fhem}{helper}{sendWS} = sub { push @requests, JSON::decode_json($_[0]); return 1 };
+    };
+    $connect->();
+    my $node = 6800;
+    my $js = 'matter-server/1.1.7 (matter.js/0.17.5-alpha)';
+    my $info = sub {
+        MATTER_ParseMessage($io, encode_json({schema_version => $_[0], sdk_version => $_[1]}));
+    };
+    my $report = sub {
+        MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [$node, @_]}));
+    };
+    MATTER_ProcessNode($io, {node_id => $node, name => 'OtaLifecycle', available => JSON::true,
+        attributes => {'0/29/1' => [29,40], '1/42/2' => 1}});
+    my $root = $defs{MATTER_OtaLifecycle};
+    my ($child) = MATTERDevice_NodeChildren($root);
+    my $can = sub { my ($dev, $cmd) = @_; return scalar grep { /^\Q$cmd\E:/ } MATTERDevice_GetSetList($dev) };
+    my $check = 'checkFirmwareUpdate';
+    my $install = 'updateFirmware';
+    my $set = sub { MATTERDevice_Set($root, $root->{NAME}, $_[0]) };
+    my $reply = sub { MATTER_ParseMessage($io, encode_json({message_id => $requests[-1]{message_id}, @_})) };
+    my $status = sub { ReadingsVal($root->{NAME}, 'firmware_update', '') };
+    my $offer = sub {
+        is($set->($check), undef, 'manual check sent');
+        $reply->(result => {software_version => $_[0]});
+    };
+    readingsSingleUpdate($root, 'ota_update_state', 'idle', 0);
+    $info->(11, $js);
+    ok(!$can->($root, $check) && !$can->($child, $check), 'saved state and child cluster cannot authorize root or child');
+    $report->('0/29/1', [29,42]);
+    ok($can->($root, $check), 'root ServerList alone proves capability without progress attributes');
+    for my $pair ([10,$js], [9,'2024.7.0'], [15,'unknown'], [undef,$js]) {
+        $info->(@$pair);
+        ok(!$can->($root, $check), 'unsupported server handshake hides OTA');
+        like($set->($check), qr/Unknown argument/, 'explicit set uses same eligibility');
+    }
+    $info->(10, '2024.7.0');
+    ok($can->($root, $check), 'Python server schema 10 supports both OTA commands');
+    $info->(11, $js);
+    $report->('0/29/1', [29,{}]);
+    ok($can->($root, $check), 'malformed ServerList preserves capability');
+    MATTER_ProcessNode($io, {node_id => $node, available => JSON::false});
+    ok($can->($root, $check), 'offline root with known OTA capability can query connected server');
+    MATTER_ProcessNode($io, {node_id => $node, available => JSON::true});
+    for my $bad (-1, 1.5, 4294967296, '101', [], JSON::true, undef) {
+        $offer->($bad);
+        is($status->(), 'invalid response', 'invalid version rejected');
+        ok(!$can->($root, $install), 'invalid version grants no install');
+    }
+    $offer->(0);
+    ok($can->($root, $install), 'zero is valid when installed version is unknown');
+    $report->('0/40/9', 100);
+    ok(!$can->($root, $install), 'new version report supersedes older offer');
+    $offer->(4294967295);
+    ok($can->($root, $install), 'maximum uint32 accepted');
+    $report->('0/29/1', [29]);
+    $report->('0/29/1', [29,42]);
+    ok(!$can->($root, $install), 'revoked and restored capability requires a fresh offer');
+
+    my $timeout = sub {
+        my $id = $requests[-1]{message_id};
+        $io->{helper}{pending_command}{$id}{started_at} = gettimeofday() - 301;
+        delete $io->{helper}{pending_pong};
+        MATTER_Heartbeat($io);
+        like($status->(), qr/timeout.*unknown/, 'timeout records unknown outcome');
+        MATTER_ParseMessage($io, encode_json({message_id => $id, result => {software_version => 101}}));
+        ok(!$can->($root, $install), 'late response cannot restore permission');
+    };
+    $offer->(101);
+    is($set->($check), undef, 'new check replaces old offer');
+    is($status->(), 'checking', 'checking is distinct from a result');
+    like($set->($check), qr/already pending/, 'second simultaneous check is refused');
+    $timeout->();
+    $offer->(101);
+    is($set->($install), undef, 'install sent');
+    like($set->($install), qr/Unknown argument/, 'double install rejected');
+    ok(!$can->($root, $check), 'another check cannot replace active install target');
+    $timeout->();
+    is(scalar(grep {$_->{command} eq 'update_node'} @requests), 1, 'no duplicate or automatic retry');
+    $offer->(101);
+    is($set->($install), undef, 'new offer permits explicit retry');
+    $reply->(result => {software_version => 102});
+    is($status->(), 'invalid response', 'mismatched acknowledgement rejected');
+    ok(!$can->($root, $install), 'malformed acknowledgement consumes offer');
+
+    $offer->(101);
+    is($set->($install), undef, 'new install requested');
+    $reply->(result => {software_version => 101, software_version_string => 'v101'});
+    is($status->(), 'update requested', 'matterjs result object acknowledges install');
+    ok(!$can->($root, $install), 'accepted install still cannot be repeated');
+    $report->('0/40/9', 101);
+    is($status->(), 'installed', 'matching version confirms without progress attributes');
+    $offer->(102);
+    is($set->($install), undef, 'subsequent version requested');
+    $report->('0/40/9', 102);
+    $reply->(result => undef);
+    is($status->(), 'installed', 'late acknowledgement preserves physical confirmation');
+    $offer->(103);
+    is($set->($install), undef, 'install sent before device progress');
+    $report->('0/42/2', 4);
+    $reply->(result => {software_version => 103});
+    is($status->(), 'downloading', 'late server acknowledgement preserves progress');
+    MATTER_Close($io);
+    like($status->(), qr/unknown.*disconnected/, 'disconnect after acknowledgement releases target with unknown outcome');
+    $connect->();
+    $info->(11,$js);
+    MATTER_ProcessNode($io, {node_id => $node, available => JSON::true});
+    MATTER_ProcessNode($io, {node_id => $node, available => JSON::false});
+    $offer->(103);
+    is($requests[-1]{command}, 'check_node_update', 'offline check reached the server');
+    ok($can->($root, $install), 'server offer enables installation for offline root');
+    is($set->($install), undef, 'offline install request sent');
+    is_deeply($requests[-1]{args}, {node_id => $node, software_version => 103}, 'offline install sends offered version to server');
+    $reply->(error_code => 11, details => 'Node is not connected');
+    is($status->(), 'failed: Node is not connected', 'actual server refusal visible');
+    ok(!$can->($root, $install), 'server refusal requires fresh offer');
+    $offer->(103);
+    is($set->($install), undef, 'install outstanding at disconnect');
+    MATTER_Close($io);
+    like($status->(), qr/interrupted.*unknown/, 'disconnect records unknown outcome');
+    $connect->();
+    MATTER_ProcessNode($io, {node_id => $node, available => JSON::true});
+    ok(!$can->($root, $check), 'reconnect requires fresh server info');
+    $info->(11,$js);
+    ok($can->($root, $check) && !$can->($root, $install), 'reconnect permits fresh check only');
+};
+
 # A second operation for the same node cannot race the first response.
 @sent_requests = ();
 my $pending_icd_query = MATTERDevice_Get($icd, $icd->{NAME}, 'icdState');
