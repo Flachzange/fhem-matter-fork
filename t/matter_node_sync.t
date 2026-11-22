@@ -80,9 +80,6 @@ sub AssignIoPort {
     return unless $defs{$preferred_io};
     $device->{IODev} = $defs{$preferred_io};
     readingsSingleUpdate($device, 'IODev', $preferred_io);
-    if (($device->{endpoint_id} // 0) == 0) {
-        $modules{MATTERDevice}{defptr}{"$preferred_io:$device->{node_id}"} = $device;
-    }
     return $device->{IODev};
 }
 sub CommandDefine {
@@ -129,10 +126,14 @@ sub CommandAttr {
     } split /\s+/, "$global_attrs $module_attrs";
     return "$name: unknown attribute $key" unless $known_attr;
     return "Simulated IODev failure" if $key eq 'IODev' && $name eq $fail_io_for;
+    if ($defs{$name}{TYPE} eq 'MATTERDevice' && $modules{MATTERDevice}{AttrFn}) {
+        my $error = MATTERDevice_Attr('set', $name, $key, $value);
+        return $error if defined $error;
+    }
     if ($key eq 'IODev') {
         return "Unknown IODev" unless $defs{$value} && $defs{$value}{TYPE} eq 'MATTER';
         $defs{$name}{IODev} = $defs{$value};
-        readingsSingleUpdate($defs{$name}, 'IODev', $value);
+        $defs{$name}{READINGS}{IODev} = { VAL => $value, TIME => 'test-time' };
     }
     # FHEM invokes AttrFn before updating the attribute map.
     if ($defs{$name}{TYPE} eq 'MATTER') {
@@ -140,6 +141,9 @@ sub CommandAttr {
         return $error if defined($error);
     }
     $attr{$name}{$key} = $value;
+    # fhem.pl CommandAttr triggers global ATTR after fhem_setIoDev succeeds.
+    MATTERDevice_Notify($defs{$name}, { NAME => 'global', CHANGED => ["ATTR $command"] })
+        if $init_done && $defs{$name}{TYPE} eq 'MATTERDevice';
     return undef;
 }
 sub CommandDeleteAttr {
@@ -4921,5 +4925,44 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     is(ReadingsVal($ep{1}{NAME},'state',''),'off','all command outcomes preserve actual reported OnOff state');
     close $peer;
 };
+
+{
+    my $a = $defs{moveA} = {NAME => 'moveA', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected'};
+    my $b = $defs{moveB} = {NAME => 'moveB', TYPE => 'MATTER'};
+    my $id;
+    $a->{fhem}{helper}{sendWS} = sub { $id = JSON::decode_json($_[0])->{message_id}; 1 };
+    MATTER_ProcessNode($a, {node_id => 9801, name => 'MoveProbe', available => JSON::true,
+        attributes => {'0/40/3' => 'initial'}});
+    my $r = $defs{MATTER_MoveProbe};
+    is(MATTERDevice_Set($r, $r->{NAME}, 'getConfig'), undef, 'read pending on old IO');
+    is(CommandAttr(undef, "$r->{NAME} IODev moveB"), undef, 'move root to second IO');
+    is(ReadingsVal($r->{NAME}, 'state', ''), 'unknown', 'new IO must establish availability');
+    ok(!defined($r->{helper}{available}), 'old availability cannot authorize reports');
+    is($modules{MATTERDevice}{defptr}{'moveB:9801'}, $r, 'new IO indexed immediately');
+    ok(!exists($modules{MATTERDevice}{defptr}{'moveA:9801'}), 'old IO index released');
+    MATTER_ParseMessage($b, encode_json({event => 'node_updated', data => {
+        node_id => 9801, available => JSON::true, attributes => {'0/40/3' => 'new'}}}));
+    my $count = $r->{MSGCNT};
+    for my $message (
+        {event => 'attribute_updated', data => [9801, '0/40/3', 'wrong']},
+        {event => 'node_event', data => {node_id => 9801, endpoint_id => 1, cluster_id => 59, event_id => 1}},
+        {message_id => $id, result => {'0/40/3' => 'old'}},
+        {event => 'node_removed', data => 9801}) {
+        # Exercise the receiver even with a stale index, independently of AttrFn.
+        $modules{MATTERDevice}{defptr}{'moveA:9801'} = $r;
+        MATTER_ParseMessage($a, encode_json($message));
+    }
+    is($r->{MSGCNT}, $count, 'old IO events and read reply leave receive internals intact');
+    is(ReadingsVal($r->{NAME}, 'model', ''), 'new', 'new IO reports update the same root');
+    is(ReadingsVal($r->{NAME}, 'state', ''), 'online', 'old removal cannot change new availability');
+    MATTER_ProcessNode($a, {node_id => 9801, name => 'OtherMoveRoot', available => JSON::true});
+    like(CommandAttr(undef, "$r->{NAME} IODev moveA"), qr/already belongs/,
+         'duplicate destination identity rejects rebind');
+    is($r->{IODev}, $b, 'failed rebind retains previous IO');
+    ok($r->{helper}{available}, 'failed rebind preserves current availability');
+    is(CommandRename(undef, 'moveB moveRenamed'), undef, 'rename current IO');
+    ok($r->{helper}{available}, 'renaming the same IO preserves availability');
+}
 
 done_testing();

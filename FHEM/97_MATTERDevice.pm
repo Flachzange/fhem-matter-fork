@@ -501,6 +501,7 @@ sub MATTERDevice_Initialize($) {
     $hash->{SetFn}    = "MATTERDevice_Set";
     $hash->{GetFn}    = "MATTERDevice_Get";
     $hash->{ParseFn}  = "MATTERDevice_Parse";
+    $hash->{AttrFn}   = "MATTERDevice_Attr";
     $hash->{NotifyFn} = "MATTERDevice_Notify";
     $hash->{FW_detailFn} = "MATTERDevice_FWDetail";
     $hash->{FW_deviceOverview} = 1; # Keep FHEMWEB DeviceOverview above the endpoint links.
@@ -704,6 +705,36 @@ sub MATTERDevice_UpdateAvailability($$) {
     MATTERDevice_SyncNodeReadings($hash);
 }
 
+# CommandAttr calls AttrFn before committing IODev. Reject collisions here;
+# the global ATTR event below observes the pointer actually installed by FHEM.
+sub MATTERDevice_Attr {
+    my ($op, $name, $attr, $value) = @_;
+    return unless $op eq 'set' && $attr eq 'IODev';
+    my $root = $defs{$name};
+    return unless ($root->{endpoint_id} // 0) == 0;
+    my $io = $defs{$value};
+    return if !$io && !$init_done; # Forward reference during config restoration.
+    return "Unknown MATTER IODev $value" unless $io && ($io->{TYPE} // '') eq 'MATTER';
+    my $owner = MATTERDevice_LookupRoot($io, $root->{node_id});
+    return "Node $root->{node_id} on $value already belongs to $owner->{NAME}"
+        if $owner && $owner ne $root;
+    MATTERDevice_InvalidateAvailability($root) if ($root->{IODev} // '') ne $io;
+    return undef;
+}
+
+sub MATTERDevice_LookupRoot {
+    my ($io, $node_id) = @_;
+    return undef unless $io;
+    my $key = "$io->{NAME}:$node_id";
+    my $root = $modules{MATTERDevice}{defptr}{$key};
+    return undef unless $root;
+    return $root if ($defs{$root->{NAME}} // '') eq $root &&
+        ($root->{TYPE} // '') eq 'MATTERDevice' && ($root->{node_id} // '') eq $node_id &&
+        ($root->{endpoint_id} // -1) == 0 && ($root->{IODev} // '') eq $io;
+    delete $modules{MATTERDevice}{defptr}{$key};
+    return undef;
+}
+
 # Config and statefile restoration complete before INITIALIZED/REREADCFG.
 # The former module created exactly 'stateFormat available' automatically.
 # Migrate that legacy default once, without altering other user formatting.
@@ -711,11 +742,23 @@ sub MATTERDevice_Notify($$) {
     my ($hash, $dev) = @_;
     return unless ($hash->{endpoint_id} // 0) == 0 &&
                   ($dev->{NAME} // '') eq 'global';
-    return unless grep { $_ eq 'INITIALIZED' || $_ eq 'REREADCFG' }
-                  @{$dev->{CHANGED} // []};
-    MATTERDevice_InvalidateAvailability($hash);
     my $name = $hash->{NAME};
-    if (AttrVal($name, 'stateFormat', '') eq 'available' &&
+    my $events = $dev->{CHANGED} // [];
+    my $startup = grep { $_ eq 'INITIALIZED' || $_ eq 'REREADCFG' } @$events;
+    my $io = $hash->{IODev};
+    return unless $startup || ($io && grep { $_ eq "ATTR $name IODev $io->{NAME}" } @$events);
+    if ($io) {
+        my $index = $modules{MATTERDevice}{defptr};
+        my $key = "$io->{NAME}:$hash->{node_id}";
+        my $owner = MATTERDevice_LookupRoot($io, $hash->{node_id});
+        return if !$startup && $owner && $owner eq $hash;
+        for my $old (keys %$index) {
+            delete $index->{$old} if $old ne $key && $index->{$old} eq $hash;
+        }
+        $index->{$key} = $hash unless $owner;
+    }
+    MATTERDevice_InvalidateAvailability($hash) if $startup;
+    if ($startup && AttrVal($name, 'stateFormat', '') eq 'available' &&
         ReadingsVal($name, 'state', '') !~ /\A(?:online|offline|unknown|removed)\z/) {
         my $error = CommandDeleteAttr(undef, "$name stateFormat");
         Log3 $name, 3, "MATTERDevice: Cannot remove legacy stateFormat on $name: $error" if $error;
@@ -762,7 +805,9 @@ sub MATTERDevice_Define($$) {
     if ($endpoint_id == 0) {
         AssignIoPort($hash);
         my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
-        $modules{MATTERDevice}{defptr}{"$io_name:$node_id"} = $hash;
+        # AssignIoPort may initially choose an IO which already owns this ID.
+        $modules{MATTERDevice}{defptr}{"$io_name:$node_id"} = $hash
+            unless MATTERDevice_LookupRoot($hash->{IODev}, $node_id);
         MATTERDevice_SetRootState($hash, 'unknown') if $init_done;
     }
     Log3 $name, 3, "MATTERDevice: Defined node_id $node_id for $name";
@@ -1532,9 +1577,7 @@ sub MATTERDevice_Set($$@) {
     elsif ($cmd eq "getConfig") {
         my $ioHash = $io_hash; # Connection was already checked above.
         my $root = ($hash->{endpoint_id} // 0) == 0 ? $hash :
-            $modules{MATTERDevice}{defptr}{
-                ($ioHash->{NAME} // '') . ':' . $node_id
-            };
+            MATTERDevice_LookupRoot($ioHash, $node_id);
         return "MATTER: Node $node_id is offline or availability is unknown; getConfig not sent"
             if !$root || !$root->{helper}{available};
 
@@ -1584,10 +1627,6 @@ sub MATTERDevice_Set($$@) {
                 if scalar(keys %$pending_reads) >= 128;
             my $msg_id = MATTER_NextMessageId($ioHash);
             return "MATTER: Cannot allocate request ID" unless defined $msg_id;
-            my $root = ($hash->{endpoint_id} // 0) == 0 ? $hash :
-                $modules{MATTERDevice}{defptr}{
-                    ($ioHash->{NAME} // '') . ':' . $node_id
-                };
             $pending_reads->{$msg_id} = {
                 node_id => $node_id,
                 endpoint_id => int($endpoint_id),
@@ -1907,8 +1946,7 @@ sub MATTERDevice_CompleteRequest {
         $owner->{IODev} && $owner->{IODev} eq $io;
     if (defined $reply) {
         my $received = {};
-        MATTERDevice_RecordReceive($modules{MATTERDevice}{defptr}{
-            "$io->{NAME}:$request->{node_id}"}, $received);
+        MATTERDevice_RecordReceive(MATTERDevice_LookupRoot($io, $request->{node_id}), $received);
         MATTERDevice_RecordReceive($owner, $received);
     }
     my $group = $request->{group};
@@ -2351,10 +2389,8 @@ sub MATTERDevice_Parse($ $;$) {
     }
 
     my $my_endpoint = $hash->{endpoint_id} // 0;
-    my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} :
-                  AttrVal($name, 'IODev', '');
     my $root = $my_endpoint == 0 ? $hash :
-        $modules{MATTERDevice}{defptr}{"$io_name:$hash->{node_id}"};
+        MATTERDevice_LookupRoot($hash->{IODev}, $hash->{node_id});
     # The root owns availability for every child; an endpoint's local state
     # or old available reading is not a separate reachability report.
     my $allow_device_attr = sub {
@@ -3044,7 +3080,9 @@ as described below.</p>
       node/endpoint. Autocreated devices receive the discovering IO; manually
       defined roots use FHEM's IO assignment when no IO is specified.
       With multiple servers, select the correct IO explicitly: node IDs are
-      specific to their server.</li>
+      specific to their server. Moving a root to another IO resets its state to
+      unknown until that server reports availability. An occupied target ID
+      is rejected. Each endpoint retains its own IODev assignment.</li>
   <li><a id="MATTERDevice-attr-dimRate"></a><b>dimRate:</b> Integer
       <code>1</code>–<code>254</code>, default <code>30</code>. Native
       LevelControl move rate in level units per second for the next
@@ -3422,7 +3460,9 @@ vor dem Neustart mit V0.21 wie unten beschrieben entfernen.</p>
       Knoten/Endpunkt. Automatisch angelegte Geräte erhalten das erkennende IO;
       manuell definierte Roots verwenden ohne Angabe FHEMs IO-Zuordnung.
       Bei mehreren Servern das richtige IO ausdrücklich wählen: Node-IDs
-      gelten jeweils nur innerhalb ihres Servers.</li>
+      gelten jeweils nur innerhalb ihres Servers. Nach dem Wechsel eines Roots
+      bleibt sein Zustand unknown, bis der neue Server die Erreichbarkeit meldet.
+      Eine belegte Ziel-ID wird abgewiesen. Endpunkte behalten ihr eigenes IODev.</li>
   <li><a id="MATTERDevice-attr-dimRate"></a><b>dimRate:</b> Ganzzahl
       <code>1</code>–<code>254</code>, Standard <code>30</code>. Native
       LevelControl-Geschwindigkeit in Level-Einheiten pro Sekunde für den
