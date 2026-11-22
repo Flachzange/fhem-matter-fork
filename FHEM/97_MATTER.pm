@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.24 22.11.2026";
+my $MATTER_version = "V0.25 22.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -974,6 +974,9 @@ sub MATTER_ValidLiveAttribute {
         if $cluster == 8 && $attribute == 0;
     return defined(MATTERDevice_NetworkType($value))
         if $cluster == 51 && $attribute == 0;
+    return !ref($value) && $value =~ /\A\d+\z/ && $value <= 5
+        if ($cluster == 513 && $attribute == 27) ||
+           ($cluster == 514 && $attribute == 1);
     if ($cluster == 29 && $attribute == 1) {
         return 0 unless ref($value) eq 'ARRAY';
         for my $entry (@$value) {

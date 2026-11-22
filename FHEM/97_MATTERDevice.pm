@@ -409,6 +409,7 @@ my %MATTER_CLUSTERS = (
     },
     0x0201 => {
         name       => "Thermostat",
+        features   => { heating => 0, cooling => 1, auto_mode => 5 },
         attributes => {
             0x0000 => { name => "measured-temp", is_reading => 1, is_attribute => 0,
                         transform => sub {
@@ -417,18 +418,21 @@ my %MATTER_CLUSTERS = (
                             return $_[0] / 100;
                         } },
             0x0011 => { name => "desired-temp-cool", is_reading => 1, is_attribute => 0,
+                        writable => 1, required_features => ['cooling'],
                         transform => sub {
                             return undef if $_[0] != int($_[0]) ||
                                             $_[0] < -27315 || $_[0] > 32767;
                             return $_[0] / 100;
                         } },
             0x0012 => { name => "desired-temp", is_reading => 1, is_attribute => 0,
+                        writable => 1, required_features => ['heating'],
                         transform => sub {
                             return undef if $_[0] != int($_[0]) ||
                                             $_[0] < -27315 || $_[0] > 32767;
                             return $_[0] / 100;
                         } },
             0x001C => { name => "mode", is_reading => 1, is_attribute => 0,
+                        writable => 1,
                         transform => sub {
                             my %modes = (0 => 'off', 1 => 'auto', 3 => 'cool',
                                          4 => 'heat', 5 => 'emergency_heat');
@@ -438,14 +442,17 @@ my %MATTER_CLUSTERS = (
     },
     0x0202 => {
         name       => "FanControl",
+        features   => { auto_mode => 1 },
         attributes => {
             0x0000 => { name => "fan_mode", is_reading => 1, is_attribute => 0,
+                        writable => 1,
                         transform => sub {
                             my %modes = (0 => 'off', 1 => 'low', 2 => 'medium',
                                          3 => 'high', 4 => 'on', 5 => 'auto');
                             return $modes{$_[0]};
                         } },
             0x0002 => { name => "fan_pct_setting", is_reading => 1, is_attribute => 0,
+                        writable => 1,
                         transform => sub {
                             return undef if $_[0] != int($_[0]) ||
                                             $_[0] < 0 || $_[0] > 100;
@@ -566,6 +573,9 @@ sub MATTERDevice_NeedsCapabilityRefresh($) {
             # These supported setters write Matter attributes, not commands.
             if ($cluster_id == 0x0201 || $cluster_id == 0x0202) {
                 return 1 unless ref($cap->{attribute_list}) eq 'HASH';
+                my @feature_targets = $cluster_id == 0x0201 ? (17, 18, 28) : (0);
+                return 1 if !defined($cap->{feature_map}) &&
+                    grep { exists $cap->{attribute_list}{$_} } @feature_targets;
             }
         }
     }
@@ -943,6 +953,42 @@ sub MATTERDevice_AttributeUsable($$$) {
     }
 
     return 1;
+}
+
+# Only explicitly mapped standard write targets can authorize setters.
+# The device still decides ACL permission and value acceptance on each write.
+sub MATTERDevice_AttributeWritable($$$) {
+    my ($hash, $cluster, $attribute) = @_;
+    return $MATTER_CLUSTERS{$cluster}{attributes}{$attribute}{writable} &&
+           MATTERDevice_AttributeSupported($hash, $cluster, $attribute) &&
+           MATTERDevice_AttributeUsable($hash, $cluster, $attribute);
+}
+
+# Standard-compatible choices; optional enum support is still device-owned.
+# Use one list for FHEMWEB and explicit SetFn calls.
+sub MATTERDevice_HvacModes($$) {
+    my ($hash, $cluster) = @_;
+    my $thermostat = $cluster == 0x0201;
+    return () unless MATTERDevice_AttributeWritable($hash, $cluster, $thermostat ? 28 : 0) &&
+                     MATTERDevice_AttributeSupported($hash, $cluster, $thermostat ? 27 : 1);
+    my $cap = $hash->{helper}{capabilities}{$cluster};
+    return () unless defined($cap->{feature_map}) && defined($cap->{mode_sequence});
+    my $sequence = $cap->{mode_sequence};
+    if ($thermostat) {
+        my $heat = $sequence >= 2 && MATTERDevice_FeatureSupported($hash, $cluster, 'heating');
+        my $cool = ($sequence < 2 || $sequence >= 4) &&
+                   MATTERDevice_FeatureSupported($hash, $cluster, 'cooling');
+        return ('off', $heat ? ('heat') : (), $cool ? ('cool') : (),
+                $heat && $cool && MATTERDevice_FeatureSupported($hash, $cluster, 'auto_mode') ? ('auto') : (),
+                $heat ? ('emergency_heat') : ());
+    }
+    my @sequences = (
+        [qw(off low medium high)], [qw(off low high)],
+        [qw(off low medium high auto)], [qw(off low high auto)],
+        [qw(off high auto)], [qw(off high)],
+    );
+    return grep { $_ ne 'auto' || MATTERDevice_FeatureSupported($hash, $cluster, 'auto_mode') }
+           @{$sequences[$sequence]};
 }
 
 # Ein FHEM-Command gilt nur dann als verfügbar, wenn der Matter-Server ihn
@@ -1464,27 +1510,28 @@ sub MATTERDevice_Set($$@) {
             }
         };
     }
-    elsif ($cmd =~ /^(?:desired-temp|mode|fan_mode|fan_pct)$/) {
+    elsif ($cmd =~ /^(?:desired-temp(?:-cool)?|mode|fan_mode|fan_pct)$/) {
         my ($cluster_id, $attr_id, $write_value);
         return "Usage: set $name $cmd <value>" if @args != 1 || !defined($args[0]);
         my $value = $args[0];
-        if ($cmd eq 'desired-temp') {
-            return 'desired-temp must be a valid temperature in degrees Celsius'
+        if ($cmd eq 'desired-temp' || $cmd eq 'desired-temp-cool') {
+            return "$cmd must be a valid temperature in degrees Celsius"
                 unless $value =~ /^-?\d+(?:\.\d{1,2})?$/ &&
                        $value >= -273.15 && $value <= 327.67;
-            ($cluster_id, $attr_id) = (0x0201, 0x0012);
+            ($cluster_id, $attr_id) = (0x0201, $cmd eq 'desired-temp' ? 0x0012 : 0x0011);
             $write_value = int($value * 100 + ($value >= 0 ? 0.5 : -0.5));
         } elsif ($cmd eq 'mode') {
+            my @allowed = MATTERDevice_HvacModes($hash, 0x0201);
+            return 'mode must be one of ' . join(', ', @allowed)
+                unless grep { $_ eq $value } @allowed;
             my %modes = (off => 0, auto => 1, cool => 3, heat => 4,
                          emergency_heat => 5);
-            return 'mode must be off, auto, cool, heat or emergency_heat'
-                unless exists $modes{$value};
             ($cluster_id, $attr_id, $write_value) = (0x0201, 0x001C, $modes{$value});
         } elsif ($cmd eq 'fan_mode') {
-            my %modes = (off => 0, low => 1, medium => 2, high => 3,
-                         on => 4, auto => 5);
-            return 'fan_mode must be off, low, medium, high, on or auto'
-                unless exists $modes{$value};
+            my @allowed = MATTERDevice_HvacModes($hash, 0x0202);
+            return 'fan_mode must be one of ' . join(', ', @allowed)
+                unless grep { $_ eq $value } @allowed;
+            my %modes = (off => 0, low => 1, medium => 2, high => 3, auto => 5);
             ($cluster_id, $attr_id, $write_value) = (0x0202, 0x0000, $modes{$value});
         } else {
             return 'fan_pct must be between 0 and 100'
@@ -1492,7 +1539,7 @@ sub MATTERDevice_Set($$@) {
             ($cluster_id, $attr_id, $write_value) = (0x0202, 0x0002, int($value));
         }
         return "Matter attribute for $cmd is not advertised"
-            unless MATTERDevice_AttributeSupported($hash, $cluster_id, $attr_id);
+            unless MATTERDevice_AttributeWritable($hash, $cluster_id, $attr_id);
         $payload = {
             message_id => MATTER_NextMessageId($io_hash),
             command => 'write_attribute',
@@ -1651,6 +1698,7 @@ sub MATTERDevice_Set($$@) {
             $hash->{IODev}{helper}{pending_command}{$id} = {
                 type => 'node_operation', operation => 'write_attribute',
                 name => $name, fuuid => $hash->{FUUID}, node_id => $node_id,
+                attribute_path => $payload->{args}{attribute_path},
                 started_at => gettimeofday(), timeout => 120,
             };
         }
@@ -1887,6 +1935,35 @@ sub MATTERDevice_SendNodeOperation {
     readingsSingleUpdate($hash, $reading, 'requested', 1);
     return undef;
 }
+# null retains the existing API-ack contract. A unicast status list must
+# answer the one requested path; empty, unrelated or malformed data is no ACK.
+sub MATTERDevice_WriteResponseError($$) {
+    my ($request, $reply) = @_;
+    return 'invalid write response' unless exists($reply->{result});
+    my $result = $reply->{result};
+    return undef unless defined $result;
+    return 'invalid write response' unless ref($result) eq 'ARRAY' && @$result == 1 &&
+        ref($result->[0]) eq 'HASH' && ref($result->[0]{Path}) eq 'HASH';
+    my $expected = $request->{attribute_path};
+    return 'invalid write response' unless defined($expected) &&
+        $expected =~ m{\A(\d+)/(\d+)/(\d+)\z};
+    my @ids = ($1, $2, $3);
+    my $entry = $result->[0];
+    for my $key (qw(EndpointId ClusterId AttributeId)) {
+        my $id = $entry->{Path}{$key};
+        return 'write response path mismatch' unless defined($id) && !ref($id) &&
+            $id =~ /\A\d+\z/ && $id == shift @ids;
+    }
+    for my $key (qw(Status ClusterStatus)) {
+        next if $key eq 'ClusterStatus' && !exists($entry->{$key});
+        return 'invalid write response' unless defined($entry->{$key}) && !ref($entry->{$key}) &&
+            $entry->{$key} =~ /\A\d+\z/ && $entry->{$key} <= 255;
+    }
+    return undef if $entry->{Status} == 0;
+    return 'Matter write status ' . (0 + $entry->{Status}) .
+        (exists($entry->{ClusterStatus}) ? ' (cluster status ' . (0 + $entry->{ClusterStatus}) . ')' : '');
+}
+
 sub MATTERDevice_HandleNodeOperation {
     my ($hash, $request, $reply) = @_;
     my $cmd = $request->{operation};
@@ -1973,8 +2050,8 @@ sub MATTERDevice_HandleNodeOperation {
             readingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
         }
     } elsif ($cmd eq 'write_attribute') {
-        readingsSingleUpdate($hash, 'lastError', 'none', 1)
-            if exists($reply->{result});
+        my $error = MATTERDevice_WriteResponseError($request, $reply);
+        readingsSingleUpdate($hash, 'lastError', defined($error) ? "failed: $error" : 'none', 1);
     } elsif ($cmd eq 'update_node') {
         if (exists($reply->{result}) && !defined($reply->{result})) {
             $hash->{helper}{firmware_update_in_flight} = 1;
@@ -1997,6 +2074,15 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     # Remember cluster presence for conservative fallback labels in FHEMWEB,
     # including measurement clusters this module does not yet expose as readings.
     $hash->{helper}{seen_clusters}{$cluster_id} = 1 if defined($value);
+
+    # Device mode constraints belong in the existing capability cache, not in
+    # the current physical mode reading. Partial reports keep earlier data.
+    if (($cluster_id == 0x0201 && $attr_id == 27) ||
+        ($cluster_id == 0x0202 && $attr_id == 1)) {
+        $hash->{helper}{capabilities}{$cluster_id}{mode_sequence} = 0 + $value
+            if defined($value) && !ref($value) && $value =~ /\A\d+\z/ && $value <= 5;
+        return;
+    }
 
     # OTA Requestor status comes from the physical device, not from the
     # WebSocket command acknowledgement.
@@ -2434,14 +2520,16 @@ sub MATTERDevice_GetSetList($) {
     }
     $add->("identify:noArg")
         if MATTERDevice_CommandSupported($hash, 0x0003, 0x00);
-    $add->("desired-temp:slider,5,0.5,30,1")
-        if MATTERDevice_AttributeSupported($hash, 0x0201, 0x0012);
-    $add->("mode:off,heat,cool,auto,emergency_heat")
-        if MATTERDevice_AttributeSupported($hash, 0x0201, 0x001C);
-    $add->("fan_mode:off,low,medium,high,on,auto")
-        if MATTERDevice_AttributeSupported($hash, 0x0202, 0x0000);
+    $add->("desired-temp:textField")
+        if MATTERDevice_AttributeWritable($hash, 0x0201, 0x0012);
+    $add->("desired-temp-cool:textField")
+        if MATTERDevice_AttributeWritable($hash, 0x0201, 0x0011);
+    my @modes = MATTERDevice_HvacModes($hash, 0x0201);
+    $add->('mode:' . join(',', @modes)) if @modes;
+    my @fan_modes = MATTERDevice_HvacModes($hash, 0x0202);
+    $add->('fan_mode:' . join(',', @fan_modes)) if @fan_modes;
     $add->("fan_pct:slider,0,1,100")
-        if MATTERDevice_AttributeSupported($hash, 0x0202, 0x0002);
+        if MATTERDevice_AttributeWritable($hash, 0x0202, 0x0002);
 
     $add->("on:noArg") if (
         MATTERDevice_CommandSupported($hash, 0x0006, 0x01) ||
@@ -2983,11 +3071,29 @@ one model cannot establish support for all models sharing the cluster.</p>
 <tr><td>Electrical metering</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>untested</strong></td></tr>
 <tr><td>Air quality / CO concentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>untested</strong></td></tr>
 </table>
-<p>Thermostat (measured/desired temperature and system mode), FanControl
-(mode and percent speed) and Identify (15 seconds) are supported when the
-required Matter attributes/commands are advertised. Thermostat, fan and
-Identify device combinations are <strong>untested</strong> in this repository.
-Command acceptance does not assert that the physical state has changed.</p>
+<p>Thermostat: <code>desired-temp</code> writes OccupiedHeatingSetpoint;
+<code>desired-temp-cool</code> writes OccupiedCoolingSetpoint, in degrees Celsius
+with at most two decimals. Each requires its advertised attribute and the
+corresponding Heating/Cooling feature. Text inputs replace the arbitrary
+5–30 °C slider; the device validates its own setpoint limits.</p>
+<p><code>mode</code> choices follow Heating/Cooling/AutoMode and
+ControlSequenceOfOperation. <code>fan_mode</code> follows FanModeSequence and
+the Auto feature; the deprecated On mode is not offered. Mode controls require
+AttributeList, FeatureMap and valid sequence metadata; missing metadata does
+not get guessed from a current mode. Normal snapshots or the endpoint's explicit
+<code>getConfig</code> supply this data, without extra probing. These are
+standard-compatible choices, not a guarantee of optional enum support or ACL
+permission. The server/device remains authoritative.</p>
+<p><code>fan_pct</code> writes PercentSetting (0–100); readings
+<code>fan_pct_setting</code> and <code>fan_pct</code> distinguish the target
+from PercentCurrent. Only explicitly mapped writable standard attributes
+authorize these setters. Identify (15 seconds) still requires its accepted
+command. Correlated write status lists must match the requested path and report
+Status 0; failures, malformed replies and path mismatches appear in
+<code>lastError</code>. The existing null API acknowledgement is retained.
+Neither acknowledgement updates physical setpoint/mode/speed readings;
+device reports do. Thermostat, fan and Identify combinations are
+<strong>untested</strong> on hardware.</p>
 <p>Server-backed Matter OTA: root nodes with OTA Requestor support can
 <code>checkFirmwareUpdate</code> and, after an update version is confirmed,
 <code>updateFirmware</code>. Image download, hosting and installation remain
@@ -3311,11 +3417,29 @@ mit demselben Matter-Cluster.</p>
 <tr><td>Elektrische Messwerte</td><td>ElectricalPowerMeasurement, ElectricalEnergyMeasurement</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Luftqualität / CO-Konzentration</td><td>AirQuality, CarbonMonoxideConcentrationMeasurement</td><td><strong>ungetestet</strong></td></tr>
 </table>
-<p>Thermostat (Ist-/Solltemperatur und Betriebsmodus), FanControl
-(Modus und Prozentgeschwindigkeit) und Identify (15 Sekunden) sind nur bei
-vorhandenen Matter-Attributen/Befehlen verfügbar. Thermostat-/Lüfter-
-Geräte und Identify-Kombinationen sind <strong>ungetestet</strong>.
-Ein angenommener Befehl bestätigt keine physische Zustandsänderung.</p>
+<p>Thermostat: <code>desired-temp</code> schreibt OccupiedHeatingSetpoint,
+<code>desired-temp-cool</code> OccupiedCoolingSetpoint, in Grad Celsius mit
+höchstens zwei Nachkommastellen. Erforderlich sind jeweils das angekündigte
+Attribut und die passende Heating-/Cooling-Fähigkeit. Texteingaben ersetzen
+den pauschalen 5–30-°C-Slider; eigene Sollwertgrenzen prüft das Gerät.</p>
+<p>Die Auswahl für <code>mode</code> folgt Heating/Cooling/AutoMode und
+ControlSequenceOfOperation. <code>fan_mode</code> folgt FanModeSequence und dem
+Auto-Feature; der veraltete On-Modus wird nicht angeboten. Die Modusauswahl
+benötigt AttributeList, FeatureMap und gültige Sequenzmetadaten. Fehlende Daten
+werden nicht aus dem aktuellen Modus geraten. Normale Snapshots oder
+<code>getConfig</code> am betreffenden Endpunkt liefern diese Daten, ohne zusätzliche Probeabfragen.
+Die Auswahl ist standardkompatibel, garantiert aber weder optionale
+Enum-Unterstützung noch ACL-Berechtigung. Server/Gerät bleiben maßgeblich.</p>
+<p><code>fan_pct</code> schreibt PercentSetting (0–100); die Readings
+<code>fan_pct_setting</code> und <code>fan_pct</code> trennen Sollwert und
+PercentCurrent. Nur ausdrücklich als schreibbar abgebildete Standardattribute
+geben diese Setter frei. Identify (15 Sekunden) benötigt weiterhin seinen
+akzeptierten Befehl. Korrelierte Schreibstatuslisten müssen zum angefragten
+Pfad passen und Status 0 melden. Ablehnungen, fehlerhafte Antworten und falsche
+Pfade erscheinen in <code>lastError</code>. Die vorhandene null-API-Bestätigung
+bleibt zulässig. Keine Bestätigung überschreibt physische Sollwert-/Modus-/
+Geschwindigkeits-Readings; dafür sind Geräteberichte erforderlich. Thermostat-,
+Lüfter- und Identify-Kombinationen sind an Hardware <strong>ungetestet</strong>.</p>
 <p>Servergestütztes Matter-OTA: Root-Knoten mit OTA Requestor bieten
 <code>checkFirmwareUpdate</code> und nach nachgewiesener Versionsfreigabe
 <code>updateFirmware</code>. Download, Hosting und Installation übernimmt

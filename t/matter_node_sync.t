@@ -2318,11 +2318,15 @@ is($sent_requests[-1]{args}{command_name}, 'Stop',
 MATTER_ProcessNode($defs{ioA}, {
     node_id => 3300, name => 'HVACProbe', available => JSON::true,
     attributes => {
-        '1/513/65531' => [0, 18, 28],
+        '1/513/65531' => [0, 18, 27, 28],
+        '1/513/65532' => 1,
+        '1/513/27' => 2,
         '1/513/0' => 2250,
         '1/513/18' => 2100,
         '1/513/28' => 4,
-        '2/514/65531' => [0, 2, 3],
+        '2/514/65531' => [0, 1, 2, 3],
+        '2/514/65532' => 0,
+        '2/514/1' => 0,
         '2/514/0' => 2,
         '2/514/2' => 55,
         '2/514/3' => 53,
@@ -2381,7 +2385,7 @@ like(MATTERDevice_Set($fan, $fan->{NAME}, 'fan_pct', '300') // '',
 
 
 # Issue #27: cache protection is node-wide, preserves manual edits and all
-# device-derived metadata; recovery accepts only fresh individual reports.
+# device-derived metadata; valid online reports resume normal synchronization.
 MATTER_ProcessNode($defs{ioA}, {
     node_id => 2700, name => 'OfflineProbe', available => JSON::true,
     attributes => {
@@ -2942,7 +2946,7 @@ is(ReadingsVal($therm->{NAME}, 'desired-temp', ''), 21,
 # End-to-end request discipline: do not accept another write before the
 # controller has replied to the previous attribute write.
 @sent_requests = ();
-is(MATTERDevice_Set($therm, $therm->{NAME}, 'mode', 'cool'), undef,
+is(MATTERDevice_Set($therm, $therm->{NAME}, 'mode', 'off'), undef,
    'first thermostat mode write queued');
 my $first_mode_id = $sent_requests[-1]{message_id};
 like(MATTERDevice_Set($therm, $therm->{NAME}, 'mode', 'heat') // '',
@@ -4114,6 +4118,197 @@ subtest 'Issue 32: environmental values, units and optional numeric measurements
     is(ReadingsVal($root->{NAME}, 'state', ''), 'online', 'environment measurements do not replace root reachability');
     is(scalar @requests, 0, 'all measurement handling uses supplied data without extra reads or polling');
     MATTER_Close($io);
+};
+
+subtest 'Issue 33: HVAC capabilities, cooling writes and correlated Matter status' => sub {
+    my @requests;
+    my @peers;
+    my $connect = sub {
+        my ($io) = @_;
+        socketpair(my $socket, my $peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die 'HVAC socketpair';
+        push @peers, $peer;
+        $io->{CD} = $socket; $io->{websocket} = 1; $io->{ws_status} = 'connected';
+        $io->{fhem}{helper}{sendWS} = sub {push @requests, JSON::decode_json($_[0]); return 1;};
+    };
+    my $io = $defs{ioHvac} = {NAME => 'ioHvac', TYPE => 'MATTER', READINGS => {}, helper => {}};
+    my $other = $defs{ioHvacOther} = {NAME => 'ioHvacOther', TYPE => 'MATTER', READINGS => {}, helper => {}};
+    $connect->($_) for ($io, $other);
+    my $values = {
+        '1/513/65531' => [18, 27, 28], '1/513/65532' => 1, '1/513/27' => 2,
+        '1/513/18' => 2100, '1/513/28' => 4,
+        '2/513/65531' => [17, 27, 28], '2/513/65532' => 2, '2/513/27' => 0,
+        '2/513/17' => 2600, '2/513/28' => 3,
+        '3/513/65531' => [17, 18, 27, 28], '3/513/65532' => 35, '3/513/27' => 4,
+        '3/513/17' => 2600, '3/513/18' => 2100, '3/513/28' => 1,
+        '4/514/65531' => [0, 1, 2, 3], '4/514/65532' => 0, '4/514/1' => 1,
+        '4/514/0' => 3, '4/514/2' => 50, '4/514/3' => 45,
+        '5/514/65531' => [0, 1, 2, 3], '5/514/65532' => 2, '5/514/1' => 4,
+        '5/514/0' => 5, '5/514/3' => 30,
+        '6/513/65531' => [17, 18, 27, 28], '6/513/27' => 4,
+        '6/513/18' => 2100, '6/513/28' => 4,
+        '7/513/65532' => 3, '7/513/27' => 4, '7/513/18' => 2100,
+        '8/3/65529' => [0], '8/3/0' => 0,
+        '9/514/65531' => [3], '9/514/65532' => 0, '9/514/3' => 70,
+    };
+    for my $target ($io, $other) {
+        MATTER_ProcessNode($target, {node_id => 6500, name => 'HvacMatrix', available => JSON::true, attributes => $values});
+    }
+    my $root = $modules{MATTERDevice}{defptr}{'ioHvac:6500'};
+    my $other_root = $modules{MATTERDevice}{defptr}{'ioHvacOther:6500'};
+    my %ep = map { $_->{endpoint_id} => $_ } MATTERDevice_NodeChildren($root);
+    my %other_ep = map { $_->{endpoint_id} => $_ } MATTERDevice_NodeChildren($other_root);
+    my $list = sub {return join(' ', MATTERDevice_GetSetList($_[0]));};
+    my $report = sub {
+        my ($endpoint, $cluster, $attribute, $value) = @_;
+        MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [6500, "$endpoint/$cluster/$attribute", $value]}));
+    };
+    my $status = sub {
+        my ($path, $code, $cluster_code) = @_;
+        my ($endpoint, $cluster, $attribute) = split '/', $path;
+        return [{Path => {EndpointId => 0 + $endpoint, ClusterId => 0 + $cluster, AttributeId => 0 + $attribute},
+                 Status => $code, defined($cluster_code) ? (ClusterStatus => $cluster_code) : ()}];
+    };
+    unlike($list->($root), qr/(?:desired-temp|fan_mode|fan_pct|identify):/, 'endpoint capabilities are not offered on the root');
+    like($list->($ep{1}), qr/desired-temp:textField/, 'heating target uses advertised attribute and heating feature');
+    unlike($list->($ep{1}), qr/desired-temp-cool:|mode:[^ ]*\b(?:cool|auto)\b/, 'heater does not offer cooling target or cooling/auto modes');
+    like($list->($ep{2}), qr/desired-temp-cool:textField/, 'cooler offers the cooling target');
+    unlike($list->($ep{2}), qr/desired-temp:|mode:[^ ]*\b(?:heat|emergency_heat|auto)\b/, 'cooler does not offer heating or auto modes');
+    like($list->($ep{3}), qr/mode:off,heat,cool,auto,emergency_heat/, 'combined auto thermostat offers feature-compatible modes');
+    like($list->($ep{4}), qr/fan_mode:off,low,high(?: |$)/, 'fan sequence excludes medium and auto');
+    like($list->($ep{5}), qr/fan_mode:off,high,auto(?: |$)/, 'auto fan sequence excludes low and medium');
+    unlike($list->($ep{6}), qr/(?:desired-temp(?:-cool)?|mode):/, 'saved physical mode cannot replace missing FeatureMap');
+    unlike($list->($ep{7}), qr/(?:desired-temp(?:-cool)?|mode):/, 'reported values cannot replace missing AttributeList');
+    unlike($list->($ep{9}), qr/fan_pct:|fan_mode:/, 'PercentCurrent alone cannot authorize PercentSetting');
+    like($list->($ep{8}), qr/identify:noArg/, 'Identify still follows AcceptedCommandList');
+    ok(!MATTERDevice_AttributeWritable($ep{9}, 514, 3), 'read-only PercentCurrent is not a standard write target');
+    my $before = @requests;
+    for my $case ([$ep{1}, 'desired-temp-cool', 26], [$ep{1}, 'mode', 'cool'],
+                  [$ep{2}, 'mode', 'heat'], [$ep{4}, 'fan_mode', 'medium'],
+                  [$ep{4}, 'fan_mode', 'auto'], [$ep{5}, 'fan_mode', 'low'],
+                  [$ep{4}, 'fan_mode', 'on'], [$ep{9}, 'fan_pct', 50]) {
+        ok(defined(MATTERDevice_Set($case->[0], $case->[0]{NAME}, $case->[1], $case->[2])), 'explicit unsupported target/mode is rejected');
+    }
+    is(scalar @requests, $before, 'unsupported commands send no request');
+
+    my $cool_writes = $single_writes{$ep{2}{NAME}}{'desired-temp-cool'};
+    my @accepted = MATTERDevice_Set($ep{2}, $ep{2}{NAME}, 'desired-temp-cool', '26.5');
+    is_deeply(\@accepted, [undef, 1], 'asynchronous cooling setter suppresses synthetic success events');
+    my $cool = $requests[-1];
+    is($cool->{command}, 'write_attribute', 'cooling target is a native attribute write');
+    is($cool->{args}{attribute_path}, '2/513/17', 'cooling writes OccupiedCoolingSetpoint on the target endpoint');
+    is($cool->{args}{value}, 2650, 'cooling temperature is encoded in centidegrees');
+    is(ReadingsVal($ep{2}{NAME}, 'desired-temp-cool', ''), 26, 'queued cooling write does not update telemetry');
+    MATTER_ParseMessage($other, encode_json({message_id => $cool->{message_id}, result => $status->('2/513/17', 135)}));
+    ok(exists($io->{helper}{pending_command}{$cool->{message_id}}), 'same request ID on another IO cannot consume this write');
+    MATTER_ParseMessage($io, encode_json({message_id => $cool->{message_id}, result => $status->('2/513/17', 0)}));
+    is(ReadingsVal($ep{2}{NAME}, 'lastError', ''), 'none', 'matching Matter success clears the error');
+    is($single_writes{$ep{2}{NAME}}{'desired-temp-cool'}, $cool_writes, 'success reply does not rewrite the physical setpoint');
+    $report->(2, 513, 17, 2650);
+    is(ReadingsVal($ep{2}{NAME}, 'desired-temp-cool', ''), 26.5, 'only the device report updates cooling telemetry');
+    is(ReadingsVal($other_ep{2}{NAME}, 'desired-temp-cool', ''), 26, 'same-node other IO telemetry is isolated');
+
+    is(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'desired-temp', '-5.25'), undef, 'negative protocol temperature is encoded before device constraint validation');
+    my $heat = $requests[-1];
+    is($heat->{args}{value}, -525, 'negative centidegree rounding is correct');
+    MATTER_ParseMessage($io, encode_json({message_id => $heat->{message_id}, result => $status->('1/513/18', 135, 7)}));
+    like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/failed:.*135.*cluster status 7/, 'Matter constraint refusal and cluster status are visible');
+    is(ReadingsVal($ep{1}{NAME}, 'desired-temp', ''), 21, 'device refusal preserves heating telemetry');
+    for my $bad ('26.555', 'nan', 328, -274) {
+        ok(defined(MATTERDevice_Set($ep{2}, $ep{2}{NAME}, 'desired-temp-cool', $bad)), 'malformed/out-of-protocol cooling temperature is rejected');
+    }
+
+    my @invalid = (
+        {}, {result => []}, {result => {}}, {result => 1},
+        {result => [{Path => {EndpointId => 2, ClusterId => 513, AttributeId => 17}}]},
+        {result => $status->('2/513/17', undef)},
+        {result => $status->('2/513/17', JSON::false)},
+        {result => $status->('2/513/17', 256)},
+        {result => $status->('2/513/17', 0.5)},
+        {result => $status->('3/513/17', 0)},
+        {result => $status->('2/514/17', 0)},
+        {result => $status->('2/513/18', 0)},
+        {result => [@{$status->('2/513/17', 0)}, @{$status->('2/513/17', 0)}]},
+        {result => [{Path => {EndpointId => 2, ClusterId => 513, AttributeId => 17}, Status => 0, ClusterStatus => {}}]},
+    );
+    for my $reply (@invalid) {
+        is(MATTERDevice_Set($ep{2}, $ep{2}{NAME}, 'desired-temp-cool', '27'), undef, 'cooling write queued for response validation');
+        MATTER_ParseMessage($io, encode_json({message_id => $requests[-1]{message_id}, %$reply}));
+        like(ReadingsVal($ep{2}{NAME}, 'lastError', ''), qr/^failed:/, 'missing/malformed/mismatched status never clears lastError');
+    }
+    is(MATTERDevice_Set($ep{2}, $ep{2}{NAME}, 'desired-temp-cool', '27'), undef, 'write can be retried explicitly after invalid reply');
+    MATTER_ParseMessage($io, encode_json({message_id => $requests[-1]{message_id}, result => undef}));
+    is(ReadingsVal($ep{2}{NAME}, 'lastError', ''), 'none', 'existing null API acknowledgement remains accepted');
+    is(ReadingsVal($ep{2}{NAME}, 'desired-temp-cool', ''), 26.5, 'null acknowledgement also leaves device telemetry untouched');
+
+    for my $sequence (0 .. 5) {
+        $report->(5, 514, 1, $sequence);
+        my @expected = ('off,low,medium,high', 'off,low,high',
+                        'off,low,medium,high,auto', 'off,low,high,auto', 'off,high,auto', 'off,high');
+        like($list->($ep{5}), qr/\bfan_mode:\Q$expected[$sequence]\E(?: |$)/, 'FanModeSequence enum controls the displayed list');
+    }
+    $report->(5, 514, 1, 4);
+    $report->(5, 514, 65532, 0);
+    like($list->($ep{5}), qr/fan_mode:off,high(?: |$)/, 'missing Auto feature removes auto even from an auto-capable sequence');
+    $report->(5, 514, 65532, 2);
+    for my $sequence (0 .. 5) {
+        $report->(3, 513, 27, $sequence);
+        my @expected = ('off,cool', 'off,cool', 'off,heat,emergency_heat',
+                        'off,heat,emergency_heat', 'off,heat,cool,auto,emergency_heat',
+                        'off,heat,cool,auto,emergency_heat');
+        like($list->($ep{3}), qr/\bmode:\Q$expected[$sequence]\E(?: |$)/, 'thermostat control sequence constrains the public mode list');
+    }
+    $report->(3, 513, 27, 4);
+    $report->(3, 513, 65532, 3);
+    unlike($list->($ep{3}), qr/mode:[^ ]*\bauto\b/, 'missing AutoMode feature removes auto from a combined thermostat');
+    $report->(3, 513, 65532, 35);
+
+    is(MATTERDevice_Set($ep{2}, $ep{2}{NAME}, 'desired-temp-cool', '27'), undef, 'write queued before its timeout');
+    my $timed_out = $requests[-1]{message_id};
+    my $saved_clock = $mock_time;
+    $mock_time += 121;
+    MATTER_Heartbeat($io);
+    $mock_time = $saved_clock;
+    like(ReadingsVal($ep{2}{NAME}, 'lastError', ''), qr/timeout.*unknown/, 'timeout keeps the write outcome unknown');
+    ok(!exists($io->{helper}{pending_command}{$timed_out}), 'timed-out write is removed from pending state');
+    MATTER_ParseMessage($io, encode_json({message_id => $timed_out, result => $status->('2/513/17', 0)}));
+    like(ReadingsVal($ep{2}{NAME}, 'lastError', ''), qr/timeout.*unknown/, 'late timed-out reply cannot clear the failure');
+
+    my $fan_modes = $list->($ep{4});
+    $report->(4, 514, 1, $_) for (undef, 99, {});
+    is($list->($ep{4}), $fan_modes, 'invalid sequence reports preserve earlier constraints');
+    $report->(4, 514, 3, 60);
+    is($list->($ep{4}), $fan_modes, 'partial current-speed report does not remove mode metadata');
+    is(MATTERDevice_Set($ep{4}, $ep{4}{NAME}, 'getConfig'), undef, 'explicit getConfig can refresh mode metadata');
+    MATTER_ParseMessage($io, encode_json({message_id => $requests[-1]{message_id}, result => {
+        '4/514/65531' => [0, 1, 2, 3], '4/514/65532' => 0, '4/514/1' => 5}}));
+    like($list->($ep{4}), qr/fan_mode:off,high(?: |$)/, 'full getConfig reconciles a changed mode sequence');
+    is(MATTERDevice_Set($ep{4}, $ep{4}{NAME}, 'getConfig'), undef, 'configuration read queued before a newer sequence');
+    my $sequence_read = $requests[-1]{message_id};
+    $report->(4, 514, 1, 1);
+    $report->(4, 514, 1, 99);
+    MATTER_ParseMessage($io, encode_json({message_id => $sequence_read, result => {
+        '4/514/65531' => [0, 1, 2, 3], '4/514/65532' => 0, '4/514/1' => 5}}));
+    like($list->($ep{4}), qr/fan_mode:off,low,high(?: |$)/,
+         'newer valid sequence wins over an old read despite a later malformed report');
+    $report->(4, 514, 65531, [0, 2, 3]);
+    unlike($list->($ep{4}), qr/fan_mode:/, 'sequence removed from AttributeList cannot authorize modes from old cached metadata');
+    like($list->($ep{4}), qr/fan_pct:/, 'independent writable percentage remains available');
+
+    MATTER_ProcessNode($io, {node_id => 6501, name => 'HvacMissingFeatures', available => JSON::true,
+        attributes => {'1/513/65531' => [18], '1/513/18' => 2100}});
+    my $missing = $modules{MATTERDevice}{defptr}{'ioHvac:6501'};
+    ok(MATTERDevice_NeedsCapabilityRefresh($missing), 'existing bounded recovery notices missing HVAC FeatureMap');
+    MATTER_ProcessNode($io, {node_id => 6501, attributes => {'1/513/65532' => 1}});
+    ok(!MATTERDevice_NeedsCapabilityRefresh($missing), 'complete global metadata needs no additional read');
+
+    is(MATTERDevice_Set($ep{2}, $ep{2}{NAME}, 'desired-temp-cool', '27'), undef, 'write queued before IO loss');
+    my $old = $requests[-1]{message_id};
+    MATTER_Close($io);
+    like(ReadingsVal($ep{2}{NAME}, 'lastError', ''), qr/interrupted/, 'disconnect reports an unknown write outcome');
+    MATTER_ParseMessage($io, encode_json({message_id => $old, result => $status->('2/513/17', 0)}));
+    like(ReadingsVal($ep{2}{NAME}, 'lastError', ''), qr/interrupted/, 'old disconnected response cannot manufacture success');
+    like(MATTERDevice_Set($ep{2}, $ep{2}{NAME}, 'desired-temp-cool', '27') // '', qr/No active WebSocket/, 'disconnected write is rejected');
+    MATTER_Close($other);
 };
 
 done_testing();
