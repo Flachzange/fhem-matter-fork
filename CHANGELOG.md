@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-22  MATTER V0.36 (#65): Consolidate device command construction and RGB brightness scaling.
+
 - 2026-11-22  MATTER V0.35 (#64): Skip redundant endpoint group and root metadata synchronization on routine device reports.
 
 - 2026-11-22  MATTER V0.34 (#63): Reuse decoded server messages for discovery, live reports, switch events and configuration read replies.

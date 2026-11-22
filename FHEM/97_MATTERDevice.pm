@@ -4,6 +4,7 @@ package main;
 use strict;
 use warnings;
 use JSON;
+use List::Util qw(min max);
 use Scalar::Util qw(blessed);
 
 our $init_done; # FHEM startup: statefile and attributes are not yet restored
@@ -1075,6 +1076,18 @@ sub MATTERDevice_Percentage($) {
     return $pct > 100 ? 100 : $pct;
 }
 
+sub MATTERDevice_CommandRequest {
+    my ($hash, $cluster, $command, $payload) = @_;
+    my $args = {
+        node_id => $hash->{node_id},
+        endpoint_id => int($hash->{endpoint_id} // 1),
+        cluster_id => $cluster,
+        command_name => $command,
+    };
+    $args->{payload} = $payload if defined $payload;
+    return { command => 'device_command', args => $args };
+}
+
 sub MATTERDevice_Set($$@) {
     my ($hash, $name, $cmd, @args) = @_;
 
@@ -1150,40 +1163,14 @@ sub MATTERDevice_Set($$@) {
         my $can_wc    = MATTERDevice_CommandSupported($hash, 0x0102, $wc_command_id);
 
         if ($can_onoff) {
-            $payload = {
-
-                command    => "device_command",
-                args       => {
-                    node_id      => $node_id,
-                    endpoint_id  => int($endpoint_id),
-                    cluster_id   => 0x0006,
-                    command_name => ($cmd eq "on" ? "On" : "Off")
-                }
-            };
+            $payload = MATTERDevice_CommandRequest($hash, 0x0006, ($cmd eq "on" ? "On" : "Off"));
         }
         elsif ($can_wc) {
-            $payload = {
-
-                command    => "device_command",
-                args       => {
-                    node_id      => $node_id,
-                    endpoint_id  => int($endpoint_id),
-                    cluster_id   => 0x0102,
-                    command_name => ($cmd eq "on" ? "UpOrOpen" : "DownOrClose")
-                }
-            };
+            $payload = MATTERDevice_CommandRequest($hash, 0x0102, ($cmd eq "on" ? "UpOrOpen" : "DownOrClose"));
         }
     }
     elsif ($cmd eq "toggle") {
-        $payload = {
-            command    => "device_command",
-            args       => {
-                node_id     => $node_id,
-                endpoint_id => int($endpoint_id),
-                cluster_id  => 6,
-                command_name => "Toggle"
-            }
-        };
+        $payload = MATTERDevice_CommandRequest($hash, 0x0006, "Toggle");
     }
     elsif ($cmd eq "off_with_effect") {
         my $usage = "Usage: set $name off_with_effect <EffectIdentifier>,<EffectVariant> " .
@@ -1211,30 +1198,13 @@ sub MATTERDevice_Set($$@) {
         return "Unknown EffectIdentifier '$effect_name'" if (!exists($effect_identifier{$effect_name}));
         return "Unknown EffectVariant '$variant_name' for $effect_name" if (!exists($effect_variant{$effect_name}{$variant_name}));
 
-        $payload = {
-            command    => "device_command",
-            args       => {
-                node_id      => $node_id,
-                endpoint_id  => int($endpoint_id),
-                cluster_id   => 0x0006,
-                command_name => "OffWithEffect",
-                payload      => {
-                    effectIdentifier => $effect_identifier{$effect_name},
-                    effectVariant    => $effect_variant{$effect_name}{$variant_name}
-                }
-            }
-        };
+        $payload = MATTERDevice_CommandRequest($hash, 0x0006, "OffWithEffect", {
+            effectIdentifier => $effect_identifier{$effect_name},
+            effectVariant    => $effect_variant{$effect_name}{$variant_name}
+        });
     }
     elsif ($cmd eq "on_with_recall_global_scene") {
-        $payload = {
-            command    => "device_command",
-            args       => {
-                node_id      => $node_id,
-                endpoint_id  => int($endpoint_id),
-                cluster_id   => 6,
-                command_name => "OnWithRecallGlobalScene"
-            }
-        };
+        $payload = MATTERDevice_CommandRequest($hash, 0x0006, "OnWithRecallGlobalScene");
     }
     elsif ($cmd eq "on_with_timed_off") {
         my $usage = "Usage: set $name on_with_timed_off <acceptOnlyWhenOn>,<onTime>,<offWaitTime> (times in 0.1 s)";
@@ -1249,88 +1219,37 @@ sub MATTERDevice_Set($$@) {
         return "onTime must be between 0 and 65534 (0.1 s units)" if ($on_time > 65534);
         return "offWaitTime must be between 0 and 65534 (0.1 s units)" if ($off_wait_time > 65534);
 
-        $payload = {
-            command    => "device_command",
-            args       => {
-                node_id      => $node_id,
-                endpoint_id  => int($endpoint_id),
-                cluster_id   => 6,
-                command_name => "OnWithTimedOff",
-                payload      => {
-                    onOffControl => $accept_only_when_on,
-                    onTime       => $on_time,
-                    offWaitTime  => $off_wait_time
-                }
-            }
-        };
+        $payload = MATTERDevice_CommandRequest($hash, 0x0006, "OnWithTimedOff", {
+            onOffControl => $accept_only_when_on,
+            onTime       => $on_time,
+            offWaitTime  => $off_wait_time
+        });
     }
     elsif ($cmd eq "stop") {
-        $payload = {
-            command    => "device_command",
-            args       => {
-                node_id      => $node_id,
-                endpoint_id  => int($endpoint_id),
-                cluster_id   => 0x0102,
-                command_name => "StopMotion"
-            }
-        };
+        $payload = MATTERDevice_CommandRequest($hash, 0x0102, "StopMotion");
     }
     elsif ($cmd eq "brightness") {
         my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
-        $payload = {
-            command    => "device_command",
-            args       => {
-                node_id      => $node_id,
-                endpoint_id  => int($endpoint_id),
-                cluster_id   => 0x0008,
-                command_name => ($use_with_onoff ? "MoveToLevelWithOnOff" : "MoveToLevel"),
-                payload      => { level => int($args[0]), transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
-            }
-        };
+        $payload = MATTERDevice_CommandRequest($hash, 0x0008, ($use_with_onoff ? "MoveToLevelWithOnOff" : "MoveToLevel"),
+            { level => int($args[0]), transitionTime => 0, optionsMask => 0, optionsOverride => 0 });
     }
     elsif ($cmd eq "pct") {
         my $can_wc_pct = MATTERDevice_CommandSupported($hash, 0x0102, 0x05);
         if ($can_wc_pct) {
             my $position = $args[0] * 100;
-            $payload = {
-
-                command    => "device_command",
-                args       => {
-                    node_id      => $node_id,
-                    endpoint_id  => int($endpoint_id),
-                    cluster_id   => 0x0102,
-                    command_name => "GoToLiftPercentage",
-                    payload      => { liftPercent100thsValue => $position }
-                }
-            };
+            $payload = MATTERDevice_CommandRequest($hash, 0x0102, "GoToLiftPercentage",
+                { liftPercent100thsValue => $position });
         } else {
             my $max_level = MATTERDevice_MaxBrightness($hash);
             my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
-            $payload = {
-
-                command    => "device_command",
-                args       => {
-                    node_id      => $node_id,
-                    endpoint_id  => int($endpoint_id),
-                    cluster_id   => 0x0008,
-                    command_name => ($use_with_onoff ? "MoveToLevelWithOnOff" : "MoveToLevel"),
-                    payload      => { level => int($args[0] * $max_level / 100 + 0.5), transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
-                }
-            };
+            $payload = MATTERDevice_CommandRequest($hash, 0x0008, ($use_with_onoff ? "MoveToLevelWithOnOff" : "MoveToLevel"),
+                { level => int($args[0] * $max_level / 100 + 0.5), transitionTime => 0, optionsMask => 0, optionsOverride => 0 });
         }
     }
     elsif ($cmd eq "tilt") {
         my $tilt = $args[0] * 100;
-        $payload = {
-            command    => "device_command",
-            args       => {
-                node_id      => $node_id,
-                endpoint_id  => int($endpoint_id),
-                cluster_id   => 0x0102,
-                command_name => "GoToTiltPercentage",
-                payload      => { tiltPercent100thsValue => $tilt }
-            }
-        };
+        $payload = MATTERDevice_CommandRequest($hash, 0x0102, "GoToTiltPercentage",
+            { tiltPercent100thsValue => $tilt });
     }
     elsif ($cmd eq "rgb") {
         return "Usage: set $name rgb RRGGBB"
@@ -1338,6 +1257,15 @@ sub MATTERDevice_Set($$@) {
         my $hex = $args[0];
         $hex =~ s/^#//;
         my ($r, $g, $b) = map { hex($_) } ($hex =~ /(..)(..)(..)/);
+
+        my $intensity = max($r, $g, $b) / 255;
+        my $with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
+        if ($with_onoff || MATTERDevice_CommandSupported($hash, 0x0008, 0x00)) {
+            my $level = int($intensity * MATTERDevice_MaxBrightness($hash) + 0.5);
+            $level_payload = MATTERDevice_CommandRequest($hash, 0x0008,
+                $with_onoff ? "MoveToLevelWithOnOff" : "MoveToLevel",
+                { level => $level, transitionTime => 0, optionsMask => 0, optionsOverride => 0 });
+        }
 
         my $can_xy = MATTERDevice_CommandSupported($hash, 0x0300, 0x07);
         my $can_hs = MATTERDevice_CommandSupported($hash, 0x0300, 0x06);
@@ -1366,95 +1294,31 @@ sub MATTERDevice_Set($$@) {
                 $x = 65279 if $x > 65279;
                 $y = 65279 if $y > 65279;
 
-                $payload = {
-                    command    => "device_command",
-                    args       => {
-                        node_id      => $node_id,
-                        endpoint_id  => int($endpoint_id),
-                        cluster_id   => 768,
-                        command_name => "MoveToColor",
-                        payload      => { colorX => $x, colorY => $y, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
-                    }
-                };
+                $payload = MATTERDevice_CommandRequest($hash, 0x0300, "MoveToColor",
+                    { colorX => $x, colorY => $y, transitionTime => 0, optionsMask => 0, optionsOverride => 0 });
             }
 
-            # Preserve the intensity component of RGB via LevelControl.
-            my $rgb_max = ($r > $g && $r > $b) ? $r : ($g > $b ? $g : $b);
-            my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
-            my $can_level = $use_with_onoff || MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
-            if ($can_level) {
-                my $max_level = MATTERDevice_MaxBrightness($hash);
-                my $level = int(($rgb_max / 255) * $max_level + 0.5);
-                $level_payload = {
-                    command    => "device_command",
-                    args       => {
-                        node_id      => $node_id,
-                        endpoint_id  => int($endpoint_id),
-                        cluster_id   => 0x0008,
-                        command_name => ($use_with_onoff ? "MoveToLevelWithOnOff" : "MoveToLevel"),
-                        payload      => { level => $level, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
-                    }
-                };
-            }
         } else {
             $r /= 255; $g /= 255; $b /= 255;
-            my $max = ($r > $g && $r > $b) ? $r : ($g > $b ? $g : $b);
-            my $min = ($r < $g && $r < $b) ? $r : ($g < $b ? $g : $b);
-            my $diff = $max - $min;
+            my $min = min($r, $g, $b);
+            my $diff = $intensity - $min;
             my $h = 0;
-            my $s = ($max == 0) ? 0 : ($diff / $max);
+            my $s = ($intensity == 0) ? 0 : ($diff / $intensity);
 
             if ($diff != 0) {
-                if ($max == $r) { $h = 60 * (($g - $b) / $diff); }
-                elsif ($max == $g) { $h = 60 * (($b - $r) / $diff + 2); }
+                if ($intensity == $r) { $h = 60 * (($g - $b) / $diff); }
+                elsif ($intensity == $g) { $h = 60 * (($b - $r) / $diff + 2); }
                 else { $h = 60 * (($r - $g) / $diff + 4); }
             }
             $h += 360 if $h < 0;
 
-            # RGB contains a value/brightness component in addition to hue and
-            # saturation. ColorControl does not carry that component, so map it
-            # to LevelControl when the endpoint supports a suitable command.
-            my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
-            my $can_level = $use_with_onoff || MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
-            if ($can_level) {
-                my $max_level = MATTERDevice_MaxBrightness($hash);
-                my $level = int($max * $max_level + 0.5);
-                $level_payload = {
-                    command    => "device_command",
-                    args       => {
-                        node_id      => $node_id,
-                        endpoint_id  => int($endpoint_id),
-                        cluster_id   => 0x0008,
-                        command_name => ($use_with_onoff ? "MoveToLevelWithOnOff" : "MoveToLevel"),
-                        payload      => { level => $level, transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
-                    }
-                };
-            }
-
-            $payload = {
-
-                command    => "device_command",
-                args       => {
-                    node_id      => $node_id,
-                    endpoint_id  => int($endpoint_id),
-                    cluster_id   => 768,
-                    command_name => "MoveToHueAndSaturation",
-                    payload      => { hue => int(($h / 360) * 254), saturation => int($s * 254), transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
-                }
-            };
+            $payload = MATTERDevice_CommandRequest($hash, 0x0300, "MoveToHueAndSaturation",
+                { hue => int(($h / 360) * 254), saturation => int($s * 254), transitionTime => 0, optionsMask => 0, optionsOverride => 0 });
         }
     }
     elsif ($cmd eq "ct") {
-        $payload = {
-            command    => "device_command",
-            args       => {
-                node_id      => $node_id,
-                endpoint_id  => int($endpoint_id),
-                cluster_id   => 768,
-                command_name => "MoveToColorTemperature",
-                payload      => { colorTemperatureMireds => int($args[0]), transitionTime => 0, optionsMask => 0, optionsOverride => 0 }
-            }
-        };
+        $payload = MATTERDevice_CommandRequest($hash, 0x0300, "MoveToColorTemperature",
+            { colorTemperatureMireds => int($args[0]), transitionTime => 0, optionsMask => 0, optionsOverride => 0 });
     }
     elsif ($cmd =~ /^(?:dim_up|dim_down|dim_stop|dim_step_up|dim_step_down)$/) {
         # Use the device's native LevelControl transitions. Never simulate a
@@ -1489,26 +1353,14 @@ sub MATTERDevice_Set($$@) {
             $arguments->{stepSize} = 20;
             $arguments->{transitionTime} = 0;
         }
-        $payload = {
-            command    => 'device_command',
-            args       => {
-                node_id => $node_id, endpoint_id => int($endpoint_id),
-                cluster_id => 0x0008, command_name => $command_name,
-                payload => $arguments,
-            },
-        };
+        $payload = MATTERDevice_CommandRequest($hash, 0x0008, $command_name,
+            $arguments);
     }
     elsif ($cmd eq 'identify') {
         return 'Identify not accepted by this endpoint'
             unless MATTERDevice_CommandSupported($hash, 0x0003, 0x00);
-        $payload = {
-            command => 'device_command',
-            args => {
-                node_id => $node_id, endpoint_id => int($endpoint_id),
-                cluster_id => 0x0003, command_name => 'Identify',
-                payload => { identifyTime => 15 },
-            }
-        };
+        $payload = MATTERDevice_CommandRequest($hash, 0x0003, 'Identify',
+            { identifyTime => 15 });
     }
     elsif ($cmd =~ /^(?:desired-temp(?:-cool)?|mode|fan_mode|fan_pct)$/) {
         my ($cluster_id, $attr_id, $write_value);
@@ -1630,38 +1482,14 @@ sub MATTERDevice_Set($$@) {
         return undef;
     }
     elsif ($cmd eq "frequency") {
-        $payload = {
-            command    => "device_command",
-            args       => {
-                node_id      => $node_id,
-                endpoint_id  => int($endpoint_id),
-                cluster_id   => 0x0008,
-                command_name => "MoveToClosestFrequency",
-                payload      => { frequency => int($args[0]) }
-            }
-        };
+        $payload = MATTERDevice_CommandRequest($hash, 0x0008, "MoveToClosestFrequency",
+            { frequency => int($args[0]) });
     }
     elsif ($cmd eq "lock") {
-        $payload = {
-            command    => "device_command",
-            args       => {
-                node_id      => $node_id,
-                endpoint_id  => int($endpoint_id),
-                cluster_id   => 257,
-                command_name => "LockDoor",
-            }
-        };
+        $payload = MATTERDevice_CommandRequest($hash, 0x0101, "LockDoor");
     }
     elsif ($cmd eq "unlock") {
-        $payload = {
-            command    => "device_command",
-            args       => {
-                node_id      => $node_id,
-                endpoint_id  => int($endpoint_id),
-                cluster_id   => 257,
-                command_name => "UnlockDoor",
-            }
-        };
+        $payload = MATTERDevice_CommandRequest($hash, 0x0101, "UnlockDoor");
     }
 
     return "No payload generated" if (!$payload && !$level_payload);

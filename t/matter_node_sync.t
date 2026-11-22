@@ -1125,6 +1125,41 @@ $defs{ioA}{test_send_text} = $previous_sender;
 ok(!exists $defs{ioA}{helper}{pending_config}{$read_request->{message_id}},
    'matched getConfig pending request is cleared');
 
+# Inspect decoded wire arguments in send order, including color-only endpoints.
+for my $xy (0, 1) {
+    for my $level_control (0, 1) {
+        MATTERDevice_Parse($root, encode_json({
+            node_id => 42, attributes => {
+                '1/768/65529' => [$xy ? 7 : 6],
+                '1/768/65532' => $xy ? 8 : 1,
+                '1/8/65529' => $level_control ? [$xy ? 0 : 4] : [],
+            },
+        }));
+        for my $black (0, 1) {
+            my $rgb = $black ? '000000' : '800000';
+            my @expected;
+            my %options = (transitionTime => 0, optionsMask => 0, optionsOverride => 0);
+            push @expected, {
+                node_id => 42, endpoint_id => 1, cluster_id => 8,
+                command_name => $xy ? 'MoveToLevel' : 'MoveToLevelWithOnOff',
+                payload => { %options, level => $black ? 0 : 127 },
+            } if $level_control;
+            push @expected, {
+                node_id => 42, endpoint_id => 1, cluster_id => 768,
+                command_name => $xy ? 'MoveToColor' : 'MoveToHueAndSaturation',
+                payload => { %options, $xy ? (colorX => 41943, colorY => 21627)
+                                          : (hue => 0, saturation => $black ? 0 : 254) },
+            } unless $xy && $black;
+
+            @sent_requests = ();
+            my $error = MATTERDevice_Set($child, $child->{NAME}, 'rgb', $rgb);
+            my $case = "rgb $rgb, xy=$xy, levelControl=$level_control";
+            is($error, @expected ? undef : 'No payload generated', "$case result");
+            is_deeply([map { $_->{args} } @sent_requests], \@expected, "$case wire arguments and order");
+        }
+    }
+}
+
 MATTERDevice_Parse($root, encode_json({
     node_id => 42,
     attributes => {
