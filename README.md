@@ -331,6 +331,16 @@ engine.
   software version or OTA device reports are needed.
 - When the server reports `available=false`, cached device attributes and
   capability snapshots do not overwrite FHEM readings or local edits.
+  Runtime availability, rather than the saved `available` reading, controls
+  updates. IO loss, node removal and `INITIALIZED`/`REREADCFG` invalidate it
+  and quarantine snapshots before disconnect events can reenter parsing.
+  Missing/invalid availability leaves updates blocked, including `getConfig`;
+  a new node without availability gets identity/endpoints only. After restart
+  or reconnect, a valid `available=true` restores root status and permits live
+  attributes and metadata recovery, while cached physical snapshots remain
+  blocked. Accepted live model changes can reach child endpoints without
+  replaying an old root model. See [offline lifecycle evidence](docs/offline-lifecycle.md)
+  for modeled tests and real-FHEM verification limits.
   After an offline/online transition, live `attribute_updated` reports are
   accepted, while unrequested cached device-state snapshots remain quarantined.
   **Exception for command discovery:** FHEM checks whether known endpoints

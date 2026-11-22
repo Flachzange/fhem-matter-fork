@@ -1,2 +1,1 @@
-2026-11-22  MATTER IO/Device V0.22: add automatic root networkType (Wi-Fi, Thread, Ethernet, Cellular or multiple types) from reported operational interfaces; no extra queries or polling.
-2026-11-22  Includes V0.21 device-limit readings without legacy attribute support: review manual overrides and AttrVal automations, remove the ten retired limit attributes and save before restart; see README and docs/device-limits.md.
+2026-11-22  MATTER IO/Device V0.23: preserve local device readings across FHEM restart and IO reconnect; saved available=true no longer authorizes cached device values or getConfig. Fresh availability permits live reports and metadata recovery; no new polling.

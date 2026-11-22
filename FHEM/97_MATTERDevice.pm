@@ -514,6 +514,18 @@ sub MATTERDevice_SetRootState($$) {
         if ReadingsVal($hash->{NAME}, 'state', '') ne $state;
 }
 
+# Current-session availability is runtime authority. The available reading
+# retains the last server report, including values restored by FHEM.
+# Invalidate before any synchronous IO/root reading event can reenter parsing.
+sub MATTERDevice_InvalidateAvailability($) {
+    my ($root) = @_;
+    return unless ($root->{endpoint_id} // 0) == 0;
+    delete $root->{helper}{available};
+    $root->{helper}{quarantine_snapshots} = 1;
+    ++$root->{helper}{availability_epoch};
+    delete $root->{helper}{capability_refresh};
+}
+
 # Only query when endpoint metadata used by FHEM controls is missing.
 # A known empty AcceptedCommandList is valid: it must not be interpreted
 # as a failed interview and must not enable old has_* fallbacks.
@@ -607,7 +619,7 @@ sub MATTERDevice_MaybeRefreshCapabilities($) {
     my ($root) = @_;
     return unless $root && ($root->{endpoint_id} // 0) == 0 &&
                   $root->{helper}{quarantine_snapshots} &&
-                  ReadingsVal($root->{NAME}, 'available', '') eq 'true';
+                  $root->{helper}{available};
 
     unless (MATTERDevice_NeedsCapabilityRefresh($root)) {
         delete $root->{helper}{capability_refresh};
@@ -659,16 +671,18 @@ sub MATTERDevice_UpdateAvailability($$) {
     return unless ($hash->{endpoint_id} // 0) == 0;
     my $boolean = MATTERDevice_NormalizeBoolean($reported);
     return unless defined $boolean;
-    my $previous = ReadingsVal($hash->{NAME}, 'available', '');
+    my $previous = $hash->{helper}{available};
     # Device attributes cached on the server must never overwrite local
     # readings while unavailable. On recovery, server snapshots may still
     # be stale: only subsequent individual live attribute reports are fresh
     # enough for release until a proven fresh interview is available.
     $hash->{helper}{quarantine_snapshots} = 1
-        if !$boolean || $previous eq 'false';
+        if !$boolean || (defined($previous) && !$previous);
     my $available = $boolean ? 'true' : 'false';
     # A reply from before another offline/online cycle is not current.
-    ++$hash->{helper}{availability_epoch} if $previous ne $available;
+    ++$hash->{helper}{availability_epoch}
+        if !defined($previous) || $previous != $boolean;
+    $hash->{helper}{available} = $boolean;
     my $state = $boolean ? 'online' : 'offline';
     my $change_available = ReadingsVal($hash->{NAME}, 'available', '') ne $available;
     my $change_state = ReadingsVal($hash->{NAME}, 'state', '') ne $state;
@@ -690,6 +704,7 @@ sub MATTERDevice_Notify($$) {
                   ($dev->{NAME} // '') eq 'global';
     return unless grep { $_ eq 'INITIALIZED' || $_ eq 'REREADCFG' }
                   @{$dev->{CHANGED} // []};
+    MATTERDevice_InvalidateAvailability($hash);
     my $name = $hash->{NAME};
     if (AttrVal($name, 'stateFormat', '') eq 'available' &&
         ReadingsVal($name, 'state', '') !~ /\A(?:online|offline|unknown|removed)\z/) {
@@ -833,7 +848,7 @@ sub MATTERDevice_ProcessGlobalAttribute($$$$) {
 sub MATTERDevice_ApplyCapabilityMetadata($$;$) {
     my ($root, $values, $endpoint_only) = @_;
     return unless $root && ($root->{endpoint_id} // 0) == 0 &&
-                  ReadingsVal($root->{NAME}, 'available', '') eq 'true' &&
+                  $root->{helper}{available} &&
                   ref($values) eq 'HASH';
     my %targets = (0 => $root);
     foreach my $child (MATTERDevice_NodeChildren($root)) {
@@ -1501,8 +1516,8 @@ sub MATTERDevice_Set($$@) {
             $modules{MATTERDevice}{defptr}{
                 ($ioHash->{NAME} // '') . ':' . $node_id
             };
-        return "MATTER: Node $node_id is offline; getConfig not sent"
-            if $root && ReadingsVal($root->{NAME}, 'available', '') eq 'false';
+        return "MATTER: Node $node_id is offline or availability is unknown; getConfig not sent"
+            if !$root || !$root->{helper}{available};
 
         my @paths;
 
@@ -2129,7 +2144,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
     readingsEndUpdate($hash, 1);
     # Model on endpoint 0 identifies the physical node, not a single function.
-    MATTERDevice_SyncNodeReadings($hash)
+    MATTERDevice_SyncNodeReadings($hash, undef, 1)
         if $cluster_id == 0x0028 && $attr_id == 0x0003 && ($hash->{endpoint_id} // 0) == 0;
 }
 
@@ -2184,8 +2199,7 @@ sub MATTERDevice_Parse($ $;$) {
     # or old available reading is not a separate reachability report.
     my $allow_device_attr = sub {
         my ($live) = @_;
-        return 1 unless $root;
-        return 0 if ReadingsVal($root->{NAME}, 'available', '') eq 'false';
+        return 0 unless $root && $root->{helper}{available};
         return 0 if !$live && $root->{helper}{quarantine_snapshots};
         return 1;
     };
@@ -2568,8 +2582,8 @@ sub MATTERDevice_NodeChildren($) {
 # using the same IODev/node membership as the endpoint link list. Newly
 # created children can be updated individually. Missing or unchanged values
 # must not create endpoint events.
-sub MATTERDevice_SyncNodeReadings($;$) {
-    my ($root, $only_child) = @_;
+sub MATTERDevice_SyncNodeReadings($;$$) {
+    my ($root, $only_child, $reported_model) = @_;
     return unless $root && ($root->{endpoint_id} // 0) == 0;
     my @children = $only_child ? ($only_child) : MATTERDevice_NodeChildren($root);
 
@@ -2577,8 +2591,8 @@ sub MATTERDevice_SyncNodeReadings($;$) {
         my @changes;
         foreach my $reading (qw(model available)) {
             next if $reading eq 'model' &&
-                (ReadingsVal($root->{NAME}, 'available', '') eq 'false' ||
-                 $root->{helper}{quarantine_snapshots});
+                (!$root->{helper}{available} ||
+                 ($root->{helper}{quarantine_snapshots} && !$reported_model));
             my $source = $root->{READINGS}{$reading};
             next unless ref($source) eq 'HASH';
             my $value = $source->{VAL};
@@ -2776,7 +2790,7 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
       <code>rgb</code>, <code>getConfig</code> and supported device-specific commands.</li>
   <li><b>Attributes:</b> <code>IODev</code>, opt-in
       <code>diagnostics</code> / <code>rawReadings</code>, dimming
-      <code>dimRate</code> and separately supported physical limits.
+      <code>dimRate</code>. Physical limits are reported readings.
       Retired <code>has_*</code> settings are ignored; they are neither
       generated nor automatically removed from stored FHEM configurations.
       Remove saved legacy flags manually before restarting with this version:
@@ -2793,7 +2807,19 @@ while online and quarantined, but only global Matter capability metadata
 from its reply is used. Offline requests and responses from an earlier
 offline/online cycle are rejected. Live individual attribute events are
 still accepted; unrequested cached snapshots remain quarantined.
-The server's advertised metadata is not proof of a fresh physical interview.</li>
+The server's advertised metadata is not proof of a fresh physical interview.
+Current availability is held in runtime state, never inferred from the saved
+<code>available</code> reading. IO loss, node removal and FHEM
+<code>INITIALIZED</code>/<code>REREADCFG</code> invalidate it and quarantine
+snapshots. All owned roots are invalidated before disconnect events are
+published. Until a new valid availability report, device attributes and
+<code>getConfig</code> are blocked; missing/null/malformed availability cannot
+unlock them. A new <code>available=true</code> restores root status and permits
+live reports plus metadata recovery, but does not release cached physical
+snapshots. A new node without availability receives identity/endpoints only.
+Accepted live model reports can update child model readings without replaying
+old root model values. Real restart/configDB hardware integration is
+<strong>untested</strong>; automated tests model reading restoration.</li>
   <li><b>Root state:</b> Without a <code>stateFormat</code> attribute, the root's
       <code>state</code> reading shows <code>online</code> or <code>offline</code>
       only after valid <code>available=true/false</code> from the server,
@@ -3069,7 +3095,7 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
       <code>rgb</code>, <code>getConfig</code> und weitere Gerätebefehle.</li>
   <li><b>Attribute:</b> <code>IODev</code>, optionale
       <code>diagnostics</code> / <code>rawReadings</code>,
-      <code>dimRate</code> und separate Gerätegrenzwerte.
+      <code>dimRate</code>. Gerätegrenzwerte werden als Readings gemeldet.
       Alte <code>has_*</code>-Attribute werden ignoriert, nicht mehr erzeugt
       und nicht automatisch aus gespeicherten FHEM-Konfigurationen gelöscht.
       Vor dem Neustart mit dieser Version sollten gespeicherte Legacy-Attribute
@@ -3089,7 +3115,21 @@ Online-Quarantäne erlaubt; auch dann werden nur globale Capability-Metadaten
 übernommen. Offline-Anfragen sowie verspätete Antworten aus einem früheren
 Offline-/Online-Zyklus werden verworfen. Einzelne Live-Attribute werden
 weiterhin verarbeitet; ungefragte Snapshots bleiben gesperrt.
-Server-Metadaten beweisen keine neue physische Geräteabfrage.</li>
+Server-Metadaten beweisen keine neue physische Geräteabfrage.
+Die aktuelle Availability wird intern verwaltet; ein gespeichertes
+<code>available</code>-Reading gibt keine Geräteupdates frei. IO-Verlust,
+Node-Entfernung und FHEMs <code>INITIALIZED</code>/<code>REREADCFG</code>
+entwerten die Freigabe und sperren Snapshots. Vor Disconnect-Ereignissen
+werden alle zum IO gehörenden Roots gesperrt. Bis zu einer neuen gültigen
+Availability-Meldung bleiben Geräteattribute und <code>getConfig</code>
+gesperrt; fehlende/null/ungültige Meldungen heben diese Sperre nicht auf.
+Ein neues <code>available=true</code> erlaubt Root-Status, Live-Reports und
+Metadaten-Recovery, aber weiterhin keine gecachten physischen Snapshots.
+Neue Nodes ohne Availability erhalten nur Identität und Endpunkte.
+Akzeptierte Live-Modellmeldungen dürfen Kind-Readings aktualisieren;
+alte Root-Modellwerte werden nicht erneut gespiegelt. Echte Neustart- und
+configDB-Integration ist <strong>ungetestet</strong>; automatisierte Tests
+modellieren die Wiederherstellung von Readings.</li>
   <li><b>Root-Status:</b> Ohne <code>stateFormat</code>-Attribut zeigt das
       <code>state</code>-Reading am Root <code>online</code> oder
       <code>offline</code> nur nach einer gültigen <code>available=true/false</code>-

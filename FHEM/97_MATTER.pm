@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.22 22.11.2026";
+my $MATTER_version = "V0.23 22.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -490,19 +490,19 @@ sub MATTER_Close($) {
     delete $hash->{helper}{pending_snapshot_touched};
     delete $hash->{fhem}{helper}{pending_config};
     Log3 $name, 4, "[$name] Connection closed (was $previous)" if defined($previous);
-    readingsSingleUpdate($hash, 'state', 'disconnected', 1)
-        if ReadingsVal($name, 'state', '') ne 'disconnected';
     # A lost IO connection invalidates current reachability, but not the last
     # server-reported 'available' reading or any endpoint's device state.
-    foreach my $device (values %defs) {
-        next unless ($device->{TYPE} // '') eq 'MATTERDevice' &&
-                    ($device->{endpoint_id} // 0) == 0;
-        my $owner = $device->{IODev};
-        next unless $owner ? $owner eq $hash
-                           : AttrVal($device->{NAME}, 'IODev', '') eq $name;
-        delete $device->{helper}{capability_refresh};
-        MATTERDevice_SetRootState($device, 'unknown');
-    }
+    # Invalidate all owned roots before publishing the first reading event.
+    my @roots = grep {
+        ($_->{TYPE} // '') eq 'MATTERDevice' &&
+        ($_->{endpoint_id} // 0) == 0 &&
+        ($_->{IODev} ? $_->{IODev} eq $hash
+                     : AttrVal($_->{NAME}, 'IODev', '') eq $name)
+    } values %defs;
+    MATTERDevice_InvalidateAvailability($_) for @roots;
+    readingsSingleUpdate($hash, 'state', 'disconnected', 1)
+        if ReadingsVal($name, 'state', '') ne 'disconnected';
+    MATTERDevice_SetRootState($_, 'unknown') for @roots;
     # A server reconnect invalidates old OTA offers even if no update request
     # was pending. Installing a version requires a fresh server check.
     for my $dev (values %defs) {
@@ -802,10 +802,16 @@ sub MATTER_SendWebSocketFrame($$$) {
 sub MATTER_SetNodeStatus($$$) {
     my ($hash, $node_id, $status) = @_;
     my $io_name = $hash->{NAME};
-    foreach my $device (values %defs) {
-        next unless ($device->{TYPE} // '') eq 'MATTERDevice';
-        next unless defined($device->{node_id}) && $device->{node_id} eq $node_id;
-        next unless $device->{IODev} && $device->{IODev}{NAME} eq $io_name;
+    my @devices = grep {
+        ($_->{TYPE} // '') eq 'MATTERDevice' &&
+        defined($_->{node_id}) && $_->{node_id} eq $node_id &&
+        $_->{IODev} && $_->{IODev}{NAME} eq $io_name
+    } values %defs;
+    if ($status eq 'removed') {
+        MATTERDevice_InvalidateAvailability($_)
+            for grep { ($_->{endpoint_id} // 0) == 0 } @devices;
+    }
+    foreach my $device (@devices) {
         readingsSingleUpdate($device, 'matter_status', $status, 1)
             if ReadingsVal($device->{NAME}, 'matter_status', '') ne $status;
         next unless ($device->{endpoint_id} // 0) == 0;
@@ -1434,6 +1440,9 @@ The root <code>state</code> displays <code>online/offline</code> for confirmed
 availability, <code>removed</code> for absent server membership, and
 <code>unknown</code> after IO disconnect until a new server report arrives;
 endpoint states and last reported <code>available</code> values are preserved.
+The retained reading never authorizes device updates after a disconnect;
+current-session availability must be reported again. See MATTERDevice's
+offline protection for restart and snapshot-quarantine behavior.
 There is no polling. The TCP/WebSocket handshake has a 10-second deadline;
 while connected, WebSocket Ping/Pong checks run every 30 seconds with a 15-second
 Pong deadline. Any connection failure triggers a new attempt after 30 seconds,
@@ -1499,6 +1508,10 @@ hängen vom externen Matter-Server und ggf. vom BLE-Proxy ab. Diese Varianten
 gelten ohne dokumentierten, gerätespezifischen Hardwaretest als
 <strong>ungetestet</strong>. Automatisierte WebSocket-Tests ersetzen
 keinen End-to-End-Test an echter Hardware.</p>
+<p>Nach einem IO-Abbruch bleibt <code>available</code> als letzte Servermeldung
+erhalten, gibt aber keine Geräteupdates frei. Dafür ist eine neue gültige
+Availability-Meldung in der aktuellen Verbindung erforderlich. Die
+MATTERDevice-Offline-Sperre schützt auch den Wiederanlauf nach FHEM-Neustart.</p>
 <p>Neue logische Geräte erhalten standardmäßig den Raum <code>Matter</code>.
 Vorhandene Namen, Räume und Benutzerattribute bleiben unverändert. Entfernte
 Nodes werden mit <code>matter_status=removed</code> markiert und nicht automatisch
