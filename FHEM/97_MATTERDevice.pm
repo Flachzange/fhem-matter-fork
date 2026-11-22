@@ -2970,8 +2970,8 @@ not permission to import data.
 including the attributes carried by that same <code>node_updated</code>.
 No separate per-attribute report is required. Explicit <code>getConfig</code>
 replies may update physical values and capability metadata while online.
-Responses from earlier availability epochs or replaced roots are rejected;
-newer live values take precedence over older discovery/read results.</p>
+Responses from earlier availability epochs or replaced roots are rejected.
+Newer values from <code>attribute_updated</code> and <code>node_updated</code> take precedence per attribute path over older discovery/read results.</p>
 <p>After a known offline/online transition, only missing command metadata may
 trigger automatic recovery: at most three event-driven attempts, at least
 15 seconds apart, without polling. These automatic requests apply only global
@@ -3345,7 +3345,7 @@ einschließlich der Werte derselben <code>node_updated</code>-Meldung. Ein
 zusätzlicher Report pro Attribut ist nicht erforderlich. Explizites
 <code>getConfig</code> darf online Gerätewerte und Capability-Metadaten aktualisieren.
 Antworten aus früheren Availability-Zyklen oder für ersetzte Roots werden
-verworfen; neuere Live-Werte haben Vorrang vor älteren Discovery-/Leseantworten.</p>
+verworfen. Neuere Werte aus <code>attribute_updated</code> und <code>node_updated</code> haben je Attributpfad Vorrang vor älteren Discovery-/Leseantworten.</p>
 <p>Nach einem bekannten Offline-/Online-Wechsel kann ausschließlich fehlende
 Befehlsmetadaten-Recovery automatisch ausgelöst werden: höchstens drei
 ereignisgesteuerte Versuche mit mindestens 15 Sekunden Abstand, ohne Polling.

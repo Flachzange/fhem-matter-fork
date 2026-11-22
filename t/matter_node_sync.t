@@ -1299,6 +1299,35 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
    'late read_attribute snapshot cannot regress a newer live state');
 
+# A batched node report can arrive while the same endpoint read is pending.
+is(MATTERDevice_Set($child, $child->{NAME}, 'getConfig'), undef,
+   'start endpoint read before node_updated');
+my $before_node_update = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_updated', data => {node_id => 42, available => JSON::true}
+}));
+my $pending_read = $defs{ioA}{helper}{pending_config}{$before_node_update};
+ok(!exists($pending_read->{live_values}),
+   'availability-only node_updated does not supersede read paths');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    event => 'node_updated', data => {node_id => 42, attributes => {
+        '1/6/0' => JSON::false, '1/8/0' => 27, '2/8/0' => 31
+    }}
+}));
+ok(!exists($pending_read->{live_values}{'2/8/0'}),
+   'sibling endpoint report is excluded from the endpoint read');
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $before_node_update, result => {
+        '1/6/0' => JSON::true, '1/8/0' => 15, '1/6/65529' => [0, 1]
+    }
+}));
+is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
+   'node_updated OnOff survives the older read');
+is(ReadingsVal($child->{NAME}, 'brightness', ''), 27,
+   'second path from the same node_updated survives the older read');
+ok(MATTERDevice_CommandAccepted($child, 6, 1),
+   'untouched AcceptedCommandList from the read is applied');
+
 # Inputs without valid Matter boolean/numeric representations are ignored.
 MATTERDevice_Parse($root, encode_json({
     node_id => 42, attributes => {

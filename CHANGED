@@ -1,1 +1,1 @@
-2026-11-22  MATTER IO/Device V0.27: gate manual firmware updates on the connected server and reported root OTA capability. Validate and consume version offers. Require a fresh check after timeout or reconnect and confirm installation from the device version.
+2026-11-22  MATTER V0.28 (#57): Preserve newer node_updated attribute values when applying delayed getConfig replies, including unrelated attributes and capability metadata from the reply.
