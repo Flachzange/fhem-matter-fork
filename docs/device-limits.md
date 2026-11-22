@@ -52,16 +52,17 @@ commands with text input rather than inventing device-specific slider ranges.
 Valid stored readings may be used before runtime AttributeList restoration;
 a subsequently advertised AttributeList and feature metadata take precedence.
 Neither cached readings nor server snapshots prove fresh physical contact.
-During snapshot quarantine, only an accepted CurrentLevel report recalculates
-percentage. Limit or metadata recovery must not derive physical state from
-cached brightness or overwrite a manual percentage edit.
+Since V0.23, unknown/offline availability blocks reports and protects local
+values. A valid online report resumes ordinary snapshots and explicit reads.
+Accepted online level, limit and metadata updates may recalculate percentage
+from the reported brightness; there is no persistent snapshot quarantine.
 
 ## Verification scope
 
 `t/matter_node_sync.t` models actual IO dispatch to roots/endpoints, reported
 updates, rejection of all ten removed attributes, metadata rebuild, commands/payloads,
 Lighting versus generic MaxLevel, invalid data, missing/reversed ranges,
-endpoint isolation, offline quarantine and subsequent live recovery.
+endpoint isolation, offline protection and online snapshot/live recovery.
 Reading persistence is modeled by retaining READINGS while rebuilding helper
 metadata; no actual FHEM restart, configDB, browser or device hardware test is
 claimed. The change adds no polling, recovery timer or automatic physical read.

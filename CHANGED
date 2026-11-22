@@ -1,1 +1,1 @@
-2026-11-22  MATTER IO/Device V0.23: preserve local device readings across FHEM restart and IO reconnect; saved available=true no longer authorizes cached device values or getConfig. Fresh availability permits live reports and metadata recovery; no new polling.
+2026-11-22  MATTER IO/Device V0.23: preserve device values while offline or availability is unknown; valid online reports resume normal snapshots and full getConfig after restart/reconnect. Remove persistent snapshot quarantine; retain response ordering and bounded command recovery.

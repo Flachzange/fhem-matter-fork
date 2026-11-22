@@ -521,7 +521,6 @@ sub MATTERDevice_InvalidateAvailability($) {
     my ($root) = @_;
     return unless ($root->{endpoint_id} // 0) == 0;
     delete $root->{helper}{available};
-    $root->{helper}{quarantine_snapshots} = 1;
     ++$root->{helper}{availability_epoch};
     delete $root->{helper}{capability_refresh};
 }
@@ -618,7 +617,7 @@ sub MATTERDevice_RequestCapabilityRefresh($) {
 sub MATTERDevice_MaybeRefreshCapabilities($) {
     my ($root) = @_;
     return unless $root && ($root->{endpoint_id} // 0) == 0 &&
-                  $root->{helper}{quarantine_snapshots} &&
+                  ref($root->{helper}{capability_refresh}) eq 'HASH' &&
                   $root->{helper}{available};
 
     unless (MATTERDevice_NeedsCapabilityRefresh($root)) {
@@ -631,12 +630,7 @@ sub MATTERDevice_MaybeRefreshCapabilities($) {
                   ($io->{ws_status} // '') eq 'connected' &&
                   $io->{fhem}{helper}{sendWS};
 
-    my $epoch = $root->{helper}{availability_epoch} // 0;
     my $recovery = $root->{helper}{capability_refresh};
-    if (ref($recovery) ne 'HASH' || ($recovery->{epoch} // -1) != $epoch) {
-        $recovery = { epoch => $epoch, attempts => 0 };
-        $root->{helper}{capability_refresh} = $recovery;
-    }
 
     my $now = gettimeofday();
     if (defined(my $id = $recovery->{pending_id})) {
@@ -672,17 +666,22 @@ sub MATTERDevice_UpdateAvailability($$) {
     my $boolean = MATTERDevice_NormalizeBoolean($reported);
     return unless defined $boolean;
     my $previous = $hash->{helper}{available};
-    # Device attributes cached on the server must never overwrite local
-    # readings while unavailable. On recovery, server snapshots may still
-    # be stale: only subsequent individual live attribute reports are fresh
-    # enough for release until a proven fresh interview is available.
-    $hash->{helper}{quarantine_snapshots} = 1
-        if !$boolean || (defined($previous) && !$previous);
+    # A saved false report may schedule missing-command recovery after a
+    # restart, but never authorizes device data. Only this valid report does.
+    my $was_offline = defined($previous) ? !$previous :
+        ReadingsVal($hash->{NAME}, 'available', '') eq 'false';
     my $available = $boolean ? 'true' : 'false';
     # A reply from before another offline/online cycle is not current.
     ++$hash->{helper}{availability_epoch}
         if !defined($previous) || $previous != $boolean;
     $hash->{helper}{available} = $boolean;
+    if ($boolean && $was_offline) {
+        $hash->{helper}{capability_refresh} = {
+            attempts => 0,
+        };
+    } elsif (!$boolean) {
+        delete $hash->{helper}{capability_refresh};
+    }
     my $state = $boolean ? 'online' : 'offline';
     my $change_available = ReadingsVal($hash->{NAME}, 'available', '') ne $available;
     my $change_state = ReadingsVal($hash->{NAME}, 'state', '') ne $state;
@@ -842,8 +841,8 @@ sub MATTERDevice_ProcessGlobalAttribute($$$$) {
     return 1;
 }
 
-# A matched read response may restore structural command metadata during
-# quarantine, but must never import cached physical states or device limits.
+# Automatic command recovery applies structural metadata only. Explicit
+# getConfig replies instead use the normal online attribute parser.
 # Only existing endpoints belonging to this root are eligible.
 sub MATTERDevice_ApplyCapabilityMetadata($$;$) {
     my ($root, $values, $endpoint_only) = @_;
@@ -996,14 +995,8 @@ sub MATTERDevice_MaxBrightness {
 }
 
 # Recalculate derived percentage without manufacturing a CurrentLevel report.
-sub MATTERDevice_Percentage($;$) {
-    my ($hash, $level_report) = @_;
-    my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : '';
-    my $root = ($hash->{endpoint_id} // 0) == 0 ? $hash :
-        $modules{MATTERDevice}{defptr}{"$io_name:$hash->{node_id}"};
-    # Metadata-only recovery and limit reports must not derive physical
-    # state from quarantined brightness or overwrite manual offline edits.
-    return undef if !$level_report && $root && $root->{helper}{quarantine_snapshots};
+sub MATTERDevice_Percentage($) {
+    my ($hash) = @_;
     my $level = ReadingsVal($hash->{NAME}, 'brightness', undef);
     return undef unless defined($level) && !ref($level) &&
         $level =~ /\A[0-9]+\z/ && $level <= 254;
@@ -2136,7 +2129,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
             MATTERDevice_SetAttributeIfNotExists($name, $attr_name, $value);
         }
         if ($cluster_id == 0x0008 && ($attr_id == 0 || $attr_id == 3)) {
-            my $pct = MATTERDevice_Percentage($hash, $attr_id == 0);
+            my $pct = MATTERDevice_Percentage($hash);
             readingsBulkUpdate($hash, 'pct', $pct) if defined $pct;
         }
     }
@@ -2144,7 +2137,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
     readingsEndUpdate($hash, 1);
     # Model on endpoint 0 identifies the physical node, not a single function.
-    MATTERDevice_SyncNodeReadings($hash, undef, 1)
+    MATTERDevice_SyncNodeReadings($hash)
         if $cluster_id == 0x0028 && $attr_id == 0x0003 && ($hash->{endpoint_id} // 0) == 0;
 }
 
@@ -2198,9 +2191,7 @@ sub MATTERDevice_Parse($ $;$) {
     # The root owns availability for every child; an endpoint's local state
     # or old available reading is not a separate reachability report.
     my $allow_device_attr = sub {
-        my ($live) = @_;
         return 0 unless $root && $root->{helper}{available};
-        return 0 if !$live && $root->{helper}{quarantine_snapshots};
         return 1;
     };
 
@@ -2209,11 +2200,11 @@ sub MATTERDevice_Parse($ $;$) {
     
     # Hilfs-Subroutine zur internen Weiterleitung an Root oder Child
     my $route_attribute = sub {
-        my ($ep, $cluster, $attr, $val, $live) = @_;
+        my ($ep, $cluster, $attr, $val) = @_;
         MATTERDevice_RecordReceive($hash, $received) if $ep == $my_endpoint;
         # Offline snapshots can still tell us which endpoint IDs exist.
         # Preserve FHEM identity/association without importing device data.
-        if (!$allow_device_attr->($live)) {
+        if (!$allow_device_attr->()) {
             if ($my_endpoint == 0 && $ep > 0) {
                 my $child = MATTERDevice_GetOrCreateChild($hash, $ep);
                 MATTERDevice_RecordReceive($child, $received);
@@ -2252,8 +2243,8 @@ sub MATTERDevice_Parse($ $;$) {
     if (exists $decoded->{result} && ref($decoded->{result}) eq 'HASH') {
         MATTERDevice_RecordReceive($hash, $received, $decoded->{result});
         # Never reset current capability metadata from a cached response
-        # while the root is offline or still awaiting fresh live data.
-        if (!$allow_device_attr->(0)) {
+        # while the root is offline or current availability is unknown.
+        if (!$allow_device_attr->()) {
             if ($my_endpoint == 0) {
                 for my $path (keys %{$decoded->{result}}) {
                     if ($path =~ m{^([1-9]\d*)/\d+/\d+$}) {
@@ -2348,7 +2339,7 @@ sub MATTERDevice_Parse($ $;$) {
         if (defined($attribute_path) && !ref($attribute_path) &&
             $attribute_path =~ m{^(\d+)/(\d+)/(\d+)$}) {
             MATTERDevice_RecordReceive($hash, $received);
-            $route_attribute->($1, $2, $3, $value, 1);
+            $route_attribute->($1, $2, $3, $value);
             Log3 $name, 4, "MATTERDevice: Live attribute update ($attribute_path)";
         }
         # Later device events may trigger a bounded retry if the initial
@@ -2375,7 +2366,7 @@ sub MATTERDevice_Parse($ $;$) {
                 }
             }
         }
-        # The snapshot has been routed (or quarantined); decide about a
+        # The snapshot has been routed (or blocked offline); decide about a
         # targeted read only after observing available metadata and endpoints.
         MATTERDevice_MaybeRefreshCapabilities($hash) if $my_endpoint == 0;
     }
@@ -2582,8 +2573,8 @@ sub MATTERDevice_NodeChildren($) {
 # using the same IODev/node membership as the endpoint link list. Newly
 # created children can be updated individually. Missing or unchanged values
 # must not create endpoint events.
-sub MATTERDevice_SyncNodeReadings($;$$) {
-    my ($root, $only_child, $reported_model) = @_;
+sub MATTERDevice_SyncNodeReadings($;$) {
+    my ($root, $only_child) = @_;
     return unless $root && ($root->{endpoint_id} // 0) == 0;
     my @children = $only_child ? ($only_child) : MATTERDevice_NodeChildren($root);
 
@@ -2591,8 +2582,7 @@ sub MATTERDevice_SyncNodeReadings($;$$) {
         my @changes;
         foreach my $reading (qw(model available)) {
             next if $reading eq 'model' &&
-                (!$root->{helper}{available} ||
-                 ($root->{helper}{quarantine_snapshots} && !$reported_model));
+                !$root->{helper}{available};
             my $source = $root->{READINGS}{$reading};
             next unless ref($source) eq 'HASH';
             my $value = $source->{VAL};
@@ -2795,31 +2785,28 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
       generated nor automatically removed from stored FHEM configurations.
       Remove saved legacy flags manually before restarting with this version:
       FHEM may reject undeclared attribute lines when restoring a configuration.</li>
-  <li><b>Offline attribute protection:</b> While the root reports
-<code>available=false</code>, neither cached device values nor capability
-snapshots are imported. After returning online, FHEM requests the global command metadata only
-if known endpoints lack required capability data. A known complete
-command list is reused. Missing data can trigger up to three event-driven
-read attempts, separated by at least 15 seconds; there is no polling
-timer. Matched responses restore command availability without importing
-cached physical states, measurements or limits. Manual <code>getConfig</code> is permitted
-while online and quarantined, but only global Matter capability metadata
-from its reply is used. Offline requests and responses from an earlier
-offline/online cycle are rejected. Live individual attribute events are
-still accepted; unrequested cached snapshots remain quarantined.
-The server's advertised metadata is not proof of a fresh physical interview.
-Current availability is held in runtime state, never inferred from the saved
-<code>available</code> reading. IO loss, node removal and FHEM
-<code>INITIALIZED</code>/<code>REREADCFG</code> invalidate it and quarantine
-snapshots. All owned roots are invalidated before disconnect events are
-published. Until a new valid availability report, device attributes and
-<code>getConfig</code> are blocked; missing/null/malformed availability cannot
-unlock them. A new <code>available=true</code> restores root status and permits
-live reports plus metadata recovery, but does not release cached physical
-snapshots. A new node without availability receives identity/endpoints only.
-Accepted live model reports can update child model readings without replaying
-old root model values. Real restart/configDB hardware integration is
-<strong>untested</strong>; automated tests model reading restoration.</li>
+  <li><b>Offline attribute protection:</b> Device attributes and
+<code>getConfig</code> require valid current-session <code>available=true</code>.
+While offline or availability is unknown, preserve saved values and local
+corrections; identity, endpoints and administrative status still synchronize.
+IO loss, node removal and <code>INITIALIZED</code>/<code>REREADCFG</code>
+invalidate runtime availability before disconnect events are published.
+The saved <code>available</code> reading remains the last server report,
+not permission to import data.
+<p>A valid online report resumes normal snapshot and live-attribute processing,
+including the attributes carried by that same <code>node_updated</code>.
+No separate per-attribute report is required. Explicit <code>getConfig</code>
+replies may update physical values and capability metadata while online.
+Responses from earlier availability epochs or replaced roots are rejected;
+newer live values take precedence over older discovery/read results.</p>
+<p>After a known offline/online transition, only missing command metadata may
+trigger automatic recovery: at most three event-driven attempts, at least
+15 seconds apart, without polling. These automatic requests apply only global
+Matter metadata; a normal explicit <code>getConfig</code> is not restricted to
+metadata. FHEM trusts the server's online data model; it does not establish an
+independent freshness guarantee for every reported attribute.
+Real FHEM/configDB restart integration is <strong>untested</strong>;
+automated tests model reading restoration.</p></li>
   <li><b>Root state:</b> Without a <code>stateFormat</code> attribute, the root's
       <code>state</code> reading shows <code>online</code> or <code>offline</code>
       only after valid <code>available=true/false</code> from the server,
@@ -2833,7 +2820,7 @@ old root model values. Real restart/configDB hardware integration is
       and <code>&lt;IODev&gt;_MSGCNT</code> count messages in the current runtime.
       Each message counts once for its root and once for each addressed
       endpoint, irrespective of attribute count or value changes. Availability
-      mirroring alone does not count for children. Cached/quarantined snapshots
+      mirroring alone does not count for children. Cached/blocked snapshots
       and correlated replies (including errors) count as server reception,
       not proof of recent physical device contact. These internals generate no
       additional reading events and are not restored after a FHEM restart.</li>
@@ -2931,9 +2918,9 @@ otherwise the protocol fallback 254. The same maximum is used by the
 brightness slider, command validation, percentage and RGB scaling.
 A reported generic maximum of zero is retained; it permits no positive
 brightness and cannot produce a derived percentage.
-During quarantine, only an accepted CurrentLevel report recalculates percentage;
-metadata or limit reports cannot overwrite manual percentage edits using cached
-brightness. Command availability still requires advertised Matter commands/features.</p>
+While offline or availability is unknown, reports cannot update limits or
+derived percentages. Once online, accepted level, limit and metadata updates
+may recalculate percentage from the reported brightness. Command availability still requires advertised Matter commands/features.</p>
 <p><b>Transition:</b> These ten attribute names are removed from
 <code>AttrList</code> in V0.21; there is no compatibility or automatic migration.
 Review automation using <code>AttrVal</code> and save any old settings needed
@@ -2946,7 +2933,7 @@ save</pre>
 <p>The command removes only these ten attributes from MATTERDevice devices,
 not their readings. No values are automatically copied or deleted by the
 module. Readings appear only when corresponding data is received. Invalid/null
-reports preserve the last valid reading; offline/quarantine protection also
+reports preserve the last valid reading; offline protection also
 applies to limits. Restored readings are cached information, not proof of
 current reachability. Device-class hardware status remains
 <strong>untested</strong>.</p>
@@ -3001,7 +2988,7 @@ list. An unknown active type is retained alongside known types.</p>
 <p>No attribute or extra request is required. Before the first usable list,
 the reading is absent. Missing/null/malformed data preserves the earlier
 reading. Only value changes write the reading; normal offline and snapshot
-quarantine rules apply. Values persist through normal FHEM statefile handling
+availability and response-ordering rules apply. Values persist through normal FHEM statefile handling
 and may be cached. The reading describes reported operational interfaces,
 not the route of a specific Matter session or device reachability. It stays
 on endpoint 0: for a bridge it describes the bridge, never its bridged
@@ -3032,7 +3019,7 @@ on a child endpoint has no effect.</p>
 <p>Enabling the attribute sends no request and does not replay previously
 received data. Updates use subsequent accepted server reports or snapshots;
 the device/server determines which attributes arrive and when. Normal offline
-and snapshot-quarantine protection also applies to diagnostic attributes.
+and availability protection also applies to diagnostic attributes.
 Snapshots may contain cached values, so these readings do not prove fresh
 physical-device contact. A reading is written only when its value changes;
 its timestamp therefore records a value change, not every received report.
@@ -3101,35 +3088,29 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
       Vor dem Neustart mit dieser Version sollten gespeicherte Legacy-Attribute
       manuell entfernt werden, da FHEM unbekannte Attribute beim Laden der
       Konfiguration ablehnen kann.</li>
-  <li><b>Offline-Attributsperre:</b> Bei <code>available=false</code> werden
-weder zwischengespeicherte Gerätewerte noch Capability-Snapshots übernommen.
-Nach dem Wiedererreichen von <code>available=true</code> fordert FHEM
-globale Matter-Befehlsmetadaten nur an, wenn erforderliche Capability-Daten
-fehlen. Bereits vollständig bekannte Befehlslisten werden weiterverwendet.
-Bei fehlgeschlagener oder unvollständiger Antwort sind höchstens drei
-ereignisgesteuerte Versuche pro Wiederherstellung möglich, mit mindestens
-15 Sekunden Abstand, ohne zyklisches Polling. Die zugehörigen Antworten
-dürfen Setter wiederherstellen, aber keine zwischengespeicherten
-Schaltzustände, Messwerte oder Gerätegrenzwerte überschreiben. Manuelles <code>getConfig</code> bleibt während der
-Online-Quarantäne erlaubt; auch dann werden nur globale Capability-Metadaten
-übernommen. Offline-Anfragen sowie verspätete Antworten aus einem früheren
-Offline-/Online-Zyklus werden verworfen. Einzelne Live-Attribute werden
-weiterhin verarbeitet; ungefragte Snapshots bleiben gesperrt.
-Server-Metadaten beweisen keine neue physische Geräteabfrage.
-Die aktuelle Availability wird intern verwaltet; ein gespeichertes
-<code>available</code>-Reading gibt keine Geräteupdates frei. IO-Verlust,
-Node-Entfernung und FHEMs <code>INITIALIZED</code>/<code>REREADCFG</code>
-entwerten die Freigabe und sperren Snapshots. Vor Disconnect-Ereignissen
-werden alle zum IO gehörenden Roots gesperrt. Bis zu einer neuen gültigen
-Availability-Meldung bleiben Geräteattribute und <code>getConfig</code>
-gesperrt; fehlende/null/ungültige Meldungen heben diese Sperre nicht auf.
-Ein neues <code>available=true</code> erlaubt Root-Status, Live-Reports und
-Metadaten-Recovery, aber weiterhin keine gecachten physischen Snapshots.
-Neue Nodes ohne Availability erhalten nur Identität und Endpunkte.
-Akzeptierte Live-Modellmeldungen dürfen Kind-Readings aktualisieren;
-alte Root-Modellwerte werden nicht erneut gespiegelt. Echte Neustart- und
-configDB-Integration ist <strong>ungetestet</strong>; automatisierte Tests
-modellieren die Wiederherstellung von Readings.</li>
+  <li><b>Offline-Attributsperre:</b> Geräteattribute und
+<code>getConfig</code> erfordern ein gültiges aktuelles <code>available=true</code>.
+Bei Offline-Status oder unbekannter Availability bleiben gespeicherte Werte
+und lokale Korrekturen erhalten; Identität, Endpunkte und Verwaltungsstatus
+werden weiter gepflegt. IO-Verlust, Node-Entfernung und
+<code>INITIALIZED</code>/<code>REREADCFG</code> entwerten die interne Freigabe
+vor Disconnect-Ereignissen. Das gespeicherte <code>available</code>-Reading
+bleibt die letzte Servermeldung und gibt keine Geräteupdates frei.
+<p>Eine gültige Online-Meldung erlaubt wieder reguläre Snapshots und Live-Attribute,
+einschließlich der Werte derselben <code>node_updated</code>-Meldung. Ein
+zusätzlicher Report pro Attribut ist nicht erforderlich. Explizites
+<code>getConfig</code> darf online Gerätewerte und Capability-Metadaten aktualisieren.
+Antworten aus früheren Availability-Zyklen oder für ersetzte Roots werden
+verworfen; neuere Live-Werte haben Vorrang vor älteren Discovery-/Leseantworten.</p>
+<p>Nach einem bekannten Offline-/Online-Wechsel kann ausschließlich fehlende
+Befehlsmetadaten-Recovery automatisch ausgelöst werden: höchstens drei
+ereignisgesteuerte Versuche mit mindestens 15 Sekunden Abstand, ohne Polling.
+Diese automatischen Antworten übernehmen nur globale Matter-Metadaten;
+ein normales explizites <code>getConfig</code> ist darauf nicht eingeschränkt.
+FHEM übernimmt das Online-Datenmodell des Servers und behauptet keine eigene
+Frischegarantie für jedes einzelne Attribut. Echte FHEM-/configDB-Neustarts
+sind <strong>ungetestet</strong>; automatisierte Tests modellieren die
+Reading-Wiederherstellung.</p></li>
   <li><b>Root-Status:</b> Ohne <code>stateFormat</code>-Attribut zeigt das
       <code>state</code>-Reading am Root <code>online</code> oder
       <code>offline</code> nur nach einer gültigen <code>available=true/false</code>-
@@ -3144,7 +3125,7 @@ modellieren die Wiederherstellung von Readings.</li>
       während der aktuellen Laufzeit. Jede Nachricht zählt einmal am Root
       und einmal pro konkret adressiertem Endpunkt, unabhängig von der Anzahl
       der Attribute oder Wertänderungen. Gespiegelte Availability zählt allein
-      nicht als Endpoint-Empfang. Auch Cache-/Quarantäne-Snapshots und zugeordnete
+      nicht als Endpoint-Empfang. Auch Cache-/gesperrte Snapshots und zugeordnete
       Antworten einschließlich Fehlern zählen als Serverempfang; sie beweisen
       keinen aktuellen Kontakt zum physischen Gerät. Die Internals erzeugen keine
       zusätzlichen Reading-Events und werden beim FHEM-Neustart nicht wiederhergestellt.</li>
@@ -3247,9 +3228,10 @@ den Protokoll-Ersatzwert 254. Dasselbe Maximum gilt für Helligkeits-Slider,
 Befehlsprüfung sowie Prozent- und RGB-Skalierung. Ein gemeldetes generisches
 Maximum null als Zahlenwert bleibt erhalten; es erlaubt keine positive
 Helligkeit und keine abgeleitete Prozentberechnung. Befehle benötigen weiterhin
-die angekündigten Matter-Befehle und Features. Während der Quarantäne berechnet
-nur ein akzeptierter CurrentLevel-Bericht den Prozentwert neu; Metadaten oder
-Grenzwerte dürfen manuelle Prozentwerte nicht aus alter Helligkeit überschreiben.</p>
+die angekündigten Matter-Befehle und Features. Bei unbekannter oder negativer
+Availability werden Grenzen und abgeleitete Prozentwerte nicht aktualisiert.
+Online dürfen akzeptierte Level-, Grenzwert- und Metadatenmeldungen den
+Prozentwert aus der gemeldeten Helligkeit neu berechnen.</p>
 <p><b>Übergang:</b> Diese zehn Attributnamen sind ab V0.21 aus der
 <code>AttrList</code> entfernt; es gibt keine Kompatibilitäts- oder
 Migrationslogik. Automationen mit <code>AttrVal</code> prüfen und noch benötigte
@@ -3264,7 +3246,7 @@ save</pre>
 keine Readings. Das Modul kopiert oder löscht keine Altwerte automatisch.
 Readings entstehen erst beim Empfang passender Daten. Ungültige/null Meldungen
 erhalten den letzten gültigen Reading-Wert;
-Offline-Sperre und Snapshot-Quarantäne gelten auch für Grenzen. Wiederhergestellte
+Availability-Sperre und Antwortreihenfolge gelten auch für Grenzen. Wiederhergestellte
 Readings sind gespeicherte Informationen und kein Beleg aktueller
 Erreichbarkeit. Hardwarestatus der Geräteklassen weiterhin
 <strong>ungetestet</strong>.</p>
@@ -3323,7 +3305,7 @@ Typen sichtbar.</p>
 <p>Kein Attribut und keine zusätzliche Abfrage erforderlich. Vor der ersten
 verwertbaren Liste fehlt das Reading. Fehlende/null/fehlerhafte Daten
 erhalten den bisherigen Wert. Nur Wertänderungen schreiben das Reading;
-die normale Offline-Sperre und Snapshot-Quarantäne gelten weiterhin.
+die normale Availability-Sperre und Antwortreihenfolge gelten weiterhin.
 Der Wert bleibt über die normale FHEM-Statefile-Verarbeitung erhalten und
 kann zwischengespeichert sein. Er beschreibt gemeldete betriebsbereite
 Schnittstellen, weder den Übertragungsweg einer bestimmten Matter-Sitzung
@@ -3357,7 +3339,7 @@ an einem Kind-Endpunkt hat keine Wirkung.</p>
 <p>Das Einschalten sendet keine Abfrage und verarbeitet bereits empfangene
 Daten nicht erneut. Aktualisierungen nutzen anschließend akzeptierte
 Servermeldungen oder Snapshots; Gerät und Server bestimmen Datenumfang und
-Zeitpunkt. Die normale Offline-Sperre und Snapshot-Quarantäne gelten auch für
+Zeitpunkt. Die normale Availability-Sperre und Antwortreihenfolge gelten auch für
 Diagnoseattribute. Snapshots können zwischengespeicherte Werte enthalten;
 diese Readings belegen deshalb keinen frischen Kontakt zum physischen Gerät.
 Ein Reading wird nur bei einer Wertänderung geschrieben; sein Zeitstempel

@@ -1,51 +1,62 @@
-# Offline lifecycle acceptance (#27)
+# Availability and synchronization (#27)
 
 The last reported `available` reading is persisted by FHEM. It is not
-evidence of reachability in a new FHEM process or IO connection. The update
-gate now uses the root's current-session `helper.available` instead.
+current permission to import device data after restart or IO loss.
+The root's runtime `helper.available` is the update authority.
 
 | Input / lifecycle | Device data and reads | Administration |
 | --- | --- | --- |
-| New node, missing/invalid availability | Blocked; retain/create identity and endpoints only | No fabricated online state |
-| Valid false report | Blocked, including live attributes | Root offline; last physical readings retained |
-| IO loss, removal, INITIALIZED/REREADCFG | Invalidate runtime availability and old read epochs; quarantine snapshots | Root unknown/removed; saved available retained |
-| Valid true report after invalidation | Permit individual live attributes and metadata-only command recovery; cached physical snapshots remain blocked | Root online; endpoint association retained |
-| Missing/null/malformed availability | Does not change runtime authority | No invented boolean |
+| Unknown availability | Block values and getConfig; retain/create identity and endpoints | Root unknown; saved readings retained |
+| Valid false report | Block snapshots and live attributes | Root offline; local corrections retained |
+| IO loss, removal, INITIALIZED/REREADCFG | Invalidate runtime availability and old read epochs | Root unknown/removed; saved available retained |
+| Valid true report | Accept ordinary snapshots, node_updated attributes, live reports and explicit getConfig | Root online; no extra per-attribute permission |
+| Missing/null/malformed availability | Keep the current authority unchanged | Do not fabricate a boolean |
 
 All roots belonging to a closing IO are invalidated before its first reading
-event. This matters because FHEM notifications can synchronously reenter the
-module. Another IO, including one with the same numeric node ID, is unaffected.
-An accepted live BasicInformation model report explicitly updates child
-model readings; availability-only mirroring never replays a cached model.
+event because FHEM notifications can synchronously reenter the module. Another
+IO, including one with the same node ID, is unaffected. Valid online reports
+resume synchronization directly; there is no persistent snapshot quarantine.
 
-## Framework evidence
+Existing FUUID/availability-epoch request checks and per-path live ordering
+reject obsolete responses. Missing commands after a known offline/online
+transition retain the bounded event-driven metadata-only recovery (at most
+three attempts, at least 15 seconds apart). Explicit getConfig is an ordinary
+online read and may update physical values. No new polling is introduced.
 
-Inspected 2026-11-22 against
-[`fhem/fhem-mirror@5544e24cc71f2e3cebd786001778fe18eea5e62e`](https://github.com/fhem/fhem-mirror/blob/5544e24cc71f2e3cebd786001778fe18eea5e62e/fhem/fhem.pl).
-Startup restores configuration/state before `finish_init()` and the global
-`INITIALIZED` event, before the normal event loop. `CommandRereadCfg` likewise
-calls `finish_init()` and triggers `REREADCFG` after reloading. These existing
-MATTERDevice lifecycle callbacks therefore invalidate restored permissions
-without replacing FHEM's reading persistence or its `STATE` restoration.
-The installed user's exact FHEM revision was not inspected.
+## Matter-server evidence
 
-The existing Matter-server freshness limitation is unchanged: a validated
-availability report does not prove that every cached attribute was reread
-from hardware. The client accepts later individual `attribute_updated`
-reports, but cannot prove physical contact beyond that API signal. It adds
-no device polling or server-side cache manipulation.
+Inspected 2026-11-22 at
+[`matterjs-server@fc8aa79611aebbe3090a30813e7211f707b2131f`](https://github.com/matter-js/matterjs-server/tree/fc8aa79611aebbe3090a30813e7211f707b2131f).
+`ControllerCommandHandler.#refreshAfterFirstReport` rebuilds the attribute
+cache before a restored node becomes available. The accompanying
+[`RestoredNodeCacheTest`](https://github.com/matter-js/matterjs-server/blob/fc8aa79611aebbe3090a30813e7211f707b2131f/packages/ws-controller/test/RestoredNodeCacheTest.ts)
+explicitly tests the current OnOff value in node_updated without an additional
+attribute_updated event. Requiring that extra event in FHEM would reject the
+valid update and could leave the displayed state stale.
 
-## Validation and limits
+During an ordinary peer reconnection, the server can publish availability
+before its full cache rebuild. This transient ordering does not establish a
+need to reject all online snapshots indefinitely. FHEM accepts the server's
+online data model; cached values are not a new physical-contact guarantee.
+The user's installed server revision has not been matched to this upstream
+inspection, so no deployed-firmware behavior is claimed.
 
-The regression suite runs the actual module parsers/callbacks with modeled
-FHEM functions. The focused lifecycle subtest retains readings while rebuilding
-runtime helpers, delivers INITIALIZED/REREADCFG, injects reentrant callbacks
-and reconnects modeled IOs. It covers unknown/invalid availability, local
-state/sensor/model values, type metadata, metadata recovery, member removal,
-multiple roots and same-node-ID IO separation. Existing tests cover stale
-read epochs, offline live events, node list ordering and bounded recovery.
+## FHEM evidence and test limits
 
-Physical device firmware, a running FHEM restart, configuration-file/configDB
-loading and the real event loop were not exercised. A modeled restoration is
-not a claim of end-to-end hardware or configDB verification. No new migration,
-timer, public reading or module attribute is introduced.
+[`fhem/fhem-mirror@5544e24cc71f2e3cebd786001778fe18eea5e62e`](https://github.com/fhem/fhem-mirror/blob/5544e24cc71f2e3cebd786001778fe18eea5e62e/fhem/fhem.pl),
+inspected 2026-11-22, restores state before INITIALIZED and reloads before
+REREADCFG. Existing module callbacks invalidate runtime permission after
+restoration, without replacing FHEM's reading persistence.
+
+The focused regression exercises the actual IO/device parsers with modeled
+FHEM functions: unknown/offline preservation, reconnect, retained readings
+with rebuilt helpers, INITIALIZED/REREADCFG, synchronous notification reentry,
+member removal, multiple roots and same-node-ID IO separation. It explicitly
+accepts a valid online node_updated without a subsequent attribute event.
+Existing tests verify full explicit getConfig, metadata-only automatic
+recovery, old-epoch rejection and newer-live-over-older-response ordering.
+
+No physical device, running FHEM restart, configuration-file/configDB backend
+or real event loop was exercised. A modeled restoration is not hardware or
+configDB validation. No migration, recurring timer or new public setting is
+introduced.

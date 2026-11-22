@@ -292,8 +292,7 @@ CommandDeleteAttr(undef, 'MATTER_Hall_Light stateFormat');
 
 # The startup/migration scenario is complete. Use a separate initial-online
 # scenario for the following grouping/autocreate/read tests. Real recovery
-# remains quarantined and is exercised explicitly in the lifecycle subtest.
-delete $root->{helper}{quarantine_snapshots};
+# is exercised explicitly in the lifecycle subtest.
 MATTERDevice_UpdateAvailability($root, JSON::true);
 
 is(CommandDefine(undef, 'Standalone_Root MATTERDevice 999'), undef,
@@ -1033,10 +1032,8 @@ is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'online',
    'malformed availability never alters valid native root state');
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'available', ''), 'true',
    'node-level availability is mirrored to the existing endpoint');
-# Independent subsequent callback tests model a separately proven fresh
-# re-interview. The offline quarantine tests below exercise the persistent
-# protection; merely observing available=true does not clear it in production.
-delete $root->{helper}{quarantine_snapshots};
+# Subsequent online callback tests use the valid availability report above.
+# Separate offline/unknown cases below verify the common update gate.
 
 MATTERDevice_Parse($root, encode_json({
     node_id => 42,
@@ -1617,8 +1614,7 @@ is(ReadingsVal($other_metadata_ep->{NAME}, 'available', ''), 'false',
 is(CommandAttr(undef, 'ioA autocreate 0'), undef,
    'autocreate can be disabled during metadata synchronization');
 # The metadata update below represents another independently fresh interview,
-# not a cached replay after the preceding offline->online transition.
-delete $metadata_root->{helper}{quarantine_snapshots};
+# accepted after the preceding valid online report.
 MATTER_ProcessNode($defs{ioA}, {
     node_id => 95, name => 'MetadataNode', available => JSON::true,
     attributes => {'0/40/3' => 'Synthetic Model E', '4/6/0' => JSON::true},
@@ -2384,7 +2380,7 @@ like(MATTERDevice_Set($fan, $fan->{NAME}, 'fan_pct', '300') // '',
    qr/between 0 and 100/, 'invalid fan target is rejected');
 
 
-# Issue #27: cache quarantine is node-wide, preserves manual edits and all
+# Issue #27: cache protection is node-wide, preserves manual edits and all
 # device-derived metadata; recovery accepts only fresh individual reports.
 MATTER_ProcessNode($defs{ioA}, {
     node_id => 2700, name => 'OfflineProbe', available => JSON::true,
@@ -2442,10 +2438,10 @@ ok($defs{ioA}{helper}{pending_config}{$recovery_requests[0]{message_id}}{capabil
    'capability request is tracked separately from device-state updates');
 ok(!grep(/^on:noArg$/, MATTERDevice_GetSetList($offline_child)),
    'setter is not fabricated before command metadata is received');
-is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
-   'availability true with cached snapshot cannot overwrite manual state');
-is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
-   'cached battery remains quarantined after available true');
+is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'on',
+   'valid online snapshot restores the reported state without another live event');
+is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 95,
+   'valid online snapshot restores the reported battery value');
 MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $recovery_requests[0]{message_id},
     result => {
@@ -2457,27 +2453,28 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($offline_child)),
    'recovery restores On setter from an advertised AcceptedCommandList');
-is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
-   'capability recovery does not import cached physical OnOff state');
-is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
-   'capability recovery never updates cached sensor readings');
+is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'on',
+   'automatic metadata recovery leaves the accepted state unchanged');
+is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 95,
+   'automatic metadata recovery cannot inject unrequested sensor values');
 
 @sent_requests = ();
 is(MATTERDevice_Set($offline_child, $offline_child->{NAME}, 'getConfig'),
-   undef, 'manual getConfig remains usable while snapshots are quarantined');
+   undef, 'manual getConfig reads device values while online');
 my $manual_recovery_id = $sent_requests[-1]{message_id};
 MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $manual_recovery_id,
     result => {
         '1/6/65529' => [0, 1, 2],
-        '1/6/0' => JSON::true,
+        '1/6/65532' => 0,
+        '1/6/0' => JSON::false,
         '1/47/12' => 180,
     }
 }));
 is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
-   'explicit getConfig in quarantine does not restore stale OnOff values');
-is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
-   'explicit getConfig in quarantine does not restore stale battery values');
+   'explicit getConfig accepts reported OnOff while online');
+is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 90,
+   'explicit getConfig accepts reported battery while online');
 ok(MATTERDevice_CommandAccepted($offline_child, 6, 1),
    'explicit getConfig preserves advertised command metadata');
 
@@ -2511,8 +2508,8 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'on',
    'new live report releases state for its specific attribute');
-is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
-   'unreported battery still preserves its manual value');
+is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 90,
+   'unreported battery retains its last accepted read value');
 is(ReadingsVal($offline_root->{NAME}, 'state', ''), 'online',
    'root availability remains independent from endpoint state');
 
@@ -2549,8 +2546,8 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($boot_child)),
    'On setter returns after offline startup without has_* fallback');
-is(ReadingsVal($boot_child->{NAME}, 'state', ''), 'off',
-   'offline-start recovery preserves manually corrected device state');
+is(ReadingsVal($boot_child->{NAME}, 'state', ''), 'on',
+   'offline-start recovery synchronizes the online snapshot state');
 
 # Known command metadata survives a temporary outage. Do not read it again
 # just because the server publishes another availability=true snapshot.
@@ -2578,8 +2575,8 @@ ok(!grep({ ($_->{command} // '') eq 'read_attribute' &&
    'already known command metadata needs no additional read');
 ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($known_child)),
    'known On control remains available without refresh');
-is(ReadingsVal($known_child->{NAME}, 'state', ''), 'off',
-   'avoiding metadata read does not release physical state quarantine');
+is(ReadingsVal($known_child->{NAME}, 'state', ''), 'on',
+   'known-command recovery accepts physical values from the online snapshot');
 
 # A missing FeatureMap for an advertised feature-dependent command is still
 # missing metadata, even though AcceptedCommandList already exists.
@@ -3018,7 +3015,7 @@ like(ReadingsVal($ota->{NAME}, 'firmware_update', ''), qr/DCL unavailable/,
 ok(!grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
    'lookup errors do not leave a stale install action');
 # Receive diagnostics exercise the real IO -> root -> endpoint routing. These
-# count server messages, including cached/quarantined data, not device contact.
+# count server messages, including cached/blocked data, not device contact.
 for my $io_name (qw(ioReceive ioReceiveOther)) {
     $defs{$io_name} = { NAME => $io_name, TYPE => 'MATTER', READINGS => {}, helper => {} };
 }
@@ -3068,10 +3065,10 @@ MATTER_ParseMessage($defs{ioReceive}, encode_json({
     event => 'node_updated', data => {node_id => 4100,
         attributes => {'1/6/0' => JSON::false, '1/8/0' => 0, '2/6/0' => JSON::true}}
 }));
-is($rr->{MSGCNT}, 4, 'quarantined snapshot counts once for root');
-is($r1->{MSGCNT}, 3, 'quarantined endpoint attributes count once');
+is($rr->{MSGCNT}, 4, 'blocked snapshot counts once for root');
+is($r1->{MSGCNT}, 3, 'blocked endpoint attributes count once');
 is($r2->{MSGCNT}, 2, 'second included endpoint receives the same snapshot');
-is(ReadingsVal($r1->{NAME}, 'state', ''), 'on', 'receive accounting preserves offline state quarantine');
+is(ReadingsVal($r1->{NAME}, 'state', ''), 'on', 'receive accounting preserves offline state protection');
 MATTER_ParseMessage($defs{ioReceive}, encode_json({
     event => 'node_event', data => {node_id => 4100, endpoint_id => 1,
         cluster_id => 59, event_id => 3, data => {}}
@@ -3087,8 +3084,8 @@ $defs{ioReceive}{helper}{pending_config}{70002} = {
 MATTER_ParseMessage($defs{ioReceive}, encode_json({
     message_id => 70002, result => {'1/6/65529' => [0, 1], '1/6/65532' => 0}
 }));
-is($rr->{MSGCNT}, 6, 'quarantined correlated read counts for root');
-is($r1->{MSGCNT}, 5, 'quarantined read counts once for requested endpoint');
+is($rr->{MSGCNT}, 6, 'blocked correlated read counts for root');
+is($r1->{MSGCNT}, 5, 'blocked read counts once for requested endpoint');
 $defs{ioReceive}{helper}{pending_config}{70003} = {
     node_id => 4100, endpoint_id => 1, root_fuuid => $rr->{FUUID}
 };
@@ -3113,7 +3110,6 @@ is($rr->{MSGCNT}, 7, 'a replaced request owner does not inherit receipt');
 MATTER_ParseMessage($defs{ioReceive}, encode_json({
     event => 'node_updated', data => {node_id => 4100, available => JSON::true}
 }));
-delete $rr->{helper}{quarantine_snapshots};
 $defs{ioReceive}{helper}{pending_config}{70005} = {
     node_id => 4100, all_endpoints => 1, root_fuuid => $rr->{FUUID},
     live_values => {'2/6/0' => JSON::false}
@@ -3344,11 +3340,11 @@ subtest 'Matter node network type through existing server routing' => sub {
         node_id => 5100, available => JSON::true,
         attributes => {'0/51/0' => $wifi},
     }}));
-    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'ethernet',
-       'cached recovery snapshot cannot overwrite the retained network type');
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'wifi',
+       'valid online recovery snapshot refreshes the reported network type');
     $report->($thread);
     is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'thread',
-       'fresh live report updates network type during snapshot quarantine');
+       'live reports continue updating network type after online synchronization');
 
     MATTER_ProcessNode($io, {node_id => 5101, name => 'NetworkCapabilityOnly',
         available => JSON::true, attributes => {'0/49/65532' => 1}});
@@ -3527,17 +3523,17 @@ is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 180,
 MATTER_ParseMessage($limit_io, encode_json({event => 'node_updated', data => {
     node_id => 6400, available => JSON::true,
     attributes => {'1/8/3' => 112}}}));
-is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 180,
-   'recovery snapshot remains quarantined for limit readings');
+is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 112,
+   'valid online recovery snapshot refreshes the device limit');
 MATTERDevice_ApplyCapabilityMetadata($limit_root, {'1/8/65532' => 6});
-is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 99,
-   'metadata-only recovery preserves manual percentage while brightness is quarantined');
+is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 35,
+   'online Lighting metadata recalculates percentage using its standardized scale');
 MATTERDevice_ApplyCapabilityMetadata($limit_root, {'1/8/65532' => 4});
 $limit_report->(1, 8, 3, 170);
 is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 170,
    'fresh online limit report updates the reading after recovery');
-is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 99,
-   'live limit does not derive new state from quarantined brightness');
+is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 52,
+   'online limit change recalculates percentage from the last reported brightness');
 $limit_report->(1, 8, 0, 85);
 is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 50,
    'accepted fresh brightness report can refresh derived percentage during recovery');
@@ -3552,7 +3548,7 @@ ok(!exists($attr{$limit_ep->{NAME}}{max_brightness}),
 is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 160,
    'subsequent reports continue to update the reading');
 
-subtest 'Issue 27: restart, unknown availability and reconnect quarantine' => sub {
+subtest 'Issue 27: unknown/offline blocks, valid online synchronizes' => sub {
     my @requests;
     my @peers;
     my $connect = sub {
@@ -3626,15 +3622,16 @@ subtest 'Issue 27: restart, unknown availability and reconnect quarantine' => su
     is($single_writes{$ep->{NAME}}{state}, $state_writes, 'blocked snapshots do not churn physical state events');
     is($single_writes{$ep->{NAME}}{battery_percent}, $battery_writes, 'blocked snapshots preserve manual sensor value and timestamp');
     is($single_writes{$ep->{NAME}}{device_type_ids}, $type_writes, 'blocked snapshots preserve device types and metadata');
-    MATTER_ProcessNode($io, {node_id => 6100, available => JSON::true, attributes => $values});
+    MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {
+        node_id => 6100, available => JSON::true, attributes => $values}}));
     is(ReadingsVal($a->{NAME}, 'state', ''), 'online', 'validated availability independently restores root status');
-    is(ReadingsVal($ep->{NAME}, 'state', ''), 'off', 'online report does not release the cached recovery snapshot');
-    is(ReadingsVal($ep->{NAME}, 'model', ''), 'Manual model', 'availability mirroring cannot replay an old root model');
+    is(ReadingsVal($ep->{NAME}, 'state', ''), 'on', 'online node_updated restores OnOff without any attribute_updated event');
+    is(ReadingsVal($ep->{NAME}, 'model', ''), 'Synthetic model', 'online snapshot restores the server model on root and children');
     MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [6100, '0/40/3', 'Fresh model']}));
-    is(ReadingsVal($ep->{NAME}, 'model', ''), 'Fresh model', 'accepted live model report reaches children during quarantine');
+    is(ReadingsVal($ep->{NAME}, 'model', ''), 'Fresh model', 'accepted live model report updates children normally');
     MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [6100, '1/6/0', JSON::true]}));
     is(ReadingsVal($ep->{NAME}, 'state', ''), 'on', 'fresh individual report restores physical state after recovery');
-    is(ReadingsVal($ep->{NAME}, 'battery_percent', ''), 10, 'unreported manual battery remains unchanged');
+    is(ReadingsVal($ep->{NAME}, 'battery_percent', ''), 80, 'online snapshot restores its reported battery value');
 
     # Model normal statefile/configDB restoration: preserve public readings,
     # rebuild only transient helper metadata, then deliver the real lifecycle callback.
@@ -3642,18 +3639,19 @@ subtest 'Issue 27: restart, unknown availability and reconnect quarantine' => su
     $a->{helper} = {};
     $ep->{helper} = {};
     for my $event (qw(INITIALIZED REREADCFG)) {
+        readingsSingleUpdate($ep, 'state', 'off', 1);
         MATTERDevice_Notify($a, {NAME => 'global', CHANGED => [$event]});
         is(ReadingsVal($a->{NAME}, 'state', ''), 'unknown', "$event invalidates restored root status");
         MATTER_ProcessNode($io, {node_id => 6100, attributes => $values});
         is(ReadingsVal($ep->{NAME}, 'state', ''), 'off', "$event: snapshot without availability preserves restored state");
         MATTER_ProcessNode($io, {node_id => 6100, available => JSON::true, attributes => $values});
-        is(ReadingsVal($ep->{NAME}, 'state', ''), 'off', "$event: online cache cannot overwrite restored state");
+        is(ReadingsVal($ep->{NAME}, 'state', ''), 'on', "$event: valid online snapshot synchronizes restored state");
         my ($read) = reverse grep {($_->{command} // '') eq 'read_attribute' &&
             ($_->{args}{node_id} // 0) == 6100} @requests;
         if ($read) {
             MATTER_ParseMessage($io, encode_json({message_id => $read->{message_id}, result => $values}));
         }
-        is(ReadingsVal($ep->{NAME}, 'state', ''), 'off', "$event: metadata recovery cannot write cached device values");
+        is(ReadingsVal($ep->{NAME}, 'state', ''), 'on', "$event: explicit reads and recovery do not prevent online synchronization");
     }
     MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [6100, '1/6/0', JSON::true]}));
     is(ReadingsVal($ep->{NAME}, 'state', ''), 'on', 'live report after statefile restoration is accepted');

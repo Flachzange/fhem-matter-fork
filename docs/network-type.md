@@ -25,8 +25,9 @@ deduplicated. A valid list with no operational entries yields `unknown`;
 unspecified and unrecognized active types also contribute `unknown`.
 Malformed/null lists preserve the previous value. Before any usable list,
 the reading is absent. It uses ordinary FHEM reading persistence and writes
-only on value changes. Cached values and snapshot quarantine follow the
-existing device parser; this feature does not weaken freshness rules.
+only on value changes. Values follow the normal availability and response-ordering rules.
+Since V0.23 a valid online report also accepts its snapshot values; a
+separate per-attribute live event is not required.
 
 NetworkCommissioning feature flags express supported interfaces, not a
 current active route, so they are deliberately not a fallback.
@@ -44,7 +45,7 @@ device parser callbacks. The focused subtest covers initial discovery,
 named/tag fields, booleans, active/inactive interfaces, multiple types,
 unknown types, malformed/null lists, root/bridge scope, unchanged-value
 suppression, delayed discovery and correlated-read responses, invalid-live
-negative controls, offline/recovery quarantine, multiple IOs, and absence
+negative controls, offline/online transitions, multiple IOs, and absence
 of additional timers/reads.
 
 Tests use the repository's existing modeled FHEM callbacks; they do not

@@ -1160,7 +1160,7 @@ sub MATTER_ParseMessage($$) {
             my $received = {};
             my $owner = $modules{MATTERDevice}{defptr}{"$name:$node_id"};
             # Correlated replies (including errors/empty results) are received
-            # messages even when their device values are quarantined or stale.
+            # messages even when their device values are blocked or stale.
             # A replacement device must never inherit an old request's traffic.
             if ($owner && (ref($pending) ne 'HASH' ||
                 !defined($pending->{root_fuuid}) ||
@@ -1209,11 +1209,8 @@ sub MATTER_ParseMessage($$) {
                             $fresh{$path} = $pending->{live_values}{$path};
                         }
                     }
-                    if (ref($pending) eq 'HASH' &&
-                        (($pending->{capability_only} // 0) ||
-                         $root_hash->{helper}{quarantine_snapshots})) {
-                        # A correlated read can restore command metadata,
-                        # never stale on/off, brightness or sensor values.
+                    if (ref($pending) eq 'HASH' && $pending->{capability_only}) {
+                        # Automatic recovery requested global metadata only.
                         MATTERDevice_ApplyCapabilityMetadata(
                             $root_hash, \%fresh,
                             $pending->{all_endpoints} ? undef :
@@ -1442,7 +1439,7 @@ availability, <code>removed</code> for absent server membership, and
 endpoint states and last reported <code>available</code> values are preserved.
 The retained reading never authorizes device updates after a disconnect;
 current-session availability must be reported again. See MATTERDevice's
-offline protection for restart and snapshot-quarantine behavior.
+offline protection for restart and normal online synchronization.
 There is no polling. The TCP/WebSocket handshake has a 10-second deadline;
 while connected, WebSocket Ping/Pong checks run every 30 seconds with a 15-second
 Pong deadline. Any connection failure triggers a new attempt after 30 seconds,
