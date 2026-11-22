@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.34 22.11.2026";
+my $MATTER_version = "V0.35 22.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -797,8 +797,8 @@ sub MATTER_SetNodeStatus($$$) {
     }
 }
 
-sub MATTER_ProcessNode($$) {
-    my ($hash, $node) = @_;
+sub MATTER_ProcessNode($$;$) {
+    my ($hash, $node, $partial) = @_;
     my $io_name = $hash->{NAME};
     return unless ref($node) eq 'HASH';
     my $node_id = $node->{node_id};
@@ -809,6 +809,7 @@ sub MATTER_ProcessNode($$) {
 
     my $root_key = "$io_name:$node_id";
     my $root = MATTERDevice_LookupRoot($hash, $node_id);
+    my $reconcile = !$partial || !$root;
 
     unless ($root) {
         # Reuse renamed roots by identity, never by the server-provided label.
@@ -881,7 +882,7 @@ sub MATTER_ProcessNode($$) {
         Log3 $io_name, 3, "MATTER: Created root device $device_name for node $node_id";
     }
     $modules{MATTERDevice}{defptr}{$root_key} = $root;
-    MATTERDevice_EnsureTypeGroup($root);
+    MATTERDevice_EnsureTypeGroup($root) if $reconcile;
 
     # Parse node-wide availability and endpoint attributes through the same
     # device path. Missing availability never revives stale persisted values.
@@ -894,13 +895,14 @@ sub MATTER_ProcessNode($$) {
     } else {
         MATTERDevice_RecordReceive($root, {});
     }
-    # Synchronize already defined endpoints even without endpoint attributes.
-    foreach my $child (MATTERDevice_NodeChildren($root)) {
-        # Display-only parent name: always derive it from the current root.
-        $child->{device} = $root->{NAME};
-        MATTERDevice_EnsureTypeGroup($child);
+    # Full discovery also repairs endpoints omitted from the attribute map.
+    if ($reconcile) {
+        foreach my $child (MATTERDevice_NodeChildren($root)) {
+            $child->{device} = $root->{NAME};
+            MATTERDevice_EnsureTypeGroup($child);
+            MATTERDevice_SyncNodeReadings($root, $child);
+        }
     }
-    MATTERDevice_SyncNodeReadings($root);
     MATTER_SetNodeStatus($hash, $node_id, 'present');
     return 1;
 }
@@ -1075,7 +1077,7 @@ sub MATTER_ParseMessage($$) {
                 MATTER_RecordPendingReadValues($hash, $node_id, $decoded->{data}{attributes})
                     if $event eq 'node_updated';
             }
-            MATTER_ProcessNode($hash, $decoded->{data});
+            MATTER_ProcessNode($hash, $decoded->{data}, $event eq 'node_updated');
             return;
         }
         if ($event eq 'node_event' && ref($decoded->{data}) eq 'HASH') {
