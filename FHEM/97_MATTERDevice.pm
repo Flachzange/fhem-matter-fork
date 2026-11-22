@@ -2349,14 +2349,18 @@ sub MATTERDevice_RecordReceive {
 
 sub MATTERDevice_Parse($ $;$) {
     my ($hash, $data, $received) = @_;
-    $received //= {};
-    my $name = $hash->{NAME};
-
     my $decoded = eval { decode_json($data) };
     if ($@ || ref($decoded) ne 'HASH') {
-        Log3 $name, 3, "MATTERDevice: Invalid JSON object";
+        Log3 $hash->{NAME}, 3, "MATTERDevice: Invalid JSON object";
         return;
     }
+    return MATTERDevice_ProcessMessage($hash, $decoded, $received);
+}
+
+sub MATTERDevice_ProcessMessage {
+    my ($hash, $decoded, $received) = @_;
+    $received //= {};
+    my $name = $hash->{NAME};
 
     my $my_endpoint = $hash->{endpoint_id} // 0;
     my $root = $my_endpoint == 0 ? $hash :

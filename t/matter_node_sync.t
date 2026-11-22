@@ -5118,4 +5118,39 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     ok(!defined($weak), 'undef releases the IO after the last external reference goes away');
 }
 
+{
+    my $id;
+    my $io = $defs{decodeIO} = {NAME => 'decodeIO', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected',
+        test_send_text => sub { $id = JSON::decode_json($_[0])->{message_id}; 1 }};
+    my $receive = sub {
+        my ($label, $message) = @_;
+        my $wire = encode_json($message);
+        my ($decodes, $encodes) = (0, 0);
+        {
+            no warnings qw(redefine once);
+            local *decode_json = sub { ++$decodes; return JSON::decode_json($_[0]) };
+            local *encode_json = sub { ++$encodes; return JSON::encode_json($_[0]) };
+            MATTER_ParseMessage($io, $wire);
+        }
+        is_deeply([$decodes, $encodes], [1, 0], "$label decoded once with no internal re-encoding");
+    };
+    $io->{helper}{pending_command}{discovery} = 'get_nodes';
+    $receive->('discovery', {message_id => 'discovery', result => [node(9805, 'DecodeProbe')]});
+    my $root = $defs{MATTER_DecodeProbe};
+    my $ep = $defs{MATTER_DecodeProbe_EP1};
+    $receive->('live attribute', {event => 'attribute_updated', data => [9805, '1/6/0', JSON::false]});
+    $receive->('switch event', {event => 'node_event', data => {
+        node_id => 9805, endpoint_id => 1, cluster_id => 59, event_id => 1}});
+    is(MATTERDevice_Set($ep, $ep->{NAME}, 'getConfig'), undef, 'explicit read queued');
+    $receive->('read reply', {message_id => $id, result => {'1/6/0' => JSON::true}});
+    is($ep->{MSGCNT}, 4, 'four server messages counted once each for the endpoint');
+    is(ReadingsVal($ep->{NAME}, 'state', ''), 'on', 'read reply routed to the endpoint');
+    MATTERDevice_Parse($root, encode_json({event => 'attribute_updated',
+        data => [9805, '1/6/0', JSON::false]}));
+    is(ReadingsVal($ep->{NAME}, 'state', ''), 'off', 'public ParseFn accepts JSON text');
+    MATTERDevice_Parse($root, '{');
+    like($log[-1], qr/Invalid JSON object/, 'public ParseFn rejects malformed JSON');
+}
+
 done_testing();

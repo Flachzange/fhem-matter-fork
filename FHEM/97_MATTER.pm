@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.33 22.11.2026";
+my $MATTER_version = "V0.34 22.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -890,7 +890,7 @@ sub MATTER_ProcessNode($$) {
         $payload{available} = $node->{available} if exists($node->{available});
         $payload{attributes} = $node->{attributes}
             if ref($node->{attributes}) eq 'HASH';
-        MATTERDevice_Parse($root, encode_json(\%payload));
+        MATTERDevice_ProcessMessage($root, \%payload);
     } else {
         MATTERDevice_RecordReceive($root, {});
     }
@@ -1095,7 +1095,7 @@ sub MATTER_ParseMessage($$) {
                         MATTERDevice_RecordReceive($child, $received)
                             if $child->{endpoint_id} == $endpoint;
                     }
-                    MATTERDevice_Parse($root, $payload, $received);
+                    MATTERDevice_ProcessMessage($root, $decoded, $received);
                 }
             }
             return;
@@ -1129,7 +1129,7 @@ sub MATTER_ParseMessage($$) {
             
             if ($root_hash) {
                 # Das Root-Device verarbeitet das Event (und reicht es an den Endpoint weiter)
-                MATTERDevice_Parse($root_hash, $payload);
+                MATTERDevice_ProcessMessage($root_hash, $decoded);
             } else {
                 Log3 $name, 3, "MATTER: Received event for unknown root node $node_id on IO $name";
             }
@@ -1199,9 +1199,9 @@ sub MATTER_ParseMessage($$) {
                             $pending->{endpoint_id}
                     ) if keys %fresh;
                 } else {
-                    MATTERDevice_Parse($owner, encode_json({
+                    MATTERDevice_ProcessMessage($owner, {
                         message_id => $msg_id, result => \%fresh
-                    }), $received) if keys %fresh;
+                    }, $received) if keys %fresh;
                 }
             }
             return;

@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-22  MATTER V0.34 (#63): Reuse decoded server messages for discovery, live reports, switch events and configuration read replies.
+
 - 2026-11-22  MATTER V0.33 (#62): Reject surplus arguments for all noArg device setters before registering or sending a request.
 
 - 2026-11-22  MATTER V0.32 (#61): Release deleted IO definitions by sending device commands and reads through the existing JSON sender.
