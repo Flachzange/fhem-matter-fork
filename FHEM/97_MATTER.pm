@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.25 22.11.2026";
+my $MATTER_version = "V0.26 22.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -121,7 +121,7 @@ sub MATTER_Rename {
 }
 
 # Shared, monotonic request IDs avoid collisions across discovery, reads,
-# commissioning and untracked device commands on the same WebSocket.
+# commissioning and device commands on the same WebSocket.
 sub MATTER_NextMessageId {
     my ($hash) = @_;
     return undef unless $hash;
@@ -516,16 +516,8 @@ sub MATTER_Close($) {
                 if ReadingsVal($dev->{NAME}, 'firmware_update', '') eq 'available';
         }
     }
-    for my $op (@incomplete_node_ops) {
-        my $device = $defs{$op->{name}};
-        next unless $device && ($device->{FUUID} // '') eq ($op->{fuuid} // '') &&
-                    $device->{IODev} && $device->{IODev} eq $hash;
-        my $reading = ($op->{operation} // '') =~ /icd/ ?
-                      'icd_request' :
-                      ($op->{operation} // '') eq 'write_attribute' ?
-                      'lastError' : 'firmware_update';
-        readingsSingleUpdate($device, $reading, 'interrupted (outcome unknown)', 1);
-    }
+    MATTERDevice_CompleteRequest($hash, $_, undef,
+        'interrupted (outcome unknown)') for @incomplete_node_ops;
     if ($active) {
         MATTER_CommissioningReadings($hash, 'interrupted', $active->{mode}, '',
             MATTER_CommissioningDuration($active->{started_at}),
@@ -556,14 +548,8 @@ sub MATTER_Heartbeat($) {
         next unless gettimeofday() - ($p->{started_at} // 0) >
                     ($p->{timeout} // 120);
         delete $hash->{helper}{pending_command}{$id};
-        my $owner = $defs{$p->{name}};
-        next unless $owner && ($owner->{FUUID} // '') eq ($p->{fuuid} // '') &&
-                    $owner->{IODev} && $owner->{IODev} eq $hash;
-        my $reading = ($p->{operation} // '') =~ /icd/ ?
-                      'icd_request' :
-                      ($p->{operation} // '') eq 'write_attribute' ?
-                      'lastError' : 'firmware_update';
-        readingsSingleUpdate($owner, $reading, 'timeout (outcome unknown)', 1);
+        MATTERDevice_CompleteRequest($hash, $p, undef,
+            'timeout (outcome unknown)');
     }
     if (defined($hash->{helper}{pending_pong})) {
         Log3 $hash->{NAME}, 2, "[$hash->{NAME}] WebSocket pong timeout after $MATTER_pong_timeout seconds; reconnecting";
@@ -1255,18 +1241,7 @@ sub MATTER_ParseMessage($$) {
         my $cmd_type = delete $hash->{helper}{pending_command}{$msg_id};
         if (ref($cmd_type) eq 'HASH' &&
             ($cmd_type->{type} // '') eq 'node_operation') {
-            my $owner = $defs{$cmd_type->{name}};
-            if ($owner && ($owner->{TYPE} // '') eq 'MATTERDevice' &&
-                ($owner->{FUUID} // '') eq ($cmd_type->{fuuid} // '') &&
-                ($owner->{node_id} // '') eq ($cmd_type->{node_id} // '') &&
-                $owner->{IODev} && $owner->{IODev} eq $hash) {
-                my $received = {};
-                MATTERDevice_RecordReceive(
-                    $modules{MATTERDevice}{defptr}{"$name:$cmd_type->{node_id}"}, $received
-                );
-                MATTERDevice_RecordReceive($owner, $received);
-                MATTERDevice_HandleNodeOperation($owner, $cmd_type, $decoded);
-            }
+            MATTERDevice_CompleteRequest($hash, $cmd_type, $decoded);
             return;
         }
         if ($cmd_type && ($cmd_type eq "get_nodes" || $cmd_type eq "start_listening")) {

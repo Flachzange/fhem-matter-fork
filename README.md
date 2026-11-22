@@ -298,7 +298,27 @@ engine.
 - Native dimming commands: `dim_up`, `dim_down`, `dim_step_up`,
   `dim_step_down` and `dim_stop`, if the respective LevelControl commands
   are advertised. Set `attr <device> dimRate 60` for the next continuous move
-  (1–254, default 30). These are device-native transitions, not FHEM timers.
+  (1–254, default 30); the commands themselves take no arguments. Steps use
+  20 native level units with transition time zero. The regular command is
+  preferred; the WithOnOff variant is used only if it is the advertised
+  alternative and may also affect OnOff state. OptionsMask/Override remain
+  zero, leaving the endpoint's configured options in effect.
+  These are device-native transitions, not FHEM timers. See
+  [native dimming](docs/native-dimming.md).
+- All device commands and attribute writes use one shared request path:
+  on/off, color/level, coverings, locks, Identify, dimming and HVAC setters.
+  Each API request retains its own message_id until reply, timeout or IO loss.
+  Commands and writes can overlap; a pending response does not lock Stop or
+  the next write. Only the latest setter changes the endpoint's `lastError`;
+  older replies are still correlated and retired. RGB's level/color requests
+  share one result so a successful component cannot conceal a failed one.
+  Device commands accept successful replies with any result value;
+  attribute writes validate returned Matter status/path lists, preserving null
+  API acknowledgements. Neither updates physical readings. Missing or invalid
+  replies, server refusal, timeout and IO loss are reported as errors/unknown
+  outcomes. Existing OTA/ICD policies use the same transport registry with
+  their existing administrative serialization and status readings.
+  See [request correlation and evidence](docs/device-requests.md).
 - Thermostat endpoints offer `desired-temp` (heating) and `desired-temp-cool`
   (cooling) from advertised writable attributes and the corresponding features.
   Celsius text inputs accept up to two decimals, without an arbitrary 5–30 °C

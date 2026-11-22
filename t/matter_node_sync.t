@@ -2943,19 +2943,22 @@ is(ReadingsVal($therm->{NAME}, 'lastError', ''), 'none',
 is(ReadingsVal($therm->{NAME}, 'desired-temp', ''), 21,
    'server acknowledgement is still not new device telemetry');
 
-# End-to-end request discipline: do not accept another write before the
-# controller has replied to the previous attribute write.
+# Independent request IDs allow consecutive writes without a response lock.
 @sent_requests = ();
 is(MATTERDevice_Set($therm, $therm->{NAME}, 'mode', 'off'), undef,
    'first thermostat mode write queued');
 my $first_mode_id = $sent_requests[-1]{message_id};
-like(MATTERDevice_Set($therm, $therm->{NAME}, 'mode', 'heat') // '',
-     qr/already pending/, 'concurrent write to same node is rejected');
+is(MATTERDevice_Set($therm, $therm->{NAME}, 'mode', 'heat'), undef,
+   'concurrent write is sent without waiting for the first response');
+my $second_mode_id = $sent_requests[-1]{message_id};
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    message_id => $second_mode_id, error_code => 1, details => 'newer write refused'
+}));
 MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $first_mode_id, result => undef
 }));
 is(MATTERDevice_Set($therm, $therm->{NAME}, 'mode', 'heat'), undef,
-   'write is available again once previous command is acknowledged');
+   'further writes remain available after either response');
 
 # Review against additional fhempy regression scenarios.
 is(ReadingsVal('MATTER_SensorProbe_EP1', 'state', ''), 'open',
@@ -3129,8 +3132,11 @@ is($r2->{MSGCNT}, 2, 'reconciled earlier live value does not manufacture new end
 
 $defs{ioReceive}{helper}{pending_command}{70006} = {
     type => 'node_operation', operation => 'write_attribute', name => $r1->{NAME},
-    fuuid => $r1->{FUUID}, node_id => 4100
+    owner => $r1, endpoint_id => $r1->{endpoint_id},
+    fuuid => $r1->{FUUID}, node_id => 4100, reading => 'lastError',
+    group => {remaining => 1}
 };
+$r1->{helper}{latest_request}{lastError} = $defs{ioReceive}{helper}{pending_command}{70006}{group};
 MATTER_ParseMessage($defs{ioReceive}, encode_json({message_id => 70006, result => undef}));
 is($rr->{MSGCNT}, 10, 'endpoint write reply also counts for its root');
 is($r1->{MSGCNT}, 8, 'endpoint write reply counts for its actual owner');
@@ -4309,6 +4315,367 @@ subtest 'Issue 33: HVAC capabilities, cooling writes and correlated Matter statu
     like(ReadingsVal($ep{2}{NAME}, 'lastError', ''), qr/interrupted/, 'old disconnected response cannot manufacture success');
     like(MATTERDevice_Set($ep{2}, $ep{2}{NAME}, 'desired-temp-cool', '27') // '', qr/No active WebSocket/, 'disconnected write is rejected');
     MATTER_Close($other);
+};
+
+subtest 'Issue 34: native dim variants, latest command replies and lifecycle' => sub {
+    my @requests;
+    my %peers;
+    my $connect = sub {
+        my ($io) = @_;
+        socketpair(my $socket, my $peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die 'dim socketpair';
+        $peers{$io->{NAME}} = $peer;
+        $io->{CD} = $socket; $io->{FD} = fileno($socket);
+        $io->{websocket} = 1; $io->{ws_status} = 'connected';
+        $io->{fhem}{helper}{sendWS} = sub {push @requests, JSON::decode_json($_[0]); return 1;};
+    };
+    my $io = $defs{ioDim} = {NAME => 'ioDim', TYPE => 'MATTER', READINGS => {}, helper => {}};
+    my $other = $defs{ioDimOther} = {NAME => 'ioDimOther', TYPE => 'MATTER', READINGS => {}, helper => {}};
+    $connect->($_) for ($io, $other);
+    my $values = {};
+    my @commands = ([1, 2, 3], [5, 6, 7], [1, 2, 3, 5, 6, 7], [0, 4], [1], [7]);
+    for my $ep (1..6) {
+        $values->{"$ep/8/65529"} = $commands[$ep - 1];
+        $values->{"$ep/8/65531"} = [0];
+        $values->{"$ep/8/65532"} = 0;
+        $values->{"$ep/8/0"} = 100;
+        $values->{"$ep/6/0"} = JSON::true;
+    }
+    for my $target ($io, $other) {
+        MATTER_ProcessNode($target, {node_id => 6600, name => 'DimMatrix', available => JSON::true, attributes => $values});
+    }
+    my $root = $modules{MATTERDevice}{defptr}{'ioDim:6600'};
+    my $other_root = $modules{MATTERDevice}{defptr}{'ioDimOther:6600'};
+    my %ep = map {$_->{endpoint_id} => $_} MATTERDevice_NodeChildren($root);
+    my %other_ep = map {$_->{endpoint_id} => $_} MATTERDevice_NodeChildren($other_root);
+    my $list = sub {return join(' ', MATTERDevice_GetSetList($_[0]));};
+    my $send = sub {
+        my ($endpoint, $cmd) = @_;
+        my @result = MATTERDevice_Set($ep{$endpoint}, $ep{$endpoint}{NAME}, $cmd);
+        is_deeply(\@result, [undef, 1], "$cmd accepted without a synthetic FHEM command event");
+        return $requests[-1]{message_id};
+    };
+    my $reply = sub {
+        my ($id, %response) = @_;
+        MATTER_ParseMessage($io, encode_json({message_id => $id, %response}));
+    };
+    my $pending = sub {return scalar keys %{$io->{helper}{pending_command} // {}};};
+    unlike($list->($root), qr/dim_/, 'root does not borrow endpoint dim commands');
+    unlike($list->($ep{4}), qr/dim_/, 'MoveToLevel alone does not authorize Move, Step or Stop');
+    like($list->($ep{5}), qr/dim_up:noArg/, 'Move-only endpoint offers continuous dimming');
+    unlike($list->($ep{5}), qr/dim_stop:|dim_step_/, 'Move does not imply Stop or Step support');
+    like($list->($ep{6}), qr/dim_stop:noArg/, 'advertised StopWithOnOff is usable without a prior local Move');
+    unlike($list->($ep{6}), qr/dim_up:|dim_down:|dim_step_/, 'Stop does not imply movement commands');
+    for my $case ([1, 'Move', 'Step', 'Stop'], [2, 'MoveWithOnOff', 'StepWithOnOff', 'StopWithOnOff'], [3, 'Move', 'Step', 'Stop']) {
+        my ($endpoint, $move, $step, $stop) = @$case;
+        my $timers = scalar @timers;
+        for my $item (['dim_up', $move, {moveMode => 0, rate => 30}],
+                      ['dim_down', $move, {moveMode => 1, rate => 30}],
+                      ['dim_step_up', $step, {stepMode => 0, stepSize => 20, transitionTime => 0}],
+                      ['dim_step_down', $step, {stepMode => 1, stepSize => 20, transitionTime => 0}],
+                      ['dim_stop', $stop, {}]) {
+            my ($cmd, $command, $fields) = @$item;
+            my $id = $send->($endpoint, $cmd);
+            is_deeply($requests[-1]{args}, {node_id => 6600, endpoint_id => $endpoint,
+                cluster_id => 8, command_name => $command,
+                payload => {optionsMask => 0, optionsOverride => 0, %$fields}},
+                "$cmd endpoint $endpoint selects the advertised command and exact Matter payload");
+            $reply->($id, result => undef);
+            is(ReadingsVal($ep{$endpoint}{NAME}, 'lastError', ''), 'none', 'null response is a command acknowledgement');
+        }
+        is(scalar(@timers), $timers, 'native movement adds no FHEM dim timer');
+        is(ReadingsVal($ep{$endpoint}{NAME}, 'brightness', ''), 100, 'command acknowledgements do not change reported brightness');
+        is(ReadingsVal($ep{$endpoint}{NAME}, 'state', ''), 'on', 'command acknowledgements do not change physical on/off state');
+    }
+    for my $cmd (qw(dim_up dim_down dim_step_up dim_step_down dim_stop)) {
+        my $before = scalar @requests;
+        like(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, $cmd, '50') // '', qr/Usage:.*no arguments/, "$cmd rejects an unexpected value");
+        is(scalar(@requests), $before, 'invalid argument sends nothing');
+    }
+    for my $rate ('0', '-1', '255', '1.5', 'x', '', "30\n") {
+        $attr{$ep{1}{NAME}}{dimRate} = $rate;
+        my $before = scalar @requests;
+        like(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'dim_up') // '', qr/dimRate must be/, 'invalid configured rate is rejected');
+        is(scalar(@requests), $before, 'invalid rate sends nothing');
+    }
+    for my $rate (1, 254) {
+        $attr{$ep{1}{NAME}}{dimRate} = $rate;
+        my $id = $send->(1, 'dim_up');
+        is($requests[-1]{args}{payload}{rate}, $rate, 'inclusive dimRate boundary is encoded unchanged');
+        $reply->($id, result => undef);
+    }
+    # Stop and Step use no rate, so a bad configured Move rate cannot prevent a Stop.
+    $attr{$ep{1}{NAME}}{dimRate} = 'invalid';
+    my $stop = $send->(1, 'dim_stop');
+    $reply->($stop, result => undef);
+    delete $attr{$ep{1}{NAME}}{dimRate};
+
+    my $move = $send->(1, 'dim_up');
+    $stop = $send->(1, 'dim_stop');
+    is($requests[-1]{args}{command_name}, 'Stop', 'Stop sends immediately while Move has no reply');
+    ok(exists($io->{helper}{pending_command}{$move}), 'older command keeps its own request correlation until its reply');
+    ok(exists($io->{helper}{pending_command}{$stop}), 'latest dim command remains tracked');
+    $reply->($stop, error_code => 8, details => 'synthetic device refusal');
+    like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/failed: synthetic device refusal/, 'server refusal is reported on the endpoint');
+    $reply->($move, result => undef);
+    like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/failed:/, 'late Move acknowledgement cannot clear newer Stop failure');
+    unlike(ReadingsVal($ep{1}{NAME}, 'firmware_update', ''), qr/failed:/, 'dim errors do not appear as firmware status');
+
+    my $missing = $send->(1, 'dim_stop');
+    $reply->($missing);
+    like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/failed: invalid device command response/, 'reply without a result or error is malformed');
+    for my $result ({}, [], 0, JSON::true) {
+        my $id = $send->(1, 'dim_stop');
+        $reply->($id, result => $result);
+        is(ReadingsVal($ep{1}{NAME}, 'lastError', ''), 'none', 'a successful reply accepts any result value');
+    }
+    my $first = $send->(1, 'dim_up');
+    my $second = $send->(2, 'dim_down');
+    is($pending->(), 2, 'separate endpoints have independent latest commands');
+    $reply->($first, result => undef);
+    ok(exists($io->{helper}{pending_command}{$second}), 'one endpoint reply leaves the other pending');
+    $reply->($second, result => undef);
+    my @concurrent = map {$send->(1, 'dim_up')} 1..20;
+    is($pending->(), 20, 'each parallel command retains its own ID');
+    $reply->($_, result => undef) for reverse @concurrent;
+    is($pending->(), 0, 'all parallel replies are independently retired');
+
+    my $id = $send->(1, 'dim_up');
+    my $send_ok = $io->{fhem}{helper}{sendWS};
+    $io->{fhem}{helper}{sendWS} = sub {return 0;};
+    like(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'dim_stop') // '', qr/Unable to send/, 'failed enqueue returns a synchronous error');
+    ok(exists($io->{helper}{pending_command}{$id}), 'failed Stop enqueue preserves pending Move tracking');
+    is($pending->(), 1, 'failed enqueue leaves no phantom Stop request');
+    $io->{fhem}{helper}{sendWS} = $send_ok;
+    $reply->($id, result => undef);
+
+    $id = $send->(1, 'dim_stop');
+    MATTER_ParseMessage($other, encode_json({message_id => $id, result => undef}));
+    ok(exists($io->{helper}{pending_command}{$id}), 'same request ID on another IO cannot consume this command');
+    is(ReadingsVal($other_ep{1}{NAME}, 'lastError', 'absent'), 'absent', 'another IO with the same node and endpoint receives no dim status');
+    # Exercise response decoding through the real socket/frame parser as well.
+    my $json = encode_json({message_id => $id, result => undef});
+    my $wire = pack('CC', 0x81, length($json)) . $json;
+    is(syswrite($peers{$io->{NAME}}, $wire), length($wire), 'inject a complete WebSocket response');
+    MATTER_Read($io);
+    is($pending->(), 0, 'framed response is correlated and retired');
+    is(ReadingsVal($ep{1}{NAME}, 'lastError', ''), 'none', 'framed acknowledgement clears the latest command error');
+
+    for my $field (qw(FUUID node_id endpoint_id)) {
+        $id = $send->(1, 'dim_stop');
+        my $original = $ep{1}{$field};
+        $ep{1}{$field} = $field eq 'FUUID' ? 'replacement-uuid' : $original + 1;
+        readingsSingleUpdate($ep{1}, 'lastError', 'ownership sentinel', 1);
+        $reply->($id, result => undef);
+        is(ReadingsVal($ep{1}{NAME}, 'lastError', ''), 'ownership sentinel', "reply cannot update changed $field ownership");
+        $ep{1}{$field} = $original;
+    }
+
+    MATTER_ProcessNode($io, {node_id => 6600, attributes => {
+        '1/514/65531' => [2], '1/514/2' => 40}});
+    $id = $send->(1, 'dim_up');
+    is(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'fan_pct', 50), undef,
+       'tracking a dim reply does not introduce a lock for an unrelated setter');
+    my $write_id = $requests[-1]{message_id};
+    ok(exists($io->{helper}{pending_command}{$id}), 'unrelated write does not cancel the dim request');
+    $reply->($write_id, result => undef);
+    $stop = $send->(1, 'dim_stop');
+    $reply->($stop, result => undef);
+
+    # Metadata removal immediately changes the menu and direct SetFn permission.
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [6600, '1/8/65529', [3]]}));
+    unlike($list->($ep{1}), qr/dim_up:|dim_down:|dim_step_/, 'capability replacement removes unsupported movement commands');
+    my $before = scalar @requests;
+    like(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'dim_up') // '', qr/Unknown argument/, 'explicit unsupported Move is rejected');
+    is(scalar(@requests), $before, 'unsupported explicit command sends nothing');
+    $id = $send->(1, 'dim_stop');
+    $io->{helper}{pending_command}{$id}{started_at} = gettimeofday() - 121;
+    delete $io->{helper}{pending_pong};
+    MATTER_Heartbeat($io);
+    like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/timeout \(outcome unknown\)/, 'existing heartbeat reports command timeout without claiming motion stopped');
+    $reply->($id, result => undef);
+    like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/timeout/, 'timed-out command cannot later clear its error');
+    is(ReadingsVal($ep{1}{NAME}, 'brightness', ''), 100, 'timeout retains the last reported physical brightness');
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [6600, '1/8/0', 120]}));
+    is(ReadingsVal($ep{1}{NAME}, 'brightness', ''), 120, 'actual level report is still accepted after timeout');
+    is(MATTERDevice_Set($other_ep{1}, $other_ep{1}{NAME}, 'dim_up'), undef, 'same-node command can run independently on another IO');
+    my $other_id = $requests[-1]{message_id};
+    $id = $send->(1, 'dim_stop');
+    MATTER_Close($io);
+    like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/interrupted \(outcome unknown\)/, 'disconnect reports the unknown outcome on the endpoint');
+    ok(exists($other->{helper}{pending_command}{$other_id}), 'closing one IO preserves the other IO command');
+    MATTER_ParseMessage($other, encode_json({message_id => $other_id, result => undef}));
+    is(ReadingsVal($other_ep{1}{NAME}, 'lastError', ''), 'none', 'other IO response still reaches its own endpoint');
+    $connect->($io);
+    $reply->($id, result => undef);
+    like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/interrupted/, 'old reply after reconnect cannot confirm the interrupted command');
+    $id = $send->(1, 'dim_stop');
+    $reply->($id, result => undef);
+    is(ReadingsVal($ep{1}{NAME}, 'lastError', ''), 'none', 'new command works after reconnect');
+    MATTER_Close($io);
+    like(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'dim_stop') // '', qr/No active WebSocket/, 'disconnected Stop is rejected instead of pretending to stop');
+    MATTER_Close($other);
+};
+
+subtest 'Shared device requests: all setters, independent replies and grouped results' => sub {
+    my @sent;
+    socketpair(my $socket, my $peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die 'shared request socketpair';
+    my $io = $defs{ioRequests} = {NAME => 'ioRequests', TYPE => 'MATTER', READINGS => {},
+        CD => $socket, FD => fileno($socket), websocket => 1, ws_status => 'connected', helper => {}};
+    my $sender = sub {push @sent, JSON::decode_json($_[0]); return 1;};
+    $io->{fhem}{helper}{sendWS} = $sender;
+    MATTER_ProcessNode($io, {node_id => 6700, name => 'RequestMatrix', available => JSON::true,
+        attributes => {
+            '1/6/65529' => [0,1,2,64,65,66], '1/6/65532' => 1, '1/6/0' => JSON::false,
+            '1/8/65529' => [0,1,2,3,4,5,6,7,8], '1/8/65532' => 7, '1/8/0' => 100,
+            '1/768/65529' => [6,7,10], '1/768/65532' => 25,
+            '2/258/65529' => [0,1,2,5,8], '2/258/65532' => 23,
+            '3/257/65529' => [0,1],
+            '4/513/65531' => [17,18,27,28], '4/513/65532' => 3, '4/513/27' => 4,
+            '4/513/17' => 2600, '4/513/18' => 2100, '4/513/28' => 4,
+            '5/514/65531' => [0,1,2,3], '5/514/65532' => 2, '5/514/1' => 2,
+            '5/514/0' => 3, '5/514/2' => 50, '5/514/3' => 40,
+            '6/3/65529' => [0],
+        }});
+    my $root = $modules{MATTERDevice}{defptr}{'ioRequests:6700'};
+    my %ep = map {$_->{endpoint_id} => $_} MATTERDevice_NodeChildren($root);
+    my $reply = sub {
+        my ($id, %body) = @_;
+        MATTER_ParseMessage($io, encode_json({message_id => $id, %body}));
+    };
+    my $send = sub {
+        my ($endpoint, $cmd, @args) = @_;
+        my $before = scalar @sent;
+        my @result = MATTERDevice_Set($ep{$endpoint}, $ep{$endpoint}{NAME}, $cmd, @args);
+        is_deeply(\@result, [undef,1], "$cmd uses shared asynchronous SetFn return");
+        return @sent[$before..$#sent];
+    };
+    my $physical = sub {
+        my ($device) = @_;
+        return {map {$_ => $device->{READINGS}{$_}} grep {$_ ne 'lastError'} keys %{$device->{READINGS}}};
+    };
+    my %ids;
+    for my $case (
+        [1,'on'], [1,'off'], [1,'toggle'], [1,'off_with_effect','DelayedAllOff,NoFade'],
+        [1,'on_with_recall_global_scene'], [1,'on_with_timed_off','0,10,0'],
+        [1,'brightness',120], [1,'pct',50], [1,'rgb','800000'], [1,'ct',300], [1,'frequency',100],
+        [1,'dim_up'], [1,'dim_down'], [1,'dim_step_up'], [1,'dim_step_down'], [1,'dim_stop'],
+        [2,'on'], [2,'off'], [2,'pct',50], [2,'tilt',25], [2,'stop'],
+        [3,'lock'], [3,'unlock'], [4,'desired-temp',22], [4,'desired-temp-cool',25],
+        [4,'mode','cool'], [5,'fan_mode','low'], [5,'fan_pct',60], [6,'identify']) {
+        my ($endpoint,$cmd,@args) = @$case;
+        my $before = JSON::decode_json(encode_json($physical->($ep{$endpoint})));
+        my @requests = $send->($endpoint,$cmd,@args);
+        ok(@requests && !(grep { !$io->{helper}{pending_command}{$_->{message_id}} } @requests),
+           "$cmd registers every API request");
+        for my $request (@requests) {
+            ok(!$ids{$request->{message_id}}++, 'each outgoing request has a distinct ID');
+            is($request->{args}{node_id}, 6700, 'request retains node identity');
+            if ($request->{command} eq 'device_command') {
+                is($request->{args}{endpoint_id},$endpoint,'command retains endpoint identity');
+            } else {
+                like($request->{args}{attribute_path},qr/^$endpoint\//,'write retains endpoint path');
+            }
+            $reply->($request->{message_id}, result => undef);
+        }
+        is(ReadingsVal($ep{$endpoint}{NAME},'lastError',''),'none',"$cmd has a correlated acknowledgement");
+        is_deeply($physical->($ep{$endpoint}),$before,"$cmd leaves physical readings and timestamps unchanged");
+    }
+    my ($on) = $send->(1,'on');
+    my ($off) = $send->(1,'off');
+    ok(exists($io->{helper}{pending_command}{$on->{message_id}}) &&
+       exists($io->{helper}{pending_command}{$off->{message_id}}),'on and off remain independently pending');
+    $reply->($off->{message_id},error_code => 8,details => 'Off refused');
+    like(ReadingsVal($ep{1}{NAME},'lastError',''),qr/Off refused/,'newer Off failure is assigned to the endpoint');
+    $reply->($on->{message_id},result => undef);
+    like(ReadingsVal($ep{1}{NAME},'lastError',''),qr/Off refused/,'older On acknowledgement cannot clear newer Off error');
+    my ($old) = $send->(1,'on');
+    my ($latest) = $send->(1,'off');
+    $reply->($latest->{message_id},result => undef);
+    $reply->($old->{message_id},error_code => 8,details => 'old refusal');
+    is(ReadingsVal($ep{1}{NAME},'lastError',''),'none','older failure cannot replace newer acknowledgement');
+    $reply->($latest->{message_id},error_code => 8,details => 'duplicate');
+    is(ReadingsVal($ep{1}{NAME},'lastError',''),'none','duplicate response is ignored');
+
+    for my $failed_part (0,1) {
+        my @rgb = $send->(1,'rgb','008000');
+        is(scalar @rgb,2,'one RGB setter produces separate level/color requests');
+        my $other_part = 1 - $failed_part;
+        $reply->($rgb[$failed_part]{message_id},error_code => 8,details => 'RGB component refused');
+        $reply->($rgb[$other_part]{message_id},result => undef);
+        like(ReadingsVal($ep{1}{NAME},'lastError',''),qr/RGB component refused/,'success of either component cannot conceal the RGB failure');
+    }
+    my @rgb = $send->(1,'rgb','000080');
+    $reply->($rgb[1]{message_id},result => undef);
+    like(ReadingsVal($ep{1}{NAME},'lastError',''),qr/RGB component refused/,'partial acknowledgement does not announce whole-setter success');
+    $reply->($rgb[0]{message_id},result => undef);
+    is(ReadingsVal($ep{1}{NAME},'lastError',''),'none','all RGB components acknowledged clears the error');
+
+    my ($first_write) = $send->(4,'desired-temp',22);
+    my ($last_write) = $send->(4,'desired-temp',23);
+    $reply->($last_write->{message_id},error_code => 8,details => 'new setpoint refused');
+    $reply->($first_write->{message_id},result => undef);
+    like(ReadingsVal($ep{4}{NAME},'lastError',''),qr/new setpoint refused/,'write_attribute uses the same latest-setter ordering');
+
+    my $count = 0;
+    $io->{fhem}{helper}{sendWS} = sub {return ++$count == 1 ? $sender->($_[0]) : 0;};
+    like(MATTERDevice_Set($ep{1},$ep{1}{NAME},'rgb','800080') // '',qr/Unable to send/,'second RGB enqueue failure is returned synchronously');
+    my $part_id = $sent[-1]{message_id};
+    like(ReadingsVal($ep{1}{NAME},'lastError',''),qr/unable to send/,'partial send failure is visible as the setter result');
+    $reply->($part_id,result => undef);
+    like(ReadingsVal($ep{1}{NAME},'lastError',''),qr/unable to send/,'acknowledging the sent component cannot hide the unsent component');
+    $io->{fhem}{helper}{sendWS} = $sender;
+    is(scalar(keys %{$io->{helper}{pending_command}}),0,'completed and unsent requests leave no pending entries');
+
+    $io->{fhem}{helper}{sendWS} = sub {
+        my $request = JSON::decode_json($_[0]); push @sent,$request;
+        $reply->($request->{message_id},result => undef); return 1;
+    };
+    $send->(1,'rgb','808000');
+    is(ReadingsVal($ep{1}{NAME},'lastError',''),'none','synchronous replies work because both component owners were installed before sending');
+    is(scalar(keys %{$io->{helper}{pending_command}}),0,'synchronous completions leave no orphaned requests');
+    $io->{fhem}{helper}{sendWS} = $sender;
+
+    ($old) = $send->(1,'on'); ($latest) = $send->(1,'off');
+    $reply->($latest->{message_id},result => undef);
+    $io->{helper}{pending_command}{$old->{message_id}}{started_at} = gettimeofday() - 121;
+    delete $io->{helper}{pending_pong};
+    MATTER_Heartbeat($io);
+    is(ReadingsVal($ep{1}{NAME},'lastError',''),'none','an older timeout cannot overwrite the latest result');
+    ($on) = $send->(1,'on');
+    $io->{helper}{pending_command}{$on->{message_id}}{started_at} = gettimeofday() - 121;
+    delete $io->{helper}{pending_pong};
+    MATTER_Heartbeat($io);
+    like(ReadingsVal($ep{1}{NAME},'lastError',''),qr/timeout/,'On timeout is handled by the common lifecycle');
+    $reply->($on->{message_id},result => undef);
+    like(ReadingsVal($ep{1}{NAME},'lastError',''),qr/timeout/,'late On reply cannot clear timeout');
+
+    # A renamed device keeps the same hash/FUUID; the mutable name is no owner key.
+    ($on) = $send->(1,'on');
+    my $old_name = $ep{1}{NAME}; my $renamed = 'RequestMatrixRenamed';
+    $defs{$renamed} = delete $defs{$old_name}; $ep{1}{NAME} = $renamed;
+    $reply->($on->{message_id},result => undef);
+    is(ReadingsVal($renamed,'lastError',''),'none','response follows the same FHEM device after a rename');
+    $defs{$old_name} = delete $defs{$renamed}; $ep{1}{NAME} = $old_name;
+    {
+        local $io->{helper}{pending_command} = {map {$_ => 'held test request'} 10000..11023};
+        my $before = scalar @sent;
+        like(MATTERDevice_Set($ep{1},$ep{1}{NAME},'on') // '',qr/Too many pending/,'bounded registry rejects overload explicitly');
+        is(scalar @sent,$before,'overload does not send an untracked command');
+    }
+    # Transport failure while a compound setter is being enqueued must retire
+    # each pre-registered component exactly once through the common close path.
+    my $group;
+    $io->{fhem}{helper}{sendWS} = sub {
+        my $request = JSON::decode_json($_[0]);
+        $group = $io->{helper}{pending_command}{$request->{message_id}}{group};
+        MATTER_Close($io); return 0;
+    };
+    like(MATTERDevice_Set($ep{1},$ep{1}{NAME},'rgb','008080') // '',qr/Unable to send/,'connection loss during enqueue is returned');
+    is($group->{remaining},0,'close retires a compound request exactly once');
+    like(ReadingsVal($ep{1}{NAME},'lastError',''),qr/interrupted/,'common close reports unknown command outcome');
+    ok(!keys %{$io->{helper}{pending_command} // {}},'close leaves no pending command');
+    is(ReadingsVal($ep{1}{NAME},'state',''),'off','all command outcomes preserve actual reported OnOff state');
+    close $peer;
 };
 
 done_testing();
