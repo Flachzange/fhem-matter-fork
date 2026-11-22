@@ -194,6 +194,15 @@ $readingFnAttributes = 'stateFormat:textField-long';
 require './FHEM/97_MATTERDevice.pm';
 require './FHEM/97_MATTER.pm';
 
+# Capture or reject encoded messages only for fixtures that request it.
+# Socket-based protocol tests keep the real WebSocket framing and writer.
+my $write_text = \&MATTER_SendWebSocketText;
+local *MATTER_SendWebSocketText = sub ($$) {
+    my ($io, $text) = @_;
+    return $io->{test_send_text}->($text) if $io->{test_send_text};
+    return $write_text->($io, $text);
+};
+
 # FHEM calls Initialize before Define/CommandAttr; expose the real module AttrList.
 MATTERDevice_Initialize($modules{MATTERDevice} ||= {});
 MATTER_Initialize($modules{MATTER} ||= {});
@@ -1080,7 +1089,7 @@ $defs{ioA}{CD} = $io_a_socket;
 $defs{ioA}{FD} = fileno($io_a_socket);
 $defs{ioA}{websocket} = 1;
 $defs{ioA}{ws_status} = 'connected';
-$defs{ioA}{fhem}{helper}{sendWS} = sub {
+$defs{ioA}{test_send_text} = sub {
     push @sent_requests, JSON::decode_json($_[0]);
     return 1;
 };
@@ -1102,8 +1111,8 @@ is(ReadingsVal('MATTER_Hall_Light_EP1', 'battery_percent', ''), 55,
 
 # A connected IO whose send callback rejects a frame must not return success
 # or leave a pending getConfig request behind.
-my $previous_sender = $defs{ioA}{fhem}{helper}{sendWS};
-$defs{ioA}{fhem}{helper}{sendWS} = sub { return 0 };
+my $previous_sender = $defs{ioA}{test_send_text};
+$defs{ioA}{test_send_text} = sub { return 0 };
 my $pending_before_send_failure = scalar keys %{$defs{ioA}{helper}{pending_config} // {}};
 like(MATTERDevice_Set($child, $child->{NAME}, 'on') // '',
      qr/Unable to send device command/, 'failed device send returns a FHEM error');
@@ -1111,7 +1120,7 @@ like(MATTERDevice_Set($child, $child->{NAME}, 'getConfig') // '',
      qr/Unable to send getConfig/, 'failed read send returns a FHEM error');
 is(scalar(keys %{$defs{ioA}{helper}{pending_config} // {}}),
    $pending_before_send_failure, 'failed read leaves no dangling pending request');
-$defs{ioA}{fhem}{helper}{sendWS} = $previous_sender;
+$defs{ioA}{test_send_text} = $previous_sender;
 
 ok(!exists $defs{ioA}{helper}{pending_config}{$read_request->{message_id}},
    'matched getConfig pending request is cleared');
@@ -2300,7 +2309,7 @@ socketpair(my $feature_socket, my $feature_peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC
 $defs{ioA}{CD} = $feature_socket;
 $defs{ioA}{websocket} = 1;
 $defs{ioA}{ws_status} = 'connected';
-$defs{ioA}{fhem}{helper}{sendWS} = sub {
+$defs{ioA}{test_send_text} = sub {
     push @sent_requests, JSON::decode_json($_[0]);
     return 1;
 };
@@ -2708,13 +2717,13 @@ MATTER_ProcessNode($defs{ioA}, {
     attributes => { '1/6/0' => JSON::true },
 });
 my $failure_child = $defs{MATTER_SendFailureProbe_EP1};
-my $recovery_sender = $defs{ioA}{fhem}{helper}{sendWS};
-$defs{ioA}{fhem}{helper}{sendWS} = sub { return 0 };
+my $recovery_sender = $defs{ioA}{test_send_text};
+$defs{ioA}{test_send_text} = sub { return 0 };
 MATTER_ProcessNode($defs{ioA}, {node_id => 2704, available => JSON::true});
 ok(!grep({ ref($_) eq 'HASH' && ($_->{node_id} // -1) == 2704 }
          values %{$defs{ioA}{helper}{pending_config} // {}}),
    'failed metadata send leaves no pending request');
-$defs{ioA}{fhem}{helper}{sendWS} = $recovery_sender;
+$defs{ioA}{test_send_text} = $recovery_sender;
 @sent_requests = ();
 $mock_time += 16;
 MATTER_ProcessNode($defs{ioA}, {node_id => 2704, available => JSON::true});
@@ -3007,7 +3016,7 @@ subtest 'Issue 36 OTA eligibility and install lifecycle' => sub {
         $io->{CD} = $socket;
         $io->{websocket} = 1;
         $io->{ws_status} = 'connected';
-        $io->{fhem}{helper}{sendWS} = sub { push @requests, JSON::decode_json($_[0]); return 1 };
+        $io->{test_send_text} = sub { push @requests, JSON::decode_json($_[0]); return 1 };
     };
     $connect->();
     my $node = 6800;
@@ -3629,9 +3638,9 @@ my @limit_commands;
 my $limit_io = $defs{ioLimits} = {
     NAME => 'ioLimits', TYPE => 'MATTER', READINGS => {}, helper => {},
     CD => 1, websocket => 1, ws_status => 'connected',
-    fhem => {helper => {sendWS => sub {
+    test_send_text => sub {
         push @limit_commands, JSON::decode_json($_[0]); return 1;
-    }}},
+    },
 };
 MATTER_ParseMessage($limit_io, encode_json({event => 'node_added', data => {
     node_id => 6400, name => 'LimitProbe', available => JSON::true,
@@ -3818,7 +3827,7 @@ subtest 'Issue 27: unknown/offline blocks, valid online synchronizes' => sub {
         $io->{CD} = $socket;
         $io->{websocket} = 1;
         $io->{ws_status} = 'connected';
-        $io->{fhem}{helper}{sendWS} = sub {
+        $io->{test_send_text} = sub {
             push @requests, JSON::decode_json($_[0]); return 1;
         };
     };
@@ -3935,7 +3944,7 @@ subtest 'Issue 28: explicit ICD reconciliation and current backend support' => s
         $io->{CD} = $socket;
         $io->{websocket} = 1;
         $io->{ws_status} = 'connected';
-        $io->{fhem}{helper}{sendWS} = sub {
+        $io->{test_send_text} = sub {
             push @requests, JSON::decode_json($_[0]); return 1;
         };
     };
@@ -4099,7 +4108,7 @@ subtest 'Issue 30: persisted sensors follow the shared availability lifecycle' =
         $io->{CD} = $socket;
         $io->{websocket} = 1;
         $io->{ws_status} = 'connected';
-        $io->{fhem}{helper}{sendWS} = sub {
+        $io->{test_send_text} = sub {
             push @requests, JSON::decode_json($_[0]); return 1;
         };
     };
@@ -4247,9 +4256,9 @@ subtest 'Issue 32: environmental values, units and optional numeric measurements
     my $io = $defs{ioEnvironment} = {
         NAME => 'ioEnvironment', TYPE => 'MATTER', READINGS => {}, helper => {},
         CD => $socket, websocket => 1, ws_status => 'connected',
-        fhem => {helper => {sendWS => sub {
+        test_send_text => sub {
             push @requests, JSON::decode_json($_[0]); return 1;
-        }}},
+        },
     };
     # ep, cluster, value reading, unit reading/id/label, initial/live/snapshot,
     # invalid raw value. Synthetic payloads use Matter 1.4 attribute IDs.
@@ -4382,7 +4391,7 @@ subtest 'Issue 33: HVAC capabilities, cooling writes and correlated Matter statu
         socketpair(my $socket, my $peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die 'HVAC socketpair';
         push @peers, $peer;
         $io->{CD} = $socket; $io->{websocket} = 1; $io->{ws_status} = 'connected';
-        $io->{fhem}{helper}{sendWS} = sub {push @requests, JSON::decode_json($_[0]); return 1;};
+        $io->{test_send_text} = sub {push @requests, JSON::decode_json($_[0]); return 1;};
     };
     my $io = $defs{ioHvac} = {NAME => 'ioHvac', TYPE => 'MATTER', READINGS => {}, helper => {}};
     my $other = $defs{ioHvacOther} = {NAME => 'ioHvacOther', TYPE => 'MATTER', READINGS => {}, helper => {}};
@@ -4574,7 +4583,7 @@ subtest 'Issue 34: native dim variants, latest command replies and lifecycle' =>
         $peers{$io->{NAME}} = $peer;
         $io->{CD} = $socket; $io->{FD} = fileno($socket);
         $io->{websocket} = 1; $io->{ws_status} = 'connected';
-        $io->{fhem}{helper}{sendWS} = sub {push @requests, JSON::decode_json($_[0]); return 1;};
+        $io->{test_send_text} = sub {push @requests, JSON::decode_json($_[0]); return 1;};
     };
     my $io = $defs{ioDim} = {NAME => 'ioDim', TYPE => 'MATTER', READINGS => {}, helper => {}};
     my $other = $defs{ioDimOther} = {NAME => 'ioDimOther', TYPE => 'MATTER', READINGS => {}, helper => {}};
@@ -4688,12 +4697,12 @@ subtest 'Issue 34: native dim variants, latest command replies and lifecycle' =>
     is($pending->(), 0, 'all parallel replies are independently retired');
 
     my $id = $send->(1, 'dim_up');
-    my $send_ok = $io->{fhem}{helper}{sendWS};
-    $io->{fhem}{helper}{sendWS} = sub {return 0;};
+    my $send_ok = $io->{test_send_text};
+    $io->{test_send_text} = sub {return 0;};
     like(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'dim_stop') // '', qr/Unable to send/, 'failed enqueue returns a synchronous error');
     ok(exists($io->{helper}{pending_command}{$id}), 'failed Stop enqueue preserves pending Move tracking');
     is($pending->(), 1, 'failed enqueue leaves no phantom Stop request');
-    $io->{fhem}{helper}{sendWS} = $send_ok;
+    $io->{test_send_text} = $send_ok;
     $reply->($id, result => undef);
 
     $id = $send->(1, 'dim_stop');
@@ -4770,7 +4779,7 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     my $io = $defs{ioRequests} = {NAME => 'ioRequests', TYPE => 'MATTER', READINGS => {},
         CD => $socket, FD => fileno($socket), websocket => 1, ws_status => 'connected', helper => {}};
     my $sender = sub {push @sent, JSON::decode_json($_[0]); return 1;};
-    $io->{fhem}{helper}{sendWS} = $sender;
+    $io->{test_send_text} = $sender;
     MATTER_ProcessNode($io, {node_id => 6700, name => 'RequestMatrix', available => JSON::true,
         attributes => {
             '1/6/65529' => [0,1,2,64,65,66], '1/6/65532' => 1, '1/6/0' => JSON::false,
@@ -4865,23 +4874,23 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     like(ReadingsVal($ep{4}{NAME},'lastError',''),qr/new setpoint refused/,'write_attribute uses the same latest-setter ordering');
 
     my $count = 0;
-    $io->{fhem}{helper}{sendWS} = sub {return ++$count == 1 ? $sender->($_[0]) : 0;};
+    $io->{test_send_text} = sub {return ++$count == 1 ? $sender->($_[0]) : 0;};
     like(MATTERDevice_Set($ep{1},$ep{1}{NAME},'rgb','800080') // '',qr/Unable to send/,'second RGB enqueue failure is returned synchronously');
     my $part_id = $sent[-1]{message_id};
     like(ReadingsVal($ep{1}{NAME},'lastError',''),qr/unable to send/,'partial send failure is visible as the setter result');
     $reply->($part_id,result => undef);
     like(ReadingsVal($ep{1}{NAME},'lastError',''),qr/unable to send/,'acknowledging the sent component cannot hide the unsent component');
-    $io->{fhem}{helper}{sendWS} = $sender;
+    $io->{test_send_text} = $sender;
     is(scalar(keys %{$io->{helper}{pending_command}}),0,'completed and unsent requests leave no pending entries');
 
-    $io->{fhem}{helper}{sendWS} = sub {
+    $io->{test_send_text} = sub {
         my $request = JSON::decode_json($_[0]); push @sent,$request;
         $reply->($request->{message_id},result => undef); return 1;
     };
     $send->(1,'rgb','808000');
     is(ReadingsVal($ep{1}{NAME},'lastError',''),'none','synchronous replies work because both component owners were installed before sending');
     is(scalar(keys %{$io->{helper}{pending_command}}),0,'synchronous completions leave no orphaned requests');
-    $io->{fhem}{helper}{sendWS} = $sender;
+    $io->{test_send_text} = $sender;
 
     ($old) = $send->(1,'on'); ($latest) = $send->(1,'off');
     $reply->($latest->{message_id},result => undef);
@@ -4913,7 +4922,7 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     # Transport failure while a compound setter is being enqueued must retire
     # each pre-registered component exactly once through the common close path.
     my $group;
-    $io->{fhem}{helper}{sendWS} = sub {
+    $io->{test_send_text} = sub {
         my $request = JSON::decode_json($_[0]);
         $group = $io->{helper}{pending_command}{$request->{message_id}}{group};
         MATTER_Close($io); return 0;
@@ -4931,7 +4940,7 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
         websocket => 1, ws_status => 'connected'};
     my $b = $defs{moveB} = {NAME => 'moveB', TYPE => 'MATTER'};
     my $id;
-    $a->{fhem}{helper}{sendWS} = sub { $id = JSON::decode_json($_[0])->{message_id}; 1 };
+    $a->{test_send_text} = sub { $id = JSON::decode_json($_[0])->{message_id}; 1 };
     MATTER_ProcessNode($a, {node_id => 9801, name => 'MoveProbe', available => JSON::true,
         attributes => {'0/40/3' => 'initial'}});
     my $r = $defs{MATTER_MoveProbe};
@@ -4994,9 +5003,7 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
 {
     my $id;
     my $io = $defs{listIO} = {NAME => 'listIO', TYPE => 'MATTER', CD => 1,
-        websocket => 1, ws_status => 'connected', fhem => {helper => {
-            sendWS => sub { $id = JSON::decode_json($_[0])->{message_id}; 1 }
-        }}};
+        websocket => 1, ws_status => 'connected', test_send_text => sub { $id = JSON::decode_json($_[0])->{message_id}; 1 }};
     MATTER_ProcessNode($io, node(9803, 'ListProbe'));
     my $root = $defs{MATTER_ListProbe};
     my $ep = $defs{MATTER_ListProbe_EP1};
@@ -5053,6 +5060,48 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
         is_deeply($ep->{helper}{capabilities}{6}{$key}, {0 => 1, 1 => 1},
                   "complete read retains the last valid $key");
     }
+}
+
+{
+    socketpair(my $socket, my $peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die "socketpair: $!";
+    my $io = $defs{wireIO} = {NAME => 'wireIO', TYPE => 'MATTER', CD => $socket,
+        websocket => 1, ws_status => 'connected'};
+    MATTER_ProcessNode($io, {node_id => 9804, name => 'WireProbe', available => JSON::true,
+        attributes => {'1/6/65529' => [0, 1]}});
+    my $root = $defs{MATTER_WireProbe};
+    my $ep = $defs{MATTER_WireProbe_EP1};
+    for my $cmd ('on', 'getConfig') {
+        my $error = MATTERDevice_Set($ep, $ep->{NAME}, $cmd);
+        is($error, undef, "$cmd accepted by the endpoint's IO");
+        next if defined $error;
+        my $request = $read_ws_json->($peer);
+        is($request->{command}, $cmd eq 'on' ? 'device_command' : 'read_attribute',
+           "$cmd sent as a JSON command on the selected socket");
+        is($request->{args}{node_id}, 9804, "$cmd targets the selected node");
+    }
+    my ($id, $error) = MATTERDevice_RequestCapabilityRefresh($root);
+    is($error, undef, 'metadata read accepted by the root IO');
+    if (defined $id) {
+        my $request = $read_ws_json->($peer);
+        is($request->{message_id}, $id, 'metadata read retains its tracked ID on the wire');
+        is($request->{command}, 'read_attribute', 'metadata read uses the same socket');
+    }
+    MATTER_Close($io);
+    (undef, $error) = MATTERDevice_RequestCapabilityRefresh($root);
+    like($error, qr/No connected Matter IO/, 'disconnected metadata read rejected');
+    close $peer;
+}
+
+{
+    my $weak;
+    {
+        my $io = {NAME => 'LifetimeProbe', TYPE => 'MATTER', READINGS => {}};
+        MATTER_Define($io, 'LifetimeProbe MATTER 127.0.0.1 5580');
+        MATTER_Undef($io, undef);
+        $weak = $io;
+        Scalar::Util::weaken($weak);
+    }
+    ok(!defined($weak), 'undef releases the IO after the last external reference goes away');
 }
 
 done_testing();

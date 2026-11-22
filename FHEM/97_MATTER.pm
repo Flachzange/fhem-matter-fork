@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.31 22.11.2026";
+my $MATTER_version = "V0.32 22.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -62,17 +62,6 @@ sub MATTER_Define {
     $hash->{STATE}    = "defined";
     $hash->{VERSION}  = $MATTER_version;
     
-    # Sendefunktion für WebSocket hinterlegen
-    $hash->{fhem}{helper}{sendWS} = sub {
-        my ($msg) = @_;
-        my $socket = $hash->{CD};
-        if ($socket && $hash->{websocket} && ($hash->{ws_status} // '') eq 'connected') {
-            MATTER_SendWebSocketText($hash, $msg);
-        } else {
-            Log3 $hash->{NAME}, 2, "MATTER: No active WebSocket connection for sending!";
-        }
-    };
-
     # A connection started during FHEM configuration loading cannot be
     # processed by the socket event loop yet. An already-expired handshake
     # timer would cause a needless 30-second reconnect delay after startup.

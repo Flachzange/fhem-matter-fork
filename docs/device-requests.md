@@ -1,5 +1,7 @@
 # Shared device request correlation (V0.26)
 
+Device commands, explicit configuration reads and automatic capability reads pass their IO and payload to `MATTER_SendJsonCommand`. The IO encodes the payload and returns the WebSocket enqueue result. Each caller owns its request registration and cleanup.
+
 ## Responsibilities
 
 | Path | Responsibility |
