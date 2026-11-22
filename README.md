@@ -318,10 +318,21 @@ engine.
   readings. Diagnostic raw data may include device information; avoid
   exposing or logging it without understanding its content.
 - ICD-capable root nodes expose static `icd_*` capabilities from reported
-  attributes and, with server API schema >= 12, `get <root> icdState`.
-  Check-In-capable roots can use `set <root> icdRegister`, `icdUnregister`
-  or `icdResync` when advertised. The controller manages registration;
-  `icd_awake=false` is not the same as `available=false`.
+  attributes. A valid root `Descriptor.ServerList` (`0/29/1`) without cluster
+  70 revokes previous ICD support and its commands. Omitted or malformed
+  lists do not imply removal. Root `getConfig` includes ServerList in its
+  existing read; newer live lists take precedence over old read/discovery
+  replies. Historical mode/duration readings remain; ordinary non-ICD roots
+  receive no extra negative ICD readings.
+  `get <root> icdState` requires current-session OHF matterjs-server
+  identification (`sdk_version=matter-server/... (matter.js/...)`) and schema
+  >= 12. Check-In-capable roots on that backend can use `icdRegister`,
+  `icdUnregister` or `icdResync`. Saved server readings cannot enable these
+  operations after reconnect; other/unknown backends retain passive detection.
+  The controller manages registration; `icd_awake=false` is not the same as
+  `available=false`. Dynamic controller readings describe the last explicit
+  query and keep their normal FHEM timestamps across reconnect. See
+  [ICD evidence and limits](docs/icd-capabilities.md).
 - Nodes with OTA Software Update Requestor support offer
   `set <root> checkFirmwareUpdate`. Only after the server reports a newer
   software version is `set <root> updateFirmware` offered. The external

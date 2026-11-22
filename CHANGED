@@ -1,1 +1,1 @@
-2026-11-22  MATTER IO/Device V0.23: preserve device values while offline or availability is unknown; valid online reports resume normal snapshots and full getConfig after restart/reconnect. Remove persistent snapshot quarantine; retain response ordering and bounded command recovery.
+2026-11-22  MATTER IO/Device V0.24: reconcile ICD capability removal from the root ServerList; gate ICD controller commands on current matterjs-server identification and schema >= 12. Preserve partial metadata, response ordering and historical ICD readings.
