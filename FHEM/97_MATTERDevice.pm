@@ -1097,20 +1097,12 @@ sub MATTERDevice_Set($$@) {
     }
 
     if ($cmd eq 'checkFirmwareUpdate' || $cmd eq 'updateFirmware') {
-        return 'Firmware operations are only available on Matter root nodes'
-            unless ($hash->{endpoint_id} // 0) == 0;
+        return "Usage: set $name $cmd" if @args;
         my $op = $cmd eq 'checkFirmwareUpdate' ?
             'check_node_update' : 'update_node';
         my %args;
-        if ($cmd eq 'updateFirmware') {
-            return 'Firmware update already in progress'
-                if $hash->{helper}{firmware_update_in_flight};
-            my $version = $hash->{helper}{firmware_available};
-            return 'Run checkFirmwareUpdate before installing'
-                unless defined($version) && !ref($version) &&
-                       $version =~ /^\d+$/;
-            $args{software_version} = 0 + $version;
-        }
+        $args{software_version} = $hash->{helper}{firmware_available}
+            if $op eq 'update_node';
         my $error = MATTERDevice_SendNodeOperation(
             $hash, $op, \%args, $cmd eq 'updateFirmware' ? 300 : 120);
         return $error if defined($error);
@@ -1801,18 +1793,25 @@ sub MATTERDevice_RefreshIcdCapability {
     readingsSingleUpdate($hash, 'icd_lit_supported', $supported, 1)
         if ReadingsVal($hash->{NAME}, 'icd_lit_supported', '') ne $supported;
 }
-sub MATTERDevice_IcdCapabilityReport {
+sub MATTERDevice_RootCapabilityReport {
     my ($hash, $cluster, $attr, $value) = @_;
     return unless ($hash->{endpoint_id} // 0) == 0;
     if ($cluster == 29 && $attr == 1) {
         # ServerList is a complete list even in a partial node report.
         # An omitted list or any malformed entry cannot revoke support.
         return unless ref($value) eq 'ARRAY';
-        my $supported = 0;
+        my ($supported, $ota) = (0, 0);
         for my $entry (@$value) {
             my $id = MATTERDevice_NormalizeMatterId($entry);
             return unless defined($id) && $id <= 0xFFFFFFFF;
             $supported = 1 if $id == 70;
+            $ota = 1 if $id == 42;
+        }
+        if ($ota) {
+            $hash->{helper}{seen_clusters}{42} = 1;
+        } else {
+            delete $hash->{helper}{seen_clusters}{42};
+            delete $hash->{helper}{firmware_available};
         }
         # Avoid adding negative ICD readings to every ordinary root.
         return if !$supported && !exists($hash->{READINGS}{icd_supported});
@@ -1920,6 +1919,8 @@ sub MATTERDevice_CompleteRequest {
     $group->{error} //= $error if defined $error;
     return unless ($owner->{helper}{latest_request}{$reading} // '') eq $group;
     delete $owner->{helper}{latest_request}{$reading} unless $group->{remaining};
+    delete $owner->{helper}{firmware_update_in_flight}
+        if defined($failure) && $request->{operation} eq 'update_node';
     if ($reading eq 'lastError' || defined $failure) {
         return if !defined($group->{error}) && $group->{remaining};
         my $status = $group->{error} // 'none';
@@ -1965,11 +1966,20 @@ sub MATTERDevice_SendNodeOperation {
                ($pending->{node_id} // '') eq $hash->{node_id};
     }
     my $reading = $command =~ /icd/ ? 'icd_request' : 'firmware_update';
+    if ($reading eq 'firmware_update') {
+        delete $hash->{helper}{firmware_available};
+        $hash->{helper}{firmware_update_in_flight} = $args->{software_version}
+            if $command eq 'update_node';
+    }
     my $error = MATTERDevice_SendRequests($hash, [{command => $command,
         args => {node_id => 0 + $hash->{node_id}, %{$args // {}}}}],
         $reading, $timeout // 120);
-    return $error if defined $error;
-    readingsSingleUpdate($hash, $reading, 'requested', 1)
+    if (defined $error) {
+        delete $hash->{helper}{firmware_update_in_flight} if $command eq 'update_node';
+        return $error;
+    }
+    my $status = $command eq 'check_node_update' ? 'checking' : 'requested';
+    readingsSingleUpdate($hash, $reading, $status, 1)
         if $hash->{helper}{latest_request}{$reading};
     return undef;
 }
@@ -2002,12 +2012,24 @@ sub MATTERDevice_WriteResponseError($$) {
         (exists($entry->{ClusterStatus}) ? ' (cluster status ' . (0 + $entry->{ClusterStatus}) . ')' : '');
 }
 
+# The server returns a JSON unsigned integer. Encoding the scalar inside
+# an array preserves the distinction between a number and a quoted string.
+sub MATTERDevice_OtaVersion {
+    my ($result) = @_;
+    return unless ref($result) eq 'HASH';
+    my $version = $result->{software_version};
+    return unless defined($version) && !ref($version) &&
+        encode_json([$version]) =~ /\A\[[0-9]{1,10}\]\z/ && $version <= 4294967295;
+    return $version;
+}
+
 sub MATTERDevice_HandleNodeOperation {
     my ($hash, $request, $reply) = @_;
     my $cmd = $request->{operation};
     my $reading = $request->{reading};
     my $error = MATTERDevice_RequestError($request, $reply);
     if (defined $error) {
+        delete $hash->{helper}{firmware_update_in_flight} if $cmd eq 'update_node';
         if ($cmd eq 'check_node_update') {
             delete $hash->{helper}{firmware_available};
             readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
@@ -2058,10 +2080,8 @@ sub MATTERDevice_HandleNodeOperation {
             delete $hash->{helper}{firmware_available};
             readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
             readingsSingleUpdate($hash, 'firmware_update', 'none reported', 1);
-        } elsif (ref($update) eq 'HASH' &&
-                 defined($update->{software_version}) &&
-                 !ref($update->{software_version}) &&
-                 $update->{software_version} =~ /^\d+$/) {
+        } elsif ($hash->{helper}{seen_clusters}{42} &&
+                 defined(MATTERDevice_OtaVersion($update))) {
             my $current = ReadingsVal($hash->{NAME}, 'software_version', undef);
             if (defined($current) && $current =~ /^\d+$/ &&
                 $update->{software_version} <= $current) {
@@ -2082,10 +2102,16 @@ sub MATTERDevice_HandleNodeOperation {
             readingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
         }
     } elsif ($cmd eq 'update_node') {
-        if (exists($reply->{result}) && !defined($reply->{result})) {
-            $hash->{helper}{firmware_update_in_flight} = 1;
-            readingsSingleUpdate($hash, 'firmware_update', 'update requested', 1);
+        my $result = $reply->{result};
+        my $target = $hash->{helper}{firmware_update_in_flight};
+        my $version = MATTERDevice_OtaVersion($result);
+        if (defined($target) && exists($reply->{result}) &&
+            (!defined($result) || (defined($version) && $version == $target))) {
+            my $status = ReadingsVal($hash->{NAME}, 'firmware_update', '');
+            readingsSingleUpdate($hash, 'firmware_update', 'update requested', 1)
+                if $status eq 'requested' || $status eq 'available';
         } else {
+            delete $hash->{helper}{firmware_update_in_flight};
             readingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
         }
     }
@@ -2127,17 +2153,19 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
             readingsSingleUpdate($hash, 'ota_update_state', $state{$value}, 1)
                 if ReadingsVal($name, 'ota_update_state', '') ne $state{$value};
             readingsSingleUpdate($hash, 'firmware_update', $state{$value}, 1)
-                if $hash->{helper}{firmware_update_in_flight} && $value >= 2;
+                if defined($hash->{helper}{firmware_update_in_flight}) && $value >= 2;
         }
     }
     if (($hash->{endpoint_id} // 0) == 0 && $cluster_id == 40 &&
         $attr_id == 9 && defined($value) && !ref($value) &&
-        $value =~ /^\d+$/ && $hash->{helper}{firmware_update_in_flight}) {
-        my $expected = $hash->{helper}{firmware_available};
+        $value =~ /^\d+$/ && defined($hash->{helper}{firmware_update_in_flight})) {
+        my $expected = $hash->{helper}{firmware_update_in_flight};
         if (defined($expected) && $expected eq $value) {
-            readingsSingleUpdate($hash, 'firmware_update', 'installed', 1);
             delete $hash->{helper}{firmware_update_in_flight};
-            delete $hash->{helper}{firmware_available};
+            # Keep correlation, but a later server reply must not overwrite
+            # the physical confirmation for this installation.
+            delete $hash->{helper}{latest_request}{firmware_update};
+            readingsSingleUpdate($hash, 'firmware_update', 'installed', 1);
         }
     }
 
@@ -2145,7 +2173,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         $cluster_id == 42 && $attr_id == 3 &&
         defined($value) && !ref($value) &&
         $value =~ /^\d+$/ && $value <= 100 &&
-        $hash->{helper}{firmware_update_in_flight}) {
+        defined($hash->{helper}{firmware_update_in_flight})) {
         my $state = ReadingsVal($name, 'ota_update_state', '');
         readingsSingleUpdate($hash, 'firmware_update',
                              "$state $value%", 1)
@@ -2157,7 +2185,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     # Process shared global attributes once, then derive ICD properties from
     # the same authoritative feature-map cache rather than maintaining two.
     my $global = MATTERDevice_ProcessGlobalAttribute($hash, $cluster_id, $attr_id, $value);
-    MATTERDevice_IcdCapabilityReport($hash, $cluster_id, $attr_id, $value)
+    MATTERDevice_RootCapabilityReport($hash, $cluster_id, $attr_id, $value)
         if ($cluster_id == 70 || $cluster_id == 40 ||
             ($cluster_id == 29 && $attr_id == 1));
     return if $global;
@@ -2529,11 +2557,14 @@ sub MATTERDevice_GetSetList($) {
     };
 
     if (($hash->{endpoint_id} // 0) == 0 &&
-        (ReadingsVal($name, 'ota_update_state', '') ne '' ||
-         $hash->{helper}{seen_clusters}{42})) {
+        $hash->{IODev} && $hash->{IODev}{helper}{ota_api_supported} &&
+        $hash->{helper}{available} && $hash->{helper}{seen_clusters}{42} &&
+        !defined($hash->{helper}{firmware_update_in_flight})) {
         $add->("checkFirmwareUpdate:noArg");
-        $add->("updateFirmware:noArg")
-            if defined($hash->{helper}{firmware_available});
+        my $offer = $hash->{helper}{firmware_available};
+        my $current = ReadingsVal($name, 'software_version', undef);
+        $add->("updateFirmware:noArg") if defined($offer) &&
+            (!defined($current) || $current !~ /\A[0-9]+\z/ || $offer > $current);
     }
     if (($hash->{endpoint_id} // 0) == 0 &&
         ReadingsVal($name, 'icd_supported', '') eq 'true') {
@@ -3125,12 +3156,16 @@ Status 0; failures, malformed replies and path mismatches appear in
 Neither acknowledgement updates physical setpoint/mode/speed readings;
 device reports do. Thermostat, fan and Identify combinations are
 <strong>untested</strong> on hardware.</p>
-<p>Server-backed Matter OTA: root nodes with OTA Requestor support can
-<code>checkFirmwareUpdate</code> and, after an update version is confirmed,
-<code>updateFirmware</code>. Image download, hosting and installation remain
-with matterjs-server; no firmware upload and no automatic update.
-Server acknowledgement is not proof of installation. Hardware
-<strong>untested</strong>.</p>
+<p>Manual Matter OTA requires an online root reporting the OTA Requestor
+cluster (42) and a compatible current server connection (matterjs-server
+schema 11+ or Python Matter Server schema 10+). <code>checkFirmwareUpdate</code>
+asks that server for an offer. <code>none reported</code> means the server
+returned none; a manufacturer app may have other updates. With an eligible
+offer, <code>updateFirmware</code> requests the offered version once.
+<code>update requested</code> acknowledges the request. The device's matching
+SoftwareVersion confirms installation, even without progress reports.
+After timeout or server disconnect, check again before installing.
+The server handles image delivery. Hardware <strong>untested</strong>.</p>
 <p>ICD Management: passive <code>icd_supported</code>,
 <code>icd_lit_supported</code>, <code>icd_operating_mode</code> and
 <code>icd_idle_mode_duration</code> readings. Positively recognized ICD
@@ -3505,12 +3540,17 @@ Pfade erscheinen in <code>lastError</code>. Die vorhandene null-API-Bestätigung
 bleibt zulässig. Keine Bestätigung überschreibt physische Sollwert-/Modus-/
 Geschwindigkeits-Readings; dafür sind Geräteberichte erforderlich. Thermostat-,
 Lüfter- und Identify-Kombinationen sind an Hardware <strong>ungetestet</strong>.</p>
-<p>Servergestütztes Matter-OTA: Root-Knoten mit OTA Requestor bieten
-<code>checkFirmwareUpdate</code> und nach nachgewiesener Versionsfreigabe
-<code>updateFirmware</code>. Download, Hosting und Installation übernimmt
-matterjs-server. Kein Upload und kein automatisches Update. Die Serverannahme
-bestätigt noch keine erfolgreiche Installation. Hardware
-<strong>ungetestet</strong>.</p>
+<p>Manuelles Matter-OTA erfordert einen erreichbaren Root mit gemeldetem
+OTA-Requestor-Cluster (42) und eine kompatible aktuelle Serververbindung
+(matterjs-server ab Schema 11 oder Python Matter Server ab Schema 10).
+<code>checkFirmwareUpdate</code> fragt nach einem Angebot.
+<code>none reported</code> bedeutet, dass dieser Server kein Update meldet.
+Die Hersteller-App kann weitere Updates anbieten. <code>updateFirmware</code>
+fordert die freigegebene Version einmalig an. <code>update requested</code>
+bestätigt den Auftrag. Die passende SoftwareVersion vom Gerät bestätigt die
+Installation, auch ohne Fortschrittsmeldung. Nach Timeout oder Trennung vom
+Server ist vor einer Installation eine neue Prüfung erforderlich. Der
+Server übernimmt die Übertragung. An Hardware <strong>ungetestet</strong>.</p>
 <p>ICD Management: passive Readings <code>icd_supported</code>,
 <code>icd_lit_supported</code>, <code>icd_operating_mode</code> und
 <code>icd_idle_mode_duration</code>. Für bestätigte ICD-Root-Knoten am
