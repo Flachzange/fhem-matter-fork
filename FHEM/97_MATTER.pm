@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.36 22.11.2026";
+my $MATTER_version = "V0.37 22.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -28,16 +28,12 @@ my %MATTER_sets = (
     "getCredentials"  => "noArg",
 );
 
-my %MATTER_gets = (
-);
-
 sub MATTER_Initialize {
     my ($hash) = @_;
 
     $hash->{DefFn}      = \&MATTER_Define;
     $hash->{UndefFn}    = \&MATTER_Undef;
     $hash->{SetFn}      = \&MATTER_Set;
-    $hash->{GetFn}      = \&MATTER_Get;
     $hash->{AttrFn}     = \&MATTER_Attr;
     $hash->{RenameFn}   = \&MATTER_Rename;
     $hash->{ReadFn}     = \&MATTER_Read;
@@ -123,13 +119,6 @@ sub MATTER_NextMessageId {
         return $id;
     }
     return undef;
-}
-
-sub MATTER_Get {
-    my ($hash, $name, $cmd, @args) = @_;
-    my @cList = keys %MATTER_gets;
-    return "Unknown argument $cmd, choose one of " . join(" ", @cList);
-
 }
 
 sub MATTER_Set {
@@ -478,7 +467,6 @@ sub MATTER_Close($) {
     delete $hash->{helper}{pending_command};
     delete $hash->{helper}{pending_config};
     delete $hash->{helper}{pending_snapshot_touched};
-    delete $hash->{fhem}{helper}{pending_config};
     Log3 $name, 4, "[$name] Connection closed (was $previous)" if defined($previous);
     # A lost IO connection invalidates current reachability, but not the last
     # server-reported 'available' reading or any endpoint's device state.

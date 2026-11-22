@@ -938,23 +938,8 @@ sub MATTERDevice_FeatureSupported($$$) {
     return (($feature_map & (1 << $bit)) != 0) ? 1 : 0;
 }
 
-sub MATTERDevice_ClusterRevision($$) {
-    my ($hash, $cluster_id) = @_;
-    my $revision = $hash->{helper}{capabilities}{$cluster_id}{cluster_revision};
-    return undef if (!defined($revision) || ref($revision));
-    return int($revision);
-}
-
-sub MATTERDevice_ClusterRevisionAtLeast($$$) {
-    my ($hash, $cluster_id, $minimum) = @_;
-    my $revision = MATTERDevice_ClusterRevision($hash, $cluster_id);
-    return 0 if (!defined($revision));
-    return $revision >= $minimum ? 1 : 0;
-}
-
-# AttributeList ist die Quelle für die tatsächliche Präsenz. Für bekannte
-# Attribute werden zusätzlich FeatureMap- und ClusterRevision-Bedingungen
-# aus der lokalen Matter-Abbildung geprüft.
+# AttributeList bestimmt die Präsenz. Bekannte Attribute können zusätzlich
+# bestimmte Features in der FeatureMap voraussetzen.
 sub MATTERDevice_AttributeUsable($$$) {
     my ($hash, $cluster_id, $attr_id) = @_;
     # A persisted device report remains usable before runtime AttributeList
@@ -969,9 +954,6 @@ sub MATTERDevice_AttributeUsable($$$) {
     my $attribute = $cluster->{attributes}{$attr_id};
     return 1 if (!$attribute);
 
-    if (defined($attribute->{min_revision})) {
-        return 0 if (!MATTERDevice_ClusterRevisionAtLeast($hash, $cluster_id, $attribute->{min_revision}));
-    }
     foreach my $feature (@{$attribute->{required_features} // []}) {
         return 0 if (!MATTERDevice_FeatureSupported($hash, $cluster_id, $feature));
     }
@@ -2882,7 +2864,7 @@ automated tests model reading restoration.</p></li>
   <li>Set commands marked <code>noArg</code> reject additional arguments before sending.</li>
   <li><b>Capabilities:</b> Set commands require a matching endpoint
       <code>AcceptedCommandList</code> entry and applicable
-      <code>FeatureMap</code> / <code>ClusterRevision</code> constraints.
+      <code>FeatureMap</code> constraints. The module records the reported <code>ClusterRevision</code> as metadata.
       A malformed ID list preserves its last valid entries. An explicit empty list clears them.
       Until command metadata arrives, controls are not inferred from values,
       cluster presence or retired <code>has_*</code> settings. A saved
@@ -3263,8 +3245,8 @@ Reading-Wiederherstellung.</p></li>
   <li>Set-Befehle mit <code>noArg</code> weisen zusätzliche Argumente vor dem Versand ab.</li>
   <li><b>Capabilities:</b> Set-Befehle erfordern einen passenden Eintrag in
       der <code>AcceptedCommandList</code> des jeweiligen Endpunkts sowie
-      gegebenenfalls <code>FeatureMap</code>- und
-      <code>ClusterRevision</code>-Bedingungen. Bei einer fehlerhaften ID-Liste bleiben die
+      gegebenenfalls die in der <code>FeatureMap</code> geforderten Features.
+      Das Modul erfasst die gemeldete <code>ClusterRevision</code> als Metadatum. Bei einer fehlerhaften ID-Liste bleiben die
       letzten gültigen Einträge erhalten. Eine ausdrücklich leere Liste löscht sie. Solange die Metadaten fehlen,
       werden keine Befehle aus Einzelwerten oder alten <code>has_*</code>-
       Einstellungen abgeleitet. Gespeicherte <code>has_*=0</code>-Werte
