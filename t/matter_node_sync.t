@@ -3831,4 +3831,156 @@ subtest 'Issue 28: explicit ICD reconciliation and current backend support' => s
     MATTER_Close($_) for ($io, $other);
 };
 
+subtest 'Issue 30: persisted sensors follow the shared availability lifecycle' => sub {
+    my @requests;
+    my @peers;
+    my $connect = sub {
+        my ($io) = @_;
+        socketpair(my $socket, my $peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die 'sensor lifecycle socketpair';
+        push @peers, $peer;
+        $io->{CD} = $socket;
+        $io->{websocket} = 1;
+        $io->{ws_status} = 'connected';
+        $io->{fhem}{helper}{sendWS} = sub {
+            push @requests, JSON::decode_json($_[0]); return 1;
+        };
+    };
+    my $io = $defs{ioSensors} = {NAME => 'ioSensors', TYPE => 'MATTER', READINGS => {}, helper => {}};
+    my $other = $defs{ioSensorsOther} = {NAME => 'ioSensorsOther', TYPE => 'MATTER', READINGS => {}, helper => {}};
+    $connect->($_) for ($io, $other);
+    # ep, type, cluster, reading, initial raw/value, manual value,
+    # online raw/value, live raw/value, invalid raw. Values are synthetic.
+    my @sensors = (
+        [1, 0x0015, 69, 'contact', JSON::true, 'closed', 'open', JSON::true, 'closed', JSON::false, 'open', 'unknown'],
+        [2, 0x0302, 1026, 'temperature', 2234, 22.34, 18.5, 2145, 21.45, -550, -5.5, -32768],
+        [3, 0x0307, 1029, 'humidity', 4350, 43.5, 40, 5150, 51.5, 0, 0, 65535],
+        [4, 0x0106, 1024, 'illuminance', 30001, 1000, 10, 20001, 100, 0, 0, 65535],
+        [5, 0x0107, 1030, 'motion', 3, 'motion', 'nomotion', 5, 'motion', 2, 'nomotion', 256],
+        [6, 0x0043, 69, 'water_leak', JSON::true, 'leak', 'dry', JSON::true, 'leak', JSON::false, 'dry', 7],
+        [7, 0x0044, 69, 'rain', JSON::false, 'dry', 'rain', JSON::false, 'dry', JSON::true, 'rain', -1],
+        [8, 0xFFF0, 69, 'boolean_state', JSON::true, 1, 0, JSON::true, 1, JSON::false, 0, 'unknown'],
+    );
+    my (%initial, %online, %invalid, %nulls);
+    for my $row (@sensors) {
+        my ($ep, $type, $cluster) = @$row;
+        $initial{"$ep/29/0"} = [{'0' => $type, '1' => 1}];
+        $initial{"$ep/$cluster/0"} = $row->[4];
+        $online{"$ep/$cluster/0"} = $row->[7];
+        $invalid{"$ep/$cluster/0"} = $row->[11];
+        $nulls{"$ep/$cluster/0"} = undef;
+    }
+    for my $target ($io, $other) {
+        MATTER_ProcessNode($target, {node_id => 6300, name => 'SensorLifecycle',
+            available => JSON::true, attributes => \%initial});
+    }
+    my $root = $modules{MATTERDevice}{defptr}{'ioSensors:6300'};
+    my $other_root = $modules{MATTERDevice}{defptr}{'ioSensorsOther:6300'};
+    my %devices = map { $_->{endpoint_id} => $_ } MATTERDevice_NodeChildren($root);
+    my %other_devices = map { $_->{endpoint_id} => $_ } MATTERDevice_NodeChildren($other_root);
+    my $binary = sub { return $_[0] =~ /\A(?:contact|water_leak|rain|motion)\z/; };
+    # Include saved timestamps AND write counters: the general test stub's
+    # fixed clock alone cannot detect a repeated write of an unchanged value.
+    my $capture = sub {
+        my ($targets) = @_;
+        my %snapshot;
+        for my $row (@sensors) {
+            my $device = $targets->{$row->[0]};
+            for my $reading ($row->[3], 'device_type_ids', $binary->($row->[3]) ? ('state') : ()) {
+                $snapshot{$row->[0]}{$reading} = {
+                    %{$device->{READINGS}{$reading}},
+                    writes => $single_writes{$device->{NAME}}{$reading} // 0,
+                };
+            }
+        }
+        return \%snapshot;
+    };
+    for my $row (@sensors) {
+        is(ReadingsVal($devices{$row->[0]}{NAME}, $row->[3], ''), $row->[5], "$row->[3]: initial online snapshot is mapped");
+    }
+    ok(!exists($devices{8}{READINGS}{contact}), 'unknown type remains a generic boolean, without guessing a contact');
+    is(CommandRename(undef, "$root->{NAME} SensorLifecycleRenamed"), undef, 'root can be manually renamed');
+    is(CommandRename(undef, "$devices{1}{NAME} SensorContactRenamed"), undef, 'contact endpoint can be manually renamed');
+    my $other_before = $capture->(\%other_devices);
+    my $manual = sub {
+        for my $row (@sensors) {
+            my $device = $devices{$row->[0]};
+            for my $reading ($row->[3], $binary->($row->[3]) ? ('state') : ()) {
+                readingsSingleUpdate($device, $reading, $row->[6], 1);
+                $device->{READINGS}{$reading}{TIME} = '2026-11-21 23:59:00';
+            }
+        }
+    };
+    $manual->();
+    my $saved = $capture->(\%devices);
+    MATTER_Close($io);
+    is_deeply($capture->(\%devices), $saved, 'IO loss preserves manual sensor values, states and timestamps');
+    # Model statefile/configDB restoration by retaining readings and identity,
+    # rebuilding helpers and invoking the actual post-restoration callback.
+    $_->{helper} = {} for ($root, values %devices);
+    MATTERDevice_Notify($root, {NAME => 'global', CHANGED => ['INITIALIZED']});
+    $connect->($io);
+    is(ReadingsVal($root->{NAME}, 'state', ''), 'unknown', 'startup root status does not reuse persisted online authority');
+    for my $node ({node_id => 6300, attributes => \%initial},
+                  {node_id => 6300, available => undef, attributes => \%initial},
+                  {node_id => 6300, available => JSON::false, attributes => \%initial}) {
+        MATTER_ProcessNode($io, $node);
+        is_deeply($capture->(\%devices), $saved, 'unknown/null/offline initial snapshot preserves all saved sensor readings');
+    }
+    MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {
+        node_id => 6300, available => JSON::true, attributes => \%online}}));
+    is(ReadingsVal($root->{NAME}, 'state', ''), 'online', 'valid online node_updated restores root status');
+    for my $row (@sensors) {
+        my $device = $devices{$row->[0]};
+        is(ReadingsVal($device->{NAME}, $row->[3], ''), $row->[8], "$row->[3]: online snapshot replaces the saved manual value");
+        is(ReadingsVal($device->{NAME}, 'state', ''), $row->[8], "$row->[3]: endpoint state follows the sensor")
+            if $binary->($row->[3]);
+    }
+    is($defs{SensorLifecycleRenamed}, $root, 'rediscovery preserves renamed root identity');
+    is($defs{SensorContactRenamed}, $devices{1}, 'rediscovery preserves renamed endpoint identity');
+    is(ReadingsVal('SensorContactRenamed', 'device_type_ids', ''), '0x0015', 'saved type identifies contact without a new Descriptor report');
+    is_deeply($capture->(\%other_devices), $other_before, 'same-node sensor values on another IO are unchanged');
+
+    my $valid = $capture->(\%devices);
+    for my $values (\%nulls, \%invalid, {}) {
+        MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {
+            node_id => 6300, attributes => $values}}));
+        is_deeply($capture->(\%devices), $valid, 'null, invalid or omitted sensor values preserve readings and timestamps');
+    }
+    for my $row (@sensors) {
+        my $before = $capture->(\%devices);
+        MATTER_ParseMessage($io, encode_json({event => 'attribute_updated',
+            data => [6300, "$row->[0]/$row->[2]/0", $row->[9]]}));
+        is(ReadingsVal($devices{$row->[0]}{NAME}, $row->[3], ''), $row->[10], "$row->[3]: live report maps to its endpoint");
+        my $after = $capture->(\%devices);
+        delete $before->{$row->[0]}; delete $after->{$row->[0]};
+        is_deeply($after, $before, 'live report preserves sibling sensor endpoints');
+    }
+    is_deeply($capture->(\%other_devices), $other_before, 'live sensor updates remain isolated from the other IO');
+
+    MATTER_ProcessNode($io, {node_id => 6300, available => JSON::false});
+    $manual->(); $saved = $capture->(\%devices);
+    for my $row (@sensors) {
+        MATTER_ParseMessage($io, encode_json({event => 'attribute_updated',
+            data => [6300, "$row->[0]/$row->[2]/0", $row->[7]]}));
+    }
+    MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {
+        node_id => 6300, available => JSON::false, attributes => \%online}}));
+    is_deeply($capture->(\%devices), $saved, 'offline live reports and node_updated preserve every manual sensor correction');
+    MATTER_ProcessNode($io, {node_id => 6300, available => JSON::true, attributes => \%online});
+    for my $row (@sensors) {
+        is(ReadingsVal($devices{$row->[0]}{NAME}, $row->[3], ''), $row->[8], "$row->[3]: offline/online recovery resumes normal snapshots");
+    }
+    $manual->(); $saved = $capture->(\%devices);
+    MATTERDevice_Notify($root, {NAME => 'global', CHANGED => ['REREADCFG']});
+    MATTER_ProcessNode($io, {node_id => 6300, attributes => \%online});
+    is_deeply($capture->(\%devices), $saved, 'REREADCFG requires a new availability report before replacing sensor values');
+    MATTER_ProcessNode($io, {node_id => 6300, available => JSON::true, attributes => \%online});
+    for my $row (@sensors) {
+        is(ReadingsVal($devices{$row->[0]}{NAME}, $row->[3], ''), $row->[8], "$row->[3]: valid online report resumes after REREADCFG");
+    }
+    is_deeply($capture->(\%other_devices), $other_before, 'all lifecycle transitions preserve the other IO readings');
+    is(scalar @requests, 0, 'sensor synchronization uses supplied data without additional reads or commands');
+    MATTER_Close($_) for ($io, $other);
+};
+
 done_testing();
