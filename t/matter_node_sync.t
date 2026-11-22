@@ -3015,7 +3015,7 @@ subtest 'Issue 36 OTA eligibility and install lifecycle' => sub {
     $report->('0/29/1', [29,{}]);
     ok($can->($root, $check), 'malformed ServerList preserves capability');
     MATTER_ProcessNode($io, {node_id => $node, available => JSON::false});
-    ok(!$can->($root, $check), 'offline root cannot start OTA');
+    ok($can->($root, $check), 'offline root with known OTA capability can query connected server');
     MATTER_ProcessNode($io, {node_id => $node, available => JSON::true});
     for my $bad (-1, 1.5, 4294967296, '101', [], JSON::true, undef) {
         $offer->($bad);
@@ -3080,10 +3080,14 @@ subtest 'Issue 36 OTA eligibility and install lifecycle' => sub {
     $connect->();
     $info->(11,$js);
     MATTER_ProcessNode($io, {node_id => $node, available => JSON::true});
+    MATTER_ProcessNode($io, {node_id => $node, available => JSON::false});
     $offer->(103);
-    is($set->($install), undef, 'new offer permits explicit install');
-    $reply->(error_code => 11, details => 'OTA disabled');
-    like($status->(), qr/failed: OTA disabled/, 'server refusal visible');
+    is($requests[-1]{command}, 'check_node_update', 'offline check reached the server');
+    ok($can->($root, $install), 'server offer enables installation for offline root');
+    is($set->($install), undef, 'offline install request sent');
+    is_deeply($requests[-1]{args}, {node_id => $node, software_version => 103}, 'offline install sends offered version to server');
+    $reply->(error_code => 11, details => 'Node is not connected');
+    is($status->(), 'failed: Node is not connected', 'actual server refusal visible');
     ok(!$can->($root, $install), 'server refusal requires fresh offer');
     $offer->(103);
     is($set->($install), undef, 'install outstanding at disconnect');

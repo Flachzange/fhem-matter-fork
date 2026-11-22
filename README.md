@@ -366,9 +366,11 @@ engine.
   `available=false`. Dynamic controller readings describe the last explicit
   query and keep their normal FHEM timestamps across reconnect. See
   [ICD evidence and limits](docs/icd-capabilities.md).
-- Online roots reporting the OTA Requestor cluster expose
+- Roots reporting the OTA Requestor cluster expose
   `checkFirmwareUpdate` after the current server handshake identifies
   matterjs-server (schema 11+) or Python Matter Server (schema 10+).
+  Both commands remain available under their usual prerequisites when FHEM
+  shows the root as offline. The server decides whether it can fulfill the request.
   Before the first check, an absent status means unknown. A check returning
   `none reported` says only that this server supplied no offer. A manufacturer
   app may have other updates. Local server settings can also disable OTA.

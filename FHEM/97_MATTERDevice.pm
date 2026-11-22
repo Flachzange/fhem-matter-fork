@@ -2558,7 +2558,7 @@ sub MATTERDevice_GetSetList($) {
 
     if (($hash->{endpoint_id} // 0) == 0 &&
         $hash->{IODev} && $hash->{IODev}{helper}{ota_api_supported} &&
-        $hash->{helper}{available} && $hash->{helper}{seen_clusters}{42} &&
+        $hash->{helper}{seen_clusters}{42} &&
         !defined($hash->{helper}{firmware_update_in_flight})) {
         $add->("checkFirmwareUpdate:noArg");
         my $offer = $hash->{helper}{firmware_available};
@@ -3156,9 +3156,10 @@ Status 0; failures, malformed replies and path mismatches appear in
 Neither acknowledgement updates physical setpoint/mode/speed readings;
 device reports do. Thermostat, fan and Identify combinations are
 <strong>untested</strong> on hardware.</p>
-<p>Manual Matter OTA requires an online root reporting the OTA Requestor
+<p>Manual Matter OTA requires a root reporting the OTA Requestor
 cluster (42) and a compatible current server connection (matterjs-server
-schema 11+ or Python Matter Server schema 10+). <code>checkFirmwareUpdate</code>
+schema 11+ or Python Matter Server schema 10+). The server decides whether
+the request can proceed, including when FHEM shows the root as offline. <code>checkFirmwareUpdate</code>
 asks that server for an offer. <code>none reported</code> means the server
 returned none; a manufacturer app may have other updates. With an eligible
 offer, <code>updateFirmware</code> requests the offered version once.
@@ -3540,9 +3541,10 @@ Pfade erscheinen in <code>lastError</code>. Die vorhandene null-API-Bestätigung
 bleibt zulässig. Keine Bestätigung überschreibt physische Sollwert-/Modus-/
 Geschwindigkeits-Readings; dafür sind Geräteberichte erforderlich. Thermostat-,
 Lüfter- und Identify-Kombinationen sind an Hardware <strong>ungetestet</strong>.</p>
-<p>Manuelles Matter-OTA erfordert einen erreichbaren Root mit gemeldetem
+<p>Manuelles Matter-OTA erfordert einen Root mit gemeldetem
 OTA-Requestor-Cluster (42) und eine kompatible aktuelle Serververbindung
 (matterjs-server ab Schema 11 oder Python Matter Server ab Schema 10).
+Auch wenn FHEM den Root als offline anzeigt, entscheidet der Server über den Auftrag.
 <code>checkFirmwareUpdate</code> fragt nach einem Angebot.
 <code>none reported</code> bedeutet, dass dieser Server kein Update meldet.
 Die Hersteller-App kann weitere Updates anbieten. <code>updateFirmware</code>

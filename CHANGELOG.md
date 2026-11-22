@@ -8,7 +8,7 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
-- 2026-11-22  MATTER IO/Device V0.27 (#36): gate manual OTA by current backend/schema and online root capability. Validate uint32 offers, handle matterjs version objects and null acknowledgements, consume install offers once and preserve device-confirmed installation across reordered replies. Require a fresh check after timeout or server reconnect. Add lifecycle coverage and bilingual commandref. Hardware untested.
+- 2026-11-22  MATTER IO/Device V0.27 (#36): gate manual OTA by current backend/schema and reported root capability, independently of local reachability. Validate uint32 offers, handle matterjs version objects and null acknowledgements, consume install offers once and preserve device-confirmed installation across reordered replies. Require a fresh check after timeout or server reconnect. Add lifecycle coverage and bilingual commandref. Hardware untested.
 
 - 2026-11-22  Tests/documentation (#35): clarify raw reading exclusions and per-value limits. Cover diagnostic table boundaries, invalid reports and isolation between Matter IOs.
 
