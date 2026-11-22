@@ -1648,6 +1648,31 @@ sub MATTERDevice_Get($$@) {
 
 # --- Zentraler Parser für alle Attribut-Updates ---
 
+# GeneralDiagnostics.NetworkInterfaces (0/51/0): report operational interface
+# types, not the route used by a particular Matter session. matterjs-server
+# serializes struct fields as TLV tags; named fields are also accepted.
+sub MATTERDevice_NetworkType {
+    my ($value) = @_;
+    return undef unless ref($value) eq 'ARRAY';
+    my %labels = (0 => 'unknown', 1 => 'wifi', 2 => 'ethernet',
+                  3 => 'cellular', 4 => 'thread');
+    my %types;
+    foreach my $interface (@$value) {
+        return undef unless ref($interface) eq 'HASH';
+        my $operational = MATTERDevice_NormalizeBoolean(
+            exists($interface->{isOperational}) ? $interface->{isOperational}
+                                               : $interface->{'1'});
+        return undef unless defined $operational;
+        next unless $operational;
+        my $type = exists($interface->{type}) ? $interface->{type}
+                                            : $interface->{'7'};
+        return undef unless defined($type) && !ref($type) &&
+                            $type =~ /\A[0-9]+\z/ && $type <= 255;
+        $types{$labels{int($type)} // 'unknown'} = 1;
+    }
+    return keys(%types) ? join(',', sort keys %types) : 'unknown';
+}
+
 # Opt-in passive diagnostics: no additional server reads or polling.
 sub MATTERDevice_UpdateNetworkDiagnostics {
     my ($hash, $cluster, $attr, $value) = @_;
@@ -1982,6 +2007,13 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
                 MATTERDevice_EnsureTypeGroup($hash);
             }
         }
+        return;
+    }
+    if (($hash->{endpoint_id} // 0) == 0 &&
+        $cluster_id == 0x0033 && $attr_id == 0) {
+        my $type = MATTERDevice_NetworkType($value);
+        readingsSingleUpdate($hash, 'networkType', $type, 1)
+            if defined($type) && ReadingsVal($name, 'networkType', '') ne $type;
         return;
     }
     if ($cluster_id == 0x0035 || $cluster_id == 0x0036) {
@@ -2918,6 +2950,23 @@ plus conservative <code>icdRegister</code>, <code>icdUnregister</code> and
 <code>icdResync</code> where Check-In support is advertised. The server
 owns registration and availability; <code>awake=false</code> is not offline.
 Hardware validation: <strong>untested</strong>.</p>
+<h4>Network type</h4>
+<p>The root-only <code>networkType</code> reading uses the operational entries
+in <code>GeneralDiagnostics.NetworkInterfaces</code> (path <code>0/51/0</code>).
+Values are <code>wifi</code>, <code>thread</code>, <code>ethernet</code> or
+<code>cellular</code>; multiple types are deduplicated and sorted, for example
+<code>ethernet,wifi</code>. <code>unknown</code> means no operational interface,
+an unspecified type or an unrecognized enum value in an otherwise usable
+list. An unknown active type is retained alongside known types.</p>
+<p>No attribute or extra request is required. Before the first usable list,
+the reading is absent. Missing/null/malformed data preserves the earlier
+reading. Only value changes write the reading; normal offline and snapshot
+quarantine rules apply. Values persist through normal FHEM statefile handling
+and may be cached. The reading describes reported operational interfaces,
+not the route of a specific Matter session or device reachability. It stays
+on endpoint 0: for a bridge it describes the bridge, never its bridged
+devices' radio protocols. Commissioning feature flags alone do not create
+this reading. Hardware status: <strong>untested</strong>.</p>
 <p>Root <code>diagnostics=1</code> enables passive Thread/Wi-Fi diagnostics.
 Device <code>rawReadings=1</code> exposes limited non-sensitive unmatched
 attributes. Both default to off, add no polling, retain existing readings
@@ -3220,6 +3269,27 @@ bei passender Check-In-Fähigkeit die konservativen Befehle
 zur Verfügung. Der Server verwaltet die Registrierung; 
 <code>awake=false</code> ist nicht gleich offline. Hardwarestatus
 <strong>ungetestet</strong>.</p>
+<h4>Netzwerktyp</h4>
+<p>Das Reading <code>networkType</code> am Root wertet die betriebsbereiten
+Einträge aus <code>GeneralDiagnostics.NetworkInterfaces</code> aus
+(Pfad <code>0/51/0</code>). Werte: <code>wifi</code>, <code>thread</code>,
+<code>ethernet</code> oder <code>cellular</code>. Mehrere Typen erscheinen
+sortiert und ohne Duplikate, etwa <code>ethernet,wifi</code>.
+<code>unknown</code> bedeutet keine betriebsbereite Schnittstelle,
+unspezifizierter Typ oder unbekannter Enum-Wert in einer ansonsten
+verwertbaren Liste. Ein unbekannter aktiver Typ bleibt neben bekannten
+Typen sichtbar.</p>
+<p>Kein Attribut und keine zusätzliche Abfrage erforderlich. Vor der ersten
+verwertbaren Liste fehlt das Reading. Fehlende/null/fehlerhafte Daten
+erhalten den bisherigen Wert. Nur Wertänderungen schreiben das Reading;
+die normale Offline-Sperre und Snapshot-Quarantäne gelten weiterhin.
+Der Wert bleibt über die normale FHEM-Statefile-Verarbeitung erhalten und
+kann zwischengespeichert sein. Er beschreibt gemeldete betriebsbereite
+Schnittstellen, weder den Übertragungsweg einer bestimmten Matter-Sitzung
+noch die Erreichbarkeit. Das Reading bleibt auf Endpoint 0: Bei einer Bridge
+beschreibt es die Bridge, niemals die Funkprotokolle ihrer eingebundenen
+Geräte. Commissioning-Feature-Flags allein erzeugen dieses Reading nicht.
+Hardwarestatus: <strong>ungetestet</strong>.</p>
 <p>Root-Attribut <code>diagnostics=1</code> aktiviert passive Thread-/WLAN-
 Diagnose. <code>rawReadings=1</code> zeigt begrenzte, nicht sensitive
 unbekannte Attribute. Beides ist standardmäßig aus, verursacht kein Polling,

@@ -49,6 +49,7 @@ The original [tostmann/THBR](https://github.com/tostmann/THBR) uses a host-based
 - **FHEM device management:** optional `autocreate` (enabled by default), collision-safe root/endpoint identities, default room `Matter` for newly created devices, administrative root-node grouping, DeviceTypeList-based endpoint groups and links to endpoints in the root's FHEMWEB details. Existing names, rooms and custom groups are preserved; removed server nodes are marked rather than deleted.
 - **Device commands:** exposed from the relevant Matter command/feature metadata when available, using endpoint `AcceptedCommandList` and applicable Matter feature metadata; old `has_*` settings have no effect. Mappings include on/off, color, window covering, locks, native LevelControl continuous/step dimming, Identify, Thermostat and FanControl where supported.
 - **Device status and measurements:** separate `matter_status` (server membership) and `available` (server-reported reachability); cached device attributes are quarantined while offline, and restored only through fresh live attribute events on recovery. Readings include basic information, battery, smoke/CO, electrical metering, common environmental sensors, BooleanState contacts/leaks, Occupancy and Switch button events.
+- **Network type:** root-only `networkType` reports operational Wi-Fi, Thread, Ethernet or Cellular interfaces from supplied Matter attributes, without extra requests or configuration. Multiple active types remain visible; a bridge's connection is never copied to its bridged endpoints.
 - **Optional diagnostics and maintenance:** `diagnostics=1` and `rawReadings=1` are explicitly opt-in and do not trigger additional polling. ICD metadata is detected passively; compatible roots can query controller-side ICD state. Supported nodes can request a server-backed firmware update check/install without firmware upload or automatic updates.
 - **Commissioning:** manual pairing codes or `MT:` QR payloads, with `network` (IP-only, default) or `auto` (IP and optionally BLE via the Matter server).
 - **Native FHEM updates:** a versioned `controls_matter.txt` published on this fork's `main` branch and validated by CI.
@@ -211,6 +212,32 @@ attribute help describes these differences.
 - **Transport:** the FHEM IO supports an IPv4 WebSocket connection without built-in TLS or authentication; the network boundary and security requirements are described above.
 
 ## Device-level commands, ICD, network diagnostics and OTA
+
+The root (endpoint 0) automatically exposes **`networkType`** when an accepted
+`GeneralDiagnostics.NetworkInterfaces` list (`0/51/0`) arrives. Only entries
+with `isOperational=true` participate:
+
+| Reading value | Reported operational interface type |
+| --- | --- |
+| `wifi` | Wi-Fi |
+| `thread` | Thread |
+| `ethernet` | Ethernet |
+| `cellular` | Cellular |
+| `unknown` | No operational entry, unspecified type, or unrecognized enum value |
+
+Multiple types are sorted and deduplicated, for example `ethernet,wifi`;
+unknown active types remain visible alongside known types. The reading is
+absent until the first usable list. Missing, null or malformed lists leave
+the earlier value unchanged. Normal offline/snapshot quarantine applies,
+and unchanged values do not rewrite the reading. FHEM persists the reading
+normally; its value can be cached and does not establish current reachability
+or the route used by a particular Matter session. The reading stays on the
+root, so a bridge's network is not attributed to its bridged devices.
+`diagnostics=1` is not required, and no extra reads or timers are introduced.
+Commissioning feature flags describe support and are not used to infer an
+active interface. Protocol evidence and automated coverage are recorded in
+[the network-type implementation notes](docs/network-type.md). Hardware
+validation: **untested**.
 
 Matter roots and endpoints expose FHEM's conventional receive internals:
 `<IODev>_TIME` (last server message, local `YYYY-MM-DD HH:MM:SS`),

@@ -1,1 +1,1 @@
-2026-11-18  MATTER IO/Device V0.20: expose per-device receive time, last input IO and message counters; count server reception once per root/addressed endpoint without additional reading events.
+2026-11-22  MATTER IO/Device V0.22: add automatic root networkType (Wi-Fi, Thread, Ethernet, Cellular or multiple types) from reported operational interfaces; no extra queries or polling.

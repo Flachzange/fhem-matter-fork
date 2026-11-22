@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-22  MATTER IO/Device V0.22 (draft): add automatic root-only `networkType` from operational GeneralDiagnostics.NetworkInterfaces entries, supporting Wi-Fi, Thread, Ethernet, Cellular and sorted combinations. Accept tag-based and named server structs; preserve prior readings on malformed/null data and existing offline quarantine. Record valid live attribute updates in pending discovery snapshots as well as explicit reads so late replies cannot replace newer values. Keep bridge transport on the root, independent of opt-in diagnostics and without extra requests or timers. Modeled callback coverage added; physical-device validation outstanding.
+
 - 2026-11-19  Documentation: describe all nine root-only Thread/Wi-Fi diagnostic readings in German and English commandref, including units, derived roles/types, neighbor limits, RSSI/LQI selection, passive updates and cached/stale value semantics. No runtime or version change.
 - 2026-11-19  Documentation: add native FHEMWEB inline help for every declared MATTER/MATTERDevice attribute in German and English, with defaults, scope and the actual use of reported limits; correct German commandref block endings. Module runtime and V0.20 remain unchanged.
 

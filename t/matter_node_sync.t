@@ -3197,4 +3197,159 @@ is($count_at_mirrored_model, $before_nested + 1, 'snapshot recipient is stamped 
 is($r1->{MSGCNT}, $before_nested + 2, 'nested independent message counts separately from outer snapshot');
 is($r1->{ioReceiveRenamed_TIME}, '2026-11-18 12:00:14', 'resumed older routing preserves newer nested receive time');
 
+subtest 'Matter node network type through existing server routing' => sub {
+    my $io = $defs{ioNetwork} = {
+        NAME => 'ioNetwork', TYPE => 'MATTER', READINGS => {}, helper => {},
+    };
+    my $timers_before = scalar @timers;
+    my $wifi = [{'1' => JSON::true, '7' => 1},
+                {'1' => JSON::false, '7' => 4}];
+    my $thread = [{isOperational => JSON::true, type => 4}];
+    my $ethernet = [{isOperational => 1, type => 2}];
+    $io->{helper}{pending_command}{8100} = 'start_listening';
+    MATTER_ParseMessage($io, encode_json({message_id => 8100, result => [{
+        node_id => 5100, name => 'NetworkProbe', available => JSON::true,
+        attributes => {'0/51/0' => $wifi, '1/6/0' => JSON::true,
+                       '1/29/0' => [{'0' => 0x0013, '1' => 1}]},
+    }]}));
+    my $nr = $defs{MATTER_NetworkProbe};
+    my $ne = $defs{MATTER_NetworkProbe_EP1};
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'wifi',
+       'initial tag-based snapshot uses only operational interfaces without diagnostics opt-in');
+    ok(!exists($ne->{READINGS}{networkType}),
+       'bridge endpoints do not inherit their Matter node network type');
+    my $report = sub {
+        MATTER_ParseMessage($io, encode_json({
+            event => 'attribute_updated', data => [5100, '0/51/0', $_[0]],
+        }));
+    };
+    $report->($thread);
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'thread',
+       'named fields and JSON booleans work in live reports');
+    $report->($ethernet);
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'ethernet',
+       'Ethernet and numeric booleans are recognized');
+    $report->([{'1' => 1, '7' => 3}]);
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'cellular',
+       'standard Cellular interface is not mislabeled as Wi-Fi');
+    my $multi = [{'1' => 1, '7' => 4}, {'1' => 1, '7' => 1},
+                 {'1' => 1, '7' => 2}, {'1' => 1, '7' => 1}];
+    $report->($multi);
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'ethernet,thread,wifi',
+       'multiple active types are sorted and deduplicated without choosing a route');
+    my $writes_before = $single_writes{$nr->{NAME}}{networkType};
+    $report->([reverse @$multi]);
+    is($single_writes{$nr->{NAME}}{networkType}, $writes_before,
+       'unchanged types and interface reordering do not rewrite the reading');
+    for my $unknown ([], [{'1' => 0, '7' => 1}],
+                     [{'1' => 1, '7' => 0}], [{'1' => 1, '7' => 5}]) {
+        $report->($unknown);
+        is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'unknown',
+           'valid list without a recognized active type explicitly reports unknown');
+    }
+    $report->([{'1' => 1, '7' => 1}, {'1' => 1, '7' => 5}]);
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'unknown,wifi',
+       'an unknown operational interface is not hidden by a known interface');
+    $report->($thread);
+    $writes_before = $single_writes{$nr->{NAME}}{networkType};
+    for my $bad (undef, {}, 'wifi', [undef], [{}],
+                 [{isOperational => 'false', type => 1}],
+                 [{isOperational => JSON::true, type => undef}],
+                 [{isOperational => 1, type => JSON::true}],
+                 [{isOperational => 1, type => -1}],
+                 [{isOperational => 1, type => 256}],
+                 [{isOperational => 1, type => '1oops'}],
+                 [@$wifi, {isOperational => 1, type => []}]) {
+        $report->($bad);
+    }
+    is($single_writes{$nr->{NAME}}{networkType}, $writes_before,
+       'malformed/null reports preserve the last reading and cause no reading writes');
+    MATTER_ParseMessage($io, encode_json({
+        event => 'attribute_updated', data => [5100, '1/51/0', $ethernet],
+    }));
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'thread',
+       'non-root reports cannot replace node network type');
+    ok(!exists($ne->{READINGS}{networkType}),
+       'endpoint reports cannot create a misleading endpoint networkType');
+
+    # Both discovery and explicit reads must retain newer valid live reports.
+    $io->{helper}{pending_command}{8101} = 'get_nodes';
+    MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {
+        node_id => 5100, attributes => {'0/51/0' => $wifi},
+    }}));
+    MATTER_ParseMessage($io, encode_json({message_id => 8101, result => [{
+        node_id => 5100, attributes => {'0/51/0' => $ethernet},
+    }]}));
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'wifi',
+       'late discovery snapshot cannot overwrite a newer node_updated attribute');
+    $io->{helper}{pending_command}{8102} = 'get_nodes';
+    MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {
+        node_id => 5100, attributes => {'0/51/0' => [{type => 1}]},
+    }}));
+    MATTER_ParseMessage($io, encode_json({message_id => 8102, result => [{
+        node_id => 5100, attributes => {'0/51/0' => $ethernet},
+    }]}));
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'ethernet',
+       'malformed newer attribute cannot suppress a valid pending snapshot');
+    $io->{helper}{pending_command}{8105} = 'get_nodes';
+    $report->($thread);
+    MATTER_ParseMessage($io, encode_json({message_id => 8105, result => [{
+        node_id => 5100, attributes => {'0/51/0' => $ethernet},
+    }]}));
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'thread',
+       'late discovery snapshot cannot overwrite a newer attribute_updated event');
+    $io->{helper}{pending_command}{8106} = 'get_nodes';
+    $report->([{isOperational => 'false', type => 1}]);
+    MATTER_ParseMessage($io, encode_json({message_id => 8106, result => [{
+        node_id => 5100, attributes => {'0/51/0' => $ethernet},
+    }]}));
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'ethernet',
+       'invalid attribute_updated event cannot suppress valid discovery data');
+    $io->{helper}{pending_config}{8103} = {node_id => 5100, all_endpoints => 1};
+    $report->($thread);
+    MATTER_ParseMessage($io, encode_json({message_id => 8103,
+        result => {'0/51/0' => $ethernet}}));
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'thread',
+       'late correlated getConfig cannot overwrite a newer live interface list');
+    $io->{helper}{pending_config}{8104} = {node_id => 5100, all_endpoints => 1};
+    $report->([{isOperational => 'false', type => 1}]);
+    MATTER_ParseMessage($io, encode_json({message_id => 8104,
+        result => {'0/51/0' => $ethernet}}));
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'ethernet',
+       'malformed live event cannot poison the correlated read result');
+
+    MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {
+        node_id => 5100, available => JSON::false,
+        attributes => {'0/51/0' => $wifi},
+    }}));
+    $report->($wifi);
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'ethernet',
+       'offline reports retain the last accepted network type');
+    MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {
+        node_id => 5100, available => JSON::true,
+        attributes => {'0/51/0' => $wifi},
+    }}));
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'ethernet',
+       'cached recovery snapshot cannot overwrite the retained network type');
+    $report->($thread);
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'thread',
+       'fresh live report updates network type during snapshot quarantine');
+
+    MATTER_ProcessNode($io, {node_id => 5101, name => 'NetworkCapabilityOnly',
+        available => JSON::true, attributes => {'0/49/65532' => 1}});
+    ok(!exists($defs{MATTER_NetworkCapabilityOnly}{READINGS}{networkType}),
+       'supported Wi-Fi commissioning feature alone does not invent an active interface');
+    my $other = $defs{ioNetworkOther} = {
+        NAME => 'ioNetworkOther', TYPE => 'MATTER', READINGS => {}, helper => {},
+    };
+    MATTER_ProcessNode($other, {node_id => 5100, name => 'OtherNetworkProbe',
+        available => JSON::true, attributes => {'0/51/0' => $wifi}});
+    is(ReadingsVal('MATTER_OtherNetworkProbe', 'networkType', ''), 'wifi',
+       'same node ID on another IO has its own network type');
+    is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'thread',
+       'other IO cannot change the original root');
+    is(scalar(@timers), $timers_before, 'network type introduces no timers');
+    is_deeply($io->{helper}{pending_config}, {}, 'no additional network reads are queued');
+};
+
 done_testing();
