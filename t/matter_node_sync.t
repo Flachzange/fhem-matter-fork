@@ -2794,7 +2794,9 @@ is(ReadingsVal($icd->{NAME}, 'icd_idle_mode_duration', ''), 3600,
    'idle duration is retained');
 is(CommandAttr(undef, 'ioA autocreate 1'), undef,
    'IO remains assignable during ICD tests');
-readingsSingleUpdate($defs{ioA}, 'schema_version', 12, 0);
+MATTER_ParseMessage($defs{ioA}, encode_json({
+    schema_version => 12, sdk_version => 'matter-server/1.1.7 (matter.js/0.17.5-alpha)',
+}));
 ok(grep(/^icdRegister:noArg$/, MATTERDevice_GetSetList($icd)),
    'ICD registration set is gated by check-in feature and server schema');
 @sent_requests = ();
@@ -3662,6 +3664,170 @@ subtest 'Issue 27: unknown/offline blocks, valid online synchronizes' => sub {
     is(ReadingsVal($a->{NAME}, 'state', ''), 'removed', 'membership status is independent from physical state');
     MATTER_ProcessNode($io, {node_id => 6103, name => 'LifecycleUnknown', attributes => $values});
     ok(!exists($defs{MATTER_LifecycleUnknown_EP1}{READINGS}{state}), 'new node with unknown availability gets identity without invented device state');
+    MATTER_Close($_) for ($io, $other);
+};
+
+subtest 'Issue 28: explicit ICD reconciliation and current backend support' => sub {
+    my @requests;
+    my @peers;
+    my $connect = sub {
+        my ($io) = @_;
+        socketpair(my $socket, my $peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die 'ICD socketpair';
+        push @peers, $peer;
+        $io->{CD} = $socket;
+        $io->{websocket} = 1;
+        $io->{ws_status} = 'connected';
+        $io->{fhem}{helper}{sendWS} = sub {
+            push @requests, JSON::decode_json($_[0]); return 1;
+        };
+    };
+    my $io = $defs{ioIcd} = {NAME => 'ioIcd', TYPE => 'MATTER', READINGS => {}, helper => {}};
+    my $other = $defs{ioIcdOther} = {NAME => 'ioIcdOther', TYPE => 'MATTER', READINGS => {}, helper => {}};
+    $connect->($_) for ($io, $other);
+    my $sdk = 'matter-server/1.1.7 (matter.js/0.17.5-alpha)';
+    my $info = sub {
+        my ($target, $schema, $backend) = @_;
+        MATTER_ParseMessage($target, encode_json({schema_version => $schema, sdk_version => $backend}));
+    };
+    my $values = {
+        '0/29/1' => [29, 40, 70], '0/29/3' => [1],
+        '0/40/21' => 0x01040000, '0/70/65532' => 5,
+        '0/70/8' => 1, '0/70/0' => 3600,
+        '1/6/0' => JSON::true,
+    };
+    for my $target ($io, $other) {
+        MATTER_ProcessNode($target, {node_id => 6200, name => 'IcdLifecycle',
+            available => JSON::true, attributes => $values});
+    }
+    my $root = $modules{MATTERDevice}{defptr}{'ioIcd:6200'};
+    my $other_root = $modules{MATTERDevice}{defptr}{'ioIcdOther:6200'};
+    my ($child) = MATTERDevice_NodeChildren($root);
+    my $can_admin = sub { return scalar grep { /^icdRegister:/ } MATTERDevice_GetSetList($_[0]); };
+    my $can_get = sub { return MATTERDevice_Get($_[0], $_[0]{NAME}, '?') =~ /\bicdState\b/; };
+    my $report = sub {
+        my ($path, $value) = @_;
+        MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [6200, $path, $value]}));
+    };
+
+    MATTER_ProcessNode($io, {node_id => 6201, name => 'NonIcd', available => JSON::true,
+        attributes => {'0/29/1' => [29, 40]}});
+    ok(!exists($defs{MATTER_NonIcd}{READINGS}{icd_supported}), 'ordinary non-ICD root gets no new negative ICD readings');
+
+    # Persisted presentation readings alone do not establish backend support.
+    readingsSingleUpdate($io, 'schema_version', 15, 0);
+    readingsSingleUpdate($io, 'sdk_version', $sdk, 0);
+    ok(!$can_get->($root) && !$can_admin->($root), 'restored server readings do not advertise ICD operations');
+    for my $case ([15, 'python-matter-server/8.0'], [15, 'unknown'],
+                  [11, $sdk], [undef, $sdk], [[], $sdk], [12, undef], [12, {}]) {
+        $info->($io, @$case);
+        ok(!$can_get->($root) && !$can_admin->($root), 'unsupported or malformed current backend hides ICD operations');
+    }
+    my $before = @requests;
+    like(MATTERDevice_Get($root, $root->{NAME}, 'icdState'), qr/Unknown argument/, 'explicit unsupported query is rejected');
+    like(MATTERDevice_Set($root, $root->{NAME}, 'icdRegister'), qr/Unknown argument/, 'explicit unsupported registration is rejected');
+    is(scalar @requests, $before, 'rejected operations send no request');
+    $info->($io, 12, $sdk);
+    $info->($other, 15, $sdk);
+    ok($can_get->($root) && $can_admin->($root), 'current matterjs server and schema 12 enable supported root operations');
+    ok(!$can_get->($child) && !$can_admin->($child), 'ICD operations remain root-only');
+
+    # Registration keeps upstream conservative defaults, with correlated replies.
+    for my $pair (['icdRegister', 'register_icd'], ['icdUnregister', 'unregister_icd'], ['icdResync', 'resync_icd']) {
+        is(MATTERDevice_Set($root, $root->{NAME}, $pair->[0]), undef, "$pair->[0] accepted");
+        my $request = $requests[-1];
+        is($request->{command}, $pair->[1], 'correct server operation');
+        is_deeply($request->{args}, {node_id => 6200}, 'no force or multi-admin bypass');
+        MATTER_ParseMessage($io, encode_json({message_id => $request->{message_id},
+            result => $pair->[1] eq 'resync_icd' ? undef : {supported => JSON::true, registered => JSON::true}}));
+    }
+    like(MATTERDevice_Get($root, $root->{NAME}, 'icdState'), qr/requested/, 'controller state query remains asynchronous');
+    MATTER_ParseMessage($io, encode_json({message_id => $requests[-1]{message_id}, result => {
+        supported => JSON::true, registered => JSON::true, awake => JSON::false,
+        available => JSON::true, next_expected_checkin => 1735689600000}}));
+    is(ReadingsVal($root->{NAME}, 'state', ''), 'online', 'sleeping ICD does not imply offline');
+
+    # Whole ServerList content, not the presence of attributes in a node patch,
+    # determines explicit removal. Malformed lists never act as absence.
+    MATTER_ProcessNode($io, {node_id => 6200, attributes => {'0/40/3' => 'Synthetic ICD'}});
+    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'true', 'partial node update preserves ICD support');
+    for my $bad (undef, '', {}, [29, undef], [29, {}], [-1], [4294967296]) {
+        $report->('0/29/1', $bad);
+        is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'true', 'malformed ServerList cannot revoke ICD support');
+    }
+    $report->('1/29/1', [29, 6]);
+    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'true', 'child ServerList does not revoke root support');
+    MATTER_ProcessNode($io, {node_id => 6200, available => JSON::false, attributes => {'0/29/1' => []}});
+    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'true', 'offline snapshot cannot revoke persisted capability');
+    MATTER_ProcessNode($io, {node_id => 6200, available => JSON::true, attributes => $values});
+
+    # ServerList wins over obsolete cluster values in the same payload.
+    MATTER_ProcessNode($io, {node_id => 6200, attributes => {%$values, '0/29/1' => [29, 40]}});
+    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'false', 'explicit ServerList absence revokes prior ICD support');
+    is(ReadingsVal($root->{NAME}, 'icd_lit_supported', ''), 'false', 'revoked ICD cannot remain LIT-capable');
+    ok(!exists($root->{helper}{capabilities}{70}), 'obsolete ICD command metadata is removed');
+    ok(!$can_get->($root) && !$can_admin->($root), 'revoked capability removes get and set commands');
+    ok($can_get->($other_root) && $can_admin->($other_root), 'same node on another IO remains supported');
+    is(ReadingsVal($child->{NAME}, 'state', ''), 'on', 'capability reconciliation preserves physical endpoint state');
+    my $writes = $single_writes{$root->{NAME}}{icd_supported};
+    $report->('0/29/1', []);
+    is($single_writes{$root->{NAME}}{icd_supported}, $writes, 'repeated absent/empty ServerList does not churn readings');
+    $report->('0/29/1', ['0x001D', '0x0046']);
+    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'true', 'reported ServerList presence restores ICD capability');
+    ok($can_get->($root) && !$can_admin->($root), 'restored cluster alone does not reuse obsolete Check-In features');
+    $report->('0/70/65532', 5);
+    ok($can_admin->($root), 'new Check-In feature report restores administrative commands');
+
+    # The ordinary correlated getConfig path includes ServerList and preserves
+    # a newer live list when an older read response arrives.
+    is(MATTERDevice_Set($root, $root->{NAME}, 'getConfig'), undef, 'explicit online getConfig accepted');
+    my $read = $requests[-1];
+    ok(grep($_ eq '0/29/1', @{$read->{args}{attribute_path}}), 'root getConfig requests ServerList in its existing read');
+    $report->('0/29/1', [29, 40]);
+    MATTER_ParseMessage($io, encode_json({message_id => $read->{message_id}, result => $values}));
+    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'false', 'older getConfig cannot undo newer live capability removal');
+    MATTER_ProcessNode($io, {node_id => 6200, attributes => $values});
+    is(MATTERDevice_Set($root, $root->{NAME}, 'getConfig'), undef, 'second explicit configuration read accepted');
+    MATTER_ParseMessage($io, encode_json({message_id => $requests[-1]{message_id},
+        result => {%$values, '0/29/1' => [29, 40]}}));
+    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'false', 'getConfig ServerList wins over other cluster data in that reply');
+    MATTER_ProcessNode($io, {node_id => 6200, attributes => $values});
+    MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {
+        node_id => 6200, attributes => {'0/29/1' => [29, 40]}}}));
+    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'false', 'partial node_updated with explicit complete ServerList reconciles support');
+    MATTER_ProcessNode($io, {node_id => 6200, attributes => $values});
+    $io->{helper}{pending_command}{'icd-discovery-test'} = 'get_nodes';
+    $report->('0/29/1', [29, 40]);
+    $report->('0/29/1', [29, undef]);
+    MATTER_ParseMessage($io, encode_json({message_id => 'icd-discovery-test', result => [{
+        node_id => 6200, available => JSON::true, attributes => $values}]}));
+    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'false', 'older discovery preserves valid live ServerList despite a later malformed list');
+
+    # Dynamic observations retain their normal FHEM timestamps and values.
+    MATTER_ProcessNode($io, {node_id => 6200, attributes => $values});
+    my %before_close = map { $_ => {%{$root->{READINGS}{$_}}} } grep { /^icd_/ } keys %{$root->{READINGS}};
+    my %before_writes = map { $_ => $single_writes{$root->{NAME}}{$_} } keys %before_close;
+    {
+        $reading_event_hook = sub {
+            my ($device, $reading) = @_;
+            ok(!$can_get->($root), 'disconnect event observes ICD API permission already cleared')
+                if $device eq $io && $reading eq 'state';
+        };
+        MATTER_Close($io);
+        $reading_event_hook = undef;
+    }
+    is_deeply({map { $_ => $root->{READINGS}{$_} } keys %before_close}, \%before_close,
+        'disconnect preserves ICD observations and their existing timestamps');
+    ok(!$can_get->($root) && !$can_admin->($root), 'disconnect clears backend permission before reuse');
+    $connect->($io);
+    ok(!$can_get->($root), 'reconnect cannot use persisted schema/sdk readings');
+    $info->($io, 15, 'python-matter-server/8.0');
+    ok(!$can_get->($root) && !$can_admin->($root), 'switch to another backend does not retain ICD API support');
+    $info->($io, 15, $sdk);
+    ok($can_get->($root) && $can_admin->($root), 'current matterjs identification restores operations');
+    is_deeply({map { $_ => $root->{READINGS}{$_} } keys %before_close}, \%before_close,
+        'server identification does not refresh or erase historical device readings');
+    is_deeply({map { $_ => $single_writes{$root->{NAME}}{$_} } keys %before_writes}, \%before_writes,
+        'disconnect and server identification publish no extra ICD reading updates');
     MATTER_Close($_) for ($io, $other);
 };
 

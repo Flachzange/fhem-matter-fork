@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.23 22.11.2026";
+my $MATTER_version = "V0.24 22.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -479,6 +479,7 @@ sub MATTER_Close($) {
     delete $hash->{helper}{ws_expected_accept};
     delete $hash->{helper}{ws_fragment_opcode};
     delete $hash->{helper}{ws_fragment_buffer};
+    delete $hash->{helper}{icd_api_supported};
     $hash->{websocket} = 0;
     $hash->{ws_status} = 'disconnected';
     $hash->{BUF} = '';
@@ -973,6 +974,14 @@ sub MATTER_ValidLiveAttribute {
         if $cluster == 8 && $attribute == 0;
     return defined(MATTERDevice_NetworkType($value))
         if $cluster == 51 && $attribute == 0;
+    if ($cluster == 29 && $attribute == 1) {
+        return 0 unless ref($value) eq 'ARRAY';
+        for my $entry (@$value) {
+            my $id = MATTERDevice_NormalizeMatterId($entry);
+            return 0 unless defined($id) && $id <= 0xFFFFFFFF;
+        }
+        return 1;
+    }
     return ref($value) eq 'ARRAY'
         if $attribute >= 0xFFF8 && $attribute <= 0xFFFB;
     return !ref($value) && $value =~ /^\d+$/
@@ -1000,8 +1009,12 @@ sub MATTER_RecordSnapshotEvent {
                defined(MATTERDevice_NormalizeBoolean($data->{available}));
         if (ref($data->{attributes}) eq 'HASH') {
             foreach my $path (keys %{$data->{attributes}}) {
-                $changed->{attributes}{$path} = 1
-                    if MATTER_ValidLiveAttribute($path, $data->{attributes}{$path});
+                next unless MATTER_ValidLiveAttribute($path, $data->{attributes}{$path});
+                $changed->{attributes}{$path} = 1;
+                # Reapply the newer structural list after older cluster data,
+                # so an obsolete ICD FeatureMap cannot revive removed support.
+                $changed->{root_server_list} = $data->{attributes}{$path}
+                    if $path eq '0/29/1';
             }
         }
     }
@@ -1031,6 +1044,8 @@ sub MATTER_ProcessNodeList($$$;$) {
             if ($updated->{attributes} && ref($filtered{attributes}) eq 'HASH') {
                 my %attributes = %{$filtered{attributes}};
                 delete @attributes{keys %{$updated->{attributes}}};
+                $attributes{'0/29/1'} = $updated->{root_server_list}
+                    if exists($updated->{root_server_list});
                 $filtered{attributes} = \%attributes;
             }
             $to_apply = \%filtered;
@@ -1065,6 +1080,13 @@ sub MATTER_ParseMessage($$) {
     # A) Server-Informationen beim Connect
     if (exists $decoded->{schema_version} && exists $decoded->{sdk_version}) {
         Log3 $name, 3, "MATTER: Received server_info from Matter server.";
+        # ICD controller operations are an OHF matterjs-server extension.
+        # Establish support from this connection, never restored readings.
+        my ($schema, $sdk) = @{$decoded}{qw(schema_version sdk_version)};
+        $hash->{helper}{icd_api_supported} =
+            defined($schema) && !ref($schema) && $schema =~ /\A\d+\z/ && $schema >= 12 &&
+            defined($sdk) && !ref($sdk) &&
+            $sdk =~ /\Amatter-server\/[^\s()]+ \(matter\.js\/[^\s()]+\)\z/ ? 1 : 0;
         readingsBeginUpdate($hash);
         readingsBulkUpdate($hash, "state", "connected");
         readingsBulkUpdate($hash, "schema_version", $decoded->{schema_version});

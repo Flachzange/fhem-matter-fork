@@ -1531,8 +1531,9 @@ sub MATTERDevice_Set($$@) {
         # whether the module supports that endpoint's functional clusters.
         push @paths, "$endpoint_id/29/0";
 
-        # Falls Root-Device (Endpoint 0), auch die PartsList abfragen.
+        # Root-Descriptor: vollständige ServerList und PartsList mitlesen.
         if ($endpoint_id == 0) {
+            push @paths, "0/29/1";
             push @paths, "0/29/3";
         }
 
@@ -1671,8 +1672,7 @@ sub MATTERDevice_Get($$@) {
     my $root = ($hash->{endpoint_id} // 0) == 0;
     my $icd = $root && ReadingsVal($name, 'icd_supported', '') eq 'true';
     my $io = $hash->{IODev};
-    my $schema = $io ? ReadingsVal($io->{NAME}, 'schema_version', 0) : 0;
-    my $supported = $icd && $schema =~ /^\d+$/ && $schema >= 12;
+    my $supported = $icd && $io && $io->{helper}{icd_api_supported};
     return 'Unknown argument, choose one of ' .
            ($supported ? 'icdState' : '') if !defined($cmd) || $cmd eq '?';
     return 'Unknown argument, choose one of ' .
@@ -1805,7 +1805,30 @@ sub MATTERDevice_RefreshIcdCapability {
 sub MATTERDevice_IcdCapabilityReport {
     my ($hash, $cluster, $attr, $value) = @_;
     return unless ($hash->{endpoint_id} // 0) == 0;
-    if ($cluster == 70 && defined($value) && !ref($value)) {
+    if ($cluster == 29 && $attr == 1) {
+        # ServerList is a complete list even in a partial node report.
+        # An omitted list or any malformed entry cannot revoke support.
+        return unless ref($value) eq 'ARRAY';
+        my $supported = 0;
+        for my $entry (@$value) {
+            my $id = MATTERDevice_NormalizeMatterId($entry);
+            return unless defined($id) && $id <= 0xFFFFFFFF;
+            $supported = 1 if $id == 70;
+        }
+        # Avoid adding negative ICD readings to every ordinary root.
+        return if !$supported && !exists($hash->{READINGS}{icd_supported});
+        unless ($supported) {
+            delete $hash->{helper}{capabilities}{70};
+            delete $hash->{helper}{seen_clusters}{70};
+        }
+        my $reported = $supported ? 'true' : 'false';
+        readingsSingleUpdate($hash, 'icd_supported', $reported, 1)
+            if ReadingsVal($hash->{NAME}, 'icd_supported', '') ne $reported;
+        if (!$supported && exists($hash->{READINGS}{icd_lit_supported})) {
+            readingsSingleUpdate($hash, 'icd_lit_supported', 'false', 1)
+                if ReadingsVal($hash->{NAME}, 'icd_lit_supported', '') ne 'false';
+        }
+    } elsif ($cluster == 70 && defined($value) && !ref($value)) {
         if ($attr == 65532 && $value =~ /^\d+$/) {
             readingsSingleUpdate($hash, 'icd_supported', 'true', 1)
                 if ReadingsVal($hash->{NAME}, 'icd_supported', '') ne 'true';
@@ -2020,7 +2043,8 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     # the same authoritative feature-map cache rather than maintaining two.
     my $global = MATTERDevice_ProcessGlobalAttribute($hash, $cluster_id, $attr_id, $value);
     MATTERDevice_IcdCapabilityReport($hash, $cluster_id, $attr_id, $value)
-        if ($cluster_id == 70 || $cluster_id == 40);
+        if ($cluster_id == 70 || $cluster_id == 40 ||
+            ($cluster_id == 29 && $attr_id == 1));
     return if $global;
 
     # Descriptor cluster (0x001D), DeviceTypeList (0x0000).
@@ -2268,7 +2292,8 @@ sub MATTERDevice_Parse($ $;$) {
         }
 
         for my $path (sort {
-            ($a =~ m{/29/0$} ? 0 : 1) <=> ($b =~ m{/29/0$} ? 0 : 1)
+            ($a eq '0/29/1' ? 2 : $a =~ m{/29/0$} ? 0 : 1) <=>
+            ($b eq '0/29/1' ? 2 : $b =~ m{/29/0$} ? 0 : 1)
         } keys %{$decoded->{result}}) {
             my $value = $decoded->{result}->{$path};
             if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
@@ -2358,7 +2383,8 @@ sub MATTERDevice_Parse($ $;$) {
 
         if ($attributes && ref($attributes) eq 'HASH') {
             for my $path (sort {
-                ($a =~ m{/29/0$} ? 0 : 1) <=> ($b =~ m{/29/0$} ? 0 : 1)
+                ($a eq '0/29/1' ? 2 : $a =~ m{/29/0$} ? 0 : 1) <=>
+                ($b eq '0/29/1' ? 2 : $b =~ m{/29/0$} ? 0 : 1)
             } keys %{$attributes}) {
                 my $value = $attributes->{$path};
                 if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
@@ -2396,10 +2422,9 @@ sub MATTERDevice_GetSetList($) {
     }
     if (($hash->{endpoint_id} // 0) == 0 &&
         ReadingsVal($name, 'icd_supported', '') eq 'true') {
-        my $schema = $hash->{IODev} ?
-            ReadingsVal($hash->{IODev}{NAME}, 'schema_version', 0) : 0;
+        my $io = $hash->{IODev};
         my $features = $hash->{helper}{capabilities}{70}{feature_map};
-        if (defined($schema) && $schema =~ /^\d+$/ && $schema >= 12 &&
+        if ($io && $io->{helper}{icd_api_supported} &&
             defined($features) && !ref($features) && $features =~ /^\d+$/ &&
             ($features & 1)) {
             $add->("icdRegister:noArg");
@@ -2974,8 +2999,22 @@ Server acknowledgement is not proof of installation. Hardware
 <code>icd_idle_mode_duration</code> readings. Positively recognized ICD
 roots on compatible servers offer asynchronous <code>get icdState</code>,
 plus conservative <code>icdRegister</code>, <code>icdUnregister</code> and
-<code>icdResync</code> where Check-In support is advertised. The server
-owns registration and availability; <code>awake=false</code> is not offline.
+<code>icdResync</code> where Check-In support is advertised. These server
+operations require the current connection's OHF matterjs-server identification
+(<code>sdk_version=matter-server/... (matter.js/...)</code>) and schema 12 or
+newer. Saved server readings alone do not enable them; other/unknown backends
+retain passive ICD detection without these operations.</p>
+<p>A valid root <code>Descriptor.ServerList</code> (<code>0/29/1</code>) without
+cluster 70 revokes previously recognized ICD support and its commands.
+An omitted list or malformed data cannot infer removal. Root
+<code>getConfig</code> includes ServerList in its existing read. The list is
+applied after other snapshot attributes, with newer live lists taking
+precedence over older read/discovery replies. Historical mode/duration
+readings are retained. Ordinary non-ICD roots receive no extra negative
+ICD readings.</p>
+<p>The server owns registration and availability; <code>awake=false</code>
+is not offline. Controller-state readings are observations from the last
+explicit query; their normal FHEM timestamps remain unchanged after reconnect.
 Hardware validation: <strong>untested</strong>.</p>
 <h4>Network type</h4>
 <p>The root-only <code>networkType</code> reading uses the operational entries
@@ -3289,8 +3328,22 @@ bestätigt noch keine erfolgreiche Installation. Hardware
 kompatiblen Matter-Server stehen asynchrones <code>get icdState</code> und
 bei passender Check-In-Fähigkeit die konservativen Befehle
 <code>icdRegister</code>, <code>icdUnregister</code>, <code>icdResync</code>
-zur Verfügung. Der Server verwaltet die Registrierung; 
-<code>awake=false</code> ist nicht gleich offline. Hardwarestatus
+zur Verfügung. Diese Serverbefehle erfordern die OHF-matterjs-Serverkennung
+der aktuellen Verbindung (<code>sdk_version=matter-server/... (matter.js/...)</code>)
+und mindestens Schema 12. Gespeicherte Server-Readings allein geben sie nicht
+frei. Andere/unbekannte Backends behalten die passive ICD-Erkennung ohne
+diese Serverbefehle.</p>
+<p>Eine gültige Root-<code>Descriptor.ServerList</code> (<code>0/29/1</code>) ohne
+Cluster 70 nimmt eine zuvor erkannte ICD-Fähigkeit und ihre Befehle zurück.
+Eine ausgelassene Liste oder fehlerhafte Daten erlauben diesen Rückschluss
+nicht. Root-<code>getConfig</code> liest ServerList im vorhandenen Request mit.
+Die Liste wird nach den übrigen Snapshot-Attributen verarbeitet; neuere
+Live-Listen haben Vorrang vor älteren Discovery-/Leseantworten. Historische
+Modus-/Dauer-Readings bleiben erhalten. Normale Nicht-ICD-Roots erhalten keine
+zusätzlichen negativen ICD-Readings.</p>
+<p>Der Server verwaltet die Registrierung; <code>awake=false</code> ist nicht
+gleich offline. Controllerwerte stammen aus der letzten expliziten Abfrage.
+Ihre normalen FHEM-Zeitstempel bleiben nach Reconnect unverändert. Hardwarestatus
 <strong>ungetestet</strong>.</p>
 <h4>Netzwerktyp</h4>
 <p>Das Reading <code>networkType</code> am Root wertet die betriebsbereiten
