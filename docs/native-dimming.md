@@ -31,7 +31,7 @@ exactly like on/off, colors, coverings, locks, Identify and attribute writes.
 Each request remains independently correlated until response/timeout/IO loss.
 A pending Move does not block Stop. Only the latest setter changes lastError;
 older replies are still handled and retired, without overwriting that result.
-Null acknowledges a status-only command; physical state/brightness/pct require
+A successful reply acknowledges the command. Physical state/brightness/pct require
 actual device reports. No persistent motion flag, polling, extra timer, replay
 or automatic Stop is added.
 

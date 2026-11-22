@@ -4420,10 +4420,13 @@ subtest 'Issue 34: native dim variants, latest command replies and lifecycle' =>
     like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/failed:/, 'late Move acknowledgement cannot clear newer Stop failure');
     unlike(ReadingsVal($ep{1}{NAME}, 'firmware_update', ''), qr/failed:/, 'dim errors do not appear as firmware status');
 
-    for my $bad ({}, {result => {}}, {result => []}, {result => 0}, {result => JSON::true}) {
+    my $missing = $send->(1, 'dim_stop');
+    $reply->($missing);
+    like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/failed: invalid device command response/, 'reply without a result or error is malformed');
+    for my $result ({}, [], 0, JSON::true) {
         my $id = $send->(1, 'dim_stop');
-        $reply->($id, %$bad);
-        like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/failed: invalid device command response/, 'missing or unexpected response data is not an acknowledgement');
+        $reply->($id, result => $result);
+        is(ReadingsVal($ep{1}{NAME}, 'lastError', ''), 'none', 'a successful reply accepts any result value');
     }
     my $first = $send->(1, 'dim_up');
     my $second = $send->(2, 'dim_down');

@@ -1944,10 +1944,8 @@ sub MATTERDevice_RequestError {
         my $error = MATTERDevice_WriteResponseError($request, $reply);
         return defined($error) ? "failed: $error" : undef;
     }
-    if ($request->{operation} eq 'device_command') {
-        # Currently mapped Matter commands all have status-only responses.
-        return exists($reply->{result}) && !defined($reply->{result}) ?
-            undef : 'failed: invalid device command response';
+    if ($request->{operation} eq 'device_command' && !exists($reply->{result})) {
+        return 'failed: invalid device command response';
     }
     return undef;
 }
@@ -3212,8 +3210,8 @@ All responses are correlated and retired, but only the latest setter changes
 level/color acknowledgements; success of one component never clears a failure
 of the other. This ordering applies only to command diagnostics, not incoming
 physical device reports.</p>
-<p>The currently mapped device commands have status-only responses: a null
-result acknowledges the command. Attribute writes validate the returned
+<p>A successful device command reply acknowledges the request regardless of
+the value in its result field. Attribute writes validate the returned
 path/status list; existing null API acknowledgements remain accepted.
 <code>lastError=none</code> is not a physical state confirmation. Server
 refusals and malformed results produce <code>failed: ...</code>. At the next
@@ -3597,8 +3595,8 @@ abgeschlossen; nur der letzte Setter verändert <code>lastError</code>.
 Bei einem zusammengesetzten RGB-Setter müssen Helligkeit und Farbe bestätigt
 sein: Eine erfolgreiche Teilantwort verdeckt keinen Fehler der anderen.
 Diese Reihenfolge betrifft nur die Befehlsdiagnose, keine Gerätemeldungen.</p>
-<p>Die derzeit gemappten Gerätebefehle liefern reine Statusantworten: Eine
-null-Antwort bestätigt den Auftrag. Attribut-Schreibzugriffe prüfen die
+<p>Eine erfolgreiche Serverantwort bestätigt den Gerätebefehl unabhängig
+vom Inhalt des Ergebnisfelds. Attribut-Schreibzugriffe prüfen die
 zurückgemeldete Pfad-/Statusliste; vorhandene null-API-Bestätigungen bleiben
 akzeptiert. <code>lastError=none</code> bestätigt keinen physischen Zustand.
 Serverablehnungen und ungültige Antworten erzeugen <code>failed: ...</code>.

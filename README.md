@@ -312,7 +312,7 @@ engine.
   the next write. Only the latest setter changes the endpoint's `lastError`;
   older replies are still correlated and retired. RGB's level/color requests
   share one result so a successful component cannot conceal a failed one.
-  The currently mapped device commands have status-only/null acknowledgements;
+  Device commands accept successful replies with any result value;
   attribute writes validate returned Matter status/path lists, preserving null
   API acknowledgements. Neither updates physical readings. Missing or invalid
   replies, server refusal, timeout and IO loss are reported as errors/unknown

@@ -52,12 +52,9 @@ command event.
 
 ## API results and failure limits
 
-- All currently mapped Matter commands have a standard status-only response
-  (`response="Y"` in the inspected model). In the inspected OHF server,
-  nonzero status becomes an API error and status success becomes null. The
-  device_command decoder therefore requires an explicit null result. This
-  does not assume that arbitrary future Matter commands return null; a new
-  mapping with response data requires a corresponding decoder extension.
+- For device_command, an API error reports failure. A reply with a result
+  field acknowledges the request regardless of its value, including null.
+  A reply missing both an error and a result is malformed.
 - write_attribute keeps the V0.25 path/status-list validation, including
   nonzero Matter/cluster status and the existing null-acknowledgement contract.
 - OTA/ICD have their existing operation-specific result processing. Neither
