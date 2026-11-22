@@ -3032,9 +3032,11 @@ as described below.</p>
       Default <code>0</code>. Set <code>1</code> on the receiving root or
       endpoint to expose otherwise unmapped attributes as
       <code>raw_&lt;endpoint&gt;_&lt;cluster&gt;_&lt;attribute&gt;</code> readings.
-      Values longer than 512 characters, global metadata and selected
-      sensitive administration clusters are excluded. This is not a complete
-      dump or a guarantee that all device information is non-sensitive.
+      Null values, attribute IDs from 0xFFF0 upwards and clusters
+      31, 48, 49, 60, 62, 63, 64 and 65 (decimal) are skipped.
+      The limit per value is 512 characters for scalar text or 512 bytes
+      for JSON-encoded structures. Other clusters, including vendor-specific
+      ones, can expose private device data in readings and logs.
       Adds no polling; disabling retains existing readings. Hardware
       validation: <strong>untested</strong>.</li>
 </ul>
@@ -3169,8 +3171,8 @@ on endpoint 0: for a bridge it describes the bridge, never its bridged
 devices' radio protocols. Commissioning feature flags alone do not create
 this reading. Hardware status: <strong>untested</strong>.</p>
 <p>Root <code>diagnostics=1</code> enables passive Thread/Wi-Fi diagnostics.
-Device <code>rawReadings=1</code> exposes limited non-sensitive unmatched
-attributes. Both default to off, add no polling, retain existing readings
+Device <code>rawReadings=1</code> exposes selected unmatched attributes,
+which can include vendor-specific data. Both default to off, add no polling, retain existing readings
 on disable, and are <strong>untested</strong> on hardware.</p>
 <a name="MATTERDevice-diagnostic-readings"></a>
 <h4>Diagnostic readings</h4>
@@ -3404,10 +3406,12 @@ vor dem Neustart mit V0.21 wie unten beschrieben entfernen.</p>
       Standard <code>0</code>. Mit <code>1</code> am empfangenden Root oder
       Endpunkt sonst nicht zugeordnete Attribute als
       <code>raw_&lt;Endpunkt&gt;_&lt;Cluster&gt;_&lt;Attribut&gt;</code>-Readings
-      ausgeben. Werte über 512 Zeichen, globale Metadaten und ausgewählte
-      sensitive Verwaltungscluster sind ausgeschlossen. Kein vollständiger
-      Dump und keine Garantie, dass sämtliche Geräteinformationen unkritisch
-      sind. Kein Polling; Abschalten erhält vorhandene Readings.
+      ausgeben. Null-Werte, Attribut-IDs ab 0xFFF0 und die Cluster
+      31, 48, 49, 60, 62, 63, 64 und 65 (dezimal) werden übersprungen.
+      Pro Wert gilt eine Grenze von 512 Zeichen für skalaren Text bzw.
+      512 Bytes für JSON-kodierte Strukturen. Andere Cluster, auch
+      herstellerspezifische, können private Gerätedaten in Readings und
+      Logs sichtbar machen. Kein Polling; Abschalten erhält vorhandene Readings.
       Hardwarestatus: <strong>ungetestet</strong>.</li>
 </ul>
 <h4>Gerätegrenzen als Readings und Umstieg von V0.20</h4>
@@ -3552,8 +3556,8 @@ beschreibt es die Bridge, niemals die Funkprotokolle ihrer eingebundenen
 Geräte. Commissioning-Feature-Flags allein erzeugen dieses Reading nicht.
 Hardwarestatus: <strong>ungetestet</strong>.</p>
 <p>Root-Attribut <code>diagnostics=1</code> aktiviert passive Thread-/WLAN-
-Diagnose. <code>rawReadings=1</code> zeigt begrenzte, nicht sensitive
-unbekannte Attribute. Beides ist standardmäßig aus, verursacht kein Polling,
+Diagnose. <code>rawReadings=1</code> zeigt ausgewählte ungemappte
+Attribute, darunter auch herstellerspezifische Daten. Beides ist standardmäßig aus, verursacht kein Polling,
 löscht vorhandene Readings beim Abschalten nicht und ist an Hardware
 <strong>ungetestet</strong>.</p>
 <a name="MATTERDevice-diagnostic-readings_DE"></a>

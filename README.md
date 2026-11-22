@@ -343,10 +343,13 @@ engine.
   Enabling diagnostics sends no request; reading timestamps advance only
   when values change, and snapshots may contain cached server data.
   `attr <endpoint> rawReadings 1` permits bounded additional readings for
-  otherwise unmapped attributes. Both attributes are off by default.
+  otherwise unmapped attributes. The raw filter skips null values, attribute
+  IDs at or above 0xFFF0 and clusters 31, 48, 49, 60, 62, 63, 64 and 65
+  (decimal). The per-value limit is 512 characters for scalar text or 512
+  bytes for JSON-encoded structures. Both attributes are off by default.
   Deactivating them stops new diagnostic updates but does not delete existing
-  readings. Diagnostic raw data may include device information; avoid
-  exposing or logging it without understanding its content.
+  readings. Unknown and vendor-specific attributes can expose private device
+  information in readings and logs.
 - ICD-capable root nodes expose static `icd_*` capabilities from reported
   attributes. A valid root `Descriptor.ServerList` (`0/29/1`) without cluster
   70 revokes previous ICD support and its commands. Omitted or malformed
