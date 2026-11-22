@@ -1087,11 +1087,11 @@ sub MATTERDevice_Set($$@) {
     }
 
     foreach my $item (@setList) {
-        my ($cmd_name) = split(':', $item);
-        if ($cmd_name eq $cmd) {
-            $valid = 1;
-            last;
-        }
+        my ($cmd_name, $widget) = split(':', $item, 2);
+        next unless $cmd_name eq $cmd;
+        return "Usage: set $name $cmd (no arguments)" if @args && ($widget // '') eq 'noArg';
+        $valid = 1;
+        last;
     }
 
     unless ($valid) {
@@ -1119,7 +1119,6 @@ sub MATTERDevice_Set($$@) {
     }
 
     if ($cmd eq 'checkFirmwareUpdate' || $cmd eq 'updateFirmware') {
-        return "Usage: set $name $cmd" if @args;
         my $op = $cmd eq 'checkFirmwareUpdate' ?
             'check_node_update' : 'update_node';
         my %args;
@@ -1458,7 +1457,6 @@ sub MATTERDevice_Set($$@) {
         };
     }
     elsif ($cmd =~ /^(?:dim_up|dim_down|dim_stop|dim_step_up|dim_step_down)$/) {
-        return "Usage: set $name $cmd (no arguments)" if @args;
         # Use the device's native LevelControl transitions. Never simulate a
         # continuous dim by issuing repeated pct commands from FHEM.
         my ($regular, $with_onoff, $mode);
@@ -3044,6 +3042,7 @@ automated tests model reading restoration.</p></li>
       through FHEM's native <code>Probably associated with</code> navigation.
       User-added associations are preserved. FHEM updates the reference when
       the root device is renamed; no additional HTML navigation is needed.</li>
+  <li>Set commands marked <code>noArg</code> reject additional arguments before sending.</li>
   <li><b>Capabilities:</b> Set commands require a matching endpoint
       <code>AcceptedCommandList</code> entry and applicable
       <code>FeatureMap</code> / <code>ClusterRevision</code> constraints.
@@ -3424,6 +3423,7 @@ Reading-Wiederherstellung.</p></li>
       Root-Knoten über FHEMs nativen Bereich <code>Probably associated with</code>.
       Manuell ergänzte Zuordnungen bleiben erhalten. Beim Umbenennen des Roots
       aktualisiert FHEM die Referenz automatisch; zusätzliches HTML ist nicht nötig.</li>
+  <li>Set-Befehle mit <code>noArg</code> weisen zusätzliche Argumente vor dem Versand ab.</li>
   <li><b>Capabilities:</b> Set-Befehle erfordern einen passenden Eintrag in
       der <code>AcceptedCommandList</code> des jeweiligen Endpunkts sowie
       gegebenenfalls <code>FeatureMap</code>- und

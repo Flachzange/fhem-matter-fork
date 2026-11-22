@@ -1,1 +1,1 @@
-2026-11-22  MATTER V0.32 (#61): Release deleted IO definitions by sending device commands and reads through the existing JSON sender.
+2026-11-22  MATTER V0.33 (#62): Reject surplus arguments for all noArg device setters before registering or sending a request.
