@@ -206,6 +206,8 @@ local *MATTER_SendWebSocketText = sub ($$) {
 # FHEM calls Initialize before Define/CommandAttr; expose the real module AttrList.
 MATTERDevice_Initialize($modules{MATTERDevice} ||= {});
 MATTER_Initialize($modules{MATTER} ||= {});
+ok(!$modules{MATTER}{GetFn}, 'IO registers no get callback');
+is($modules{MATTERDevice}{GetFn}, 'MATTERDevice_Get', 'device get callback stays registered');
 like($modules{MATTER}{AttrList}, qr/(?:^|\s)autocreate:0,1(?:\s|$)/,
      'MATTER IO exposes autocreate as a configurable 0/1 attribute');
 like($modules{MATTER}{AttrList}, qr/(?:^|\s)commissionMode:network,auto(?:\s|$)/,
@@ -576,9 +578,11 @@ is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'online',
 is(ReadingsVal('MATTER_Other_IO_light', 'state', ''), 'offline',
    'same node ID may have a distinct state on another IO');
 $defs{ioA}{helper}{pending_command}{17} = 'get_nodes';
+$defs{ioA}{helper}{pending_config}{18} = { node_id => 42 };
 my $child_state_before_close = ReadingsVal($child->{NAME}, 'state', '');
 MATTER_Close($defs{ioA});
 ok(!exists($defs{ioA}{helper}{pending_command}), 'close clears pending commands');
+ok(!exists($defs{ioA}{helper}{pending_config}), 'close clears pending configuration reads');
 is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'unknown',
    'IO closure invalidates only the owning root status');
 is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
@@ -2527,11 +2531,14 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $recovery_requests[0]{message_id},
     result => {
         '1/6/65529' => [0, 1, 2],
+        '1/6/65533' => 6,
         '1/6/65532' => 0, # No OffOnly feature: On/Toggle are usable.
         '1/6/0' => JSON::true,
         '1/47/12' => 175,
     }
 }));
+is($offline_child->{helper}{capabilities}{6}{cluster_revision}, 6,
+   'capability recovery retains the reported cluster revision');
 ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($offline_child)),
    'recovery restores On setter from an advertised AcceptedCommandList');
 is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'on',
