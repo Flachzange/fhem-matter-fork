@@ -86,7 +86,7 @@ my %MATTER_CLUSTERS = (
             off_only            => 2,
         },
         attributes => {
-            0x0000 => { name => "state", is_reading => 0, is_attribute => 0},
+            0x0000 => { name => "state", is_reading => 0},
         },
         commands   => {
             0x00   => { name => "Off" },
@@ -105,13 +105,13 @@ my %MATTER_CLUSTERS = (
             frequency => 2,
         },
         attributes => {
-            0x0000 => { name => "brightness", is_reading => 1, is_attribute => 0 },
-            0x0002 => { name => "min_brightness", is_reading => 1, is_attribute => 0, limit_range => [0, 254] },
-            0x0003 => { name => "max_brightness", is_reading => 1, is_attribute => 0, limit_range => [0, 254] },
-            0x0004 => { name => "frequency", is_reading => 1, is_attribute => 0, required_features => ["frequency"] },
-            0x0005 => { name => "min_frequency", is_reading => 1, is_attribute => 0, limit_range => [0, 65535], required_features => ["frequency"] },
-            0x0006 => { name => "max_frequency", is_reading => 1, is_attribute => 0, limit_range => [0, 65535], required_features => ["frequency"] },
-            0x4000 => { name => "startup_current_level", is_reading => 1, is_attribute => 0, required_features => ["lighting"] },
+            0x0000 => { name => "brightness", is_reading => 1 },
+            0x0002 => { name => "min_brightness", is_reading => 1, limit_range => [0, 254] },
+            0x0003 => { name => "max_brightness", is_reading => 1, limit_range => [0, 254] },
+            0x0004 => { name => "frequency", is_reading => 1, required_features => ["frequency"] },
+            0x0005 => { name => "min_frequency", is_reading => 1, limit_range => [0, 65535], required_features => ["frequency"] },
+            0x0006 => { name => "max_frequency", is_reading => 1, limit_range => [0, 65535], required_features => ["frequency"] },
+            0x4000 => { name => "startup_current_level", is_reading => 1, required_features => ["lighting"] },
         },
         commands   => {
             0x00   => { name => "MoveToLevel" },
@@ -128,58 +128,58 @@ my %MATTER_CLUSTERS = (
     0x0028 => {
         name       => "BasicInformation",
         attributes => {
-            0x0001 => { name => "producer", is_reading => 1, is_attribute => 0 },
-            0x0002 => { name => "vendor_id", is_reading => 1, is_attribute => 0 },
-            0x0003 => { name => "model", is_reading => 1, is_attribute => 0 },
-            0x0008 => { name => "hardware_version", is_reading => 1, is_attribute => 0 },
-            0x000A => { name => "firmware_version", is_reading => 1, is_attribute => 0 },
-            0x0009 => { name => "software_version", is_reading => 1, is_attribute => 0 },
-            0x000F => { name => "serial_number", is_reading => 1, is_attribute => 0 },
-            0x0015 => { name => "specification_version", is_reading => 1, is_attribute => 0 },
+            0x0001 => { name => "producer", is_reading => 1 },
+            0x0002 => { name => "vendor_id", is_reading => 1 },
+            0x0003 => { name => "model", is_reading => 1 },
+            0x0008 => { name => "hardware_version", is_reading => 1 },
+            0x000A => { name => "firmware_version", is_reading => 1 },
+            0x0009 => { name => "software_version", is_reading => 1 },
+            0x000F => { name => "serial_number", is_reading => 1 },
+            0x0015 => { name => "specification_version", is_reading => 1 },
         },
     },
     0x002F => {
         name       => "PowerSource",
         attributes => {
-            0x0000 => { name => "power_source_status", is_reading => 1, is_attribute => 0 },
-            0x0002 => { name => "power_source_description", is_reading => 1, is_attribute => 0 },
-            0x000B => { name => "battery_voltage_mV", is_reading => 1, is_attribute => 0 },
-            0x000C => { name => "battery_percent", is_reading => 1, is_attribute => 0,
+            0x0000 => { name => "power_source_status", is_reading => 1 },
+            0x0002 => { name => "power_source_description", is_reading => 1 },
+            0x000B => { name => "battery_voltage_mV", is_reading => 1 },
+            0x000C => { name => "battery_percent", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 2 : undef } },
-            0x000D => { name => "battery_time_remaining_s", is_reading => 1, is_attribute => 0 },
-            0x000E => { name => "battery_charge_level", is_reading => 1, is_attribute => 0 },
-            0x000F => { name => "battery_replacement_needed", is_reading => 1, is_attribute => 0 },
-            0x0010 => { name => "battery_replaceability", is_reading => 1, is_attribute => 0 },
-            0x0013 => { name => "battery_replacement_description", is_reading => 1, is_attribute => 0 },
-            0x0014 => { name => "battery_common_designation", is_reading => 1, is_attribute => 0 },
-            0x0018 => { name => "battery_capacity_mAh", is_reading => 1, is_attribute => 0 },
-            0x0019 => { name => "battery_quantity", is_reading => 1, is_attribute => 0 },
+            0x000D => { name => "battery_time_remaining_s", is_reading => 1 },
+            0x000E => { name => "battery_charge_level", is_reading => 1 },
+            0x000F => { name => "battery_replacement_needed", is_reading => 1 },
+            0x0010 => { name => "battery_replaceability", is_reading => 1 },
+            0x0013 => { name => "battery_replacement_description", is_reading => 1 },
+            0x0014 => { name => "battery_common_designation", is_reading => 1 },
+            0x0018 => { name => "battery_capacity_mAh", is_reading => 1 },
+            0x0019 => { name => "battery_quantity", is_reading => 1 },
         },
     },
     0x002A => {
         name       => "OtaSoftwareUpdateRequestor",
         attributes => {
-            0x0002 => { name => "ota_update_state", is_reading => 0, is_attribute => 0 },
-            0x0003 => { name => "ota_update_progress", is_reading => 1, is_attribute => 0 },
+            0x0002 => { name => "ota_update_state", is_reading => 0 },
+            0x0003 => { name => "ota_update_progress", is_reading => 1 },
         },
     },
     0x0046 => {
         name       => "IcdManagement",
         attributes => {
-            0x0000 => { name => "icd_idle_mode_duration", is_reading => 1, is_attribute => 0 },
-            0x0008 => { name => "icd_operating_mode", is_reading => 0, is_attribute => 0 },
+            0x0000 => { name => "icd_idle_mode_duration", is_reading => 1 },
+            0x0008 => { name => "icd_operating_mode", is_reading => 0 },
         },
     },
     0x0045 => {
         name       => "BooleanState",
         attributes => {
-            0x0000 => { name => "boolean_state", is_reading => 1, is_attribute => 0 },
+            0x0000 => { name => "boolean_state", is_reading => 1 },
         },
     },
     0x0400 => {
         name       => "IlluminanceMeasurement",
         attributes => {
-            0x0000 => { name => "illuminance", is_reading => 1, is_attribute => 0,
+            0x0000 => { name => "illuminance", is_reading => 1,
                         transform => sub {
                             my ($v) = @_;
                             return undef if $v != int($v) || $v < 0 || $v >= 65535;
@@ -191,7 +191,7 @@ my %MATTER_CLUSTERS = (
     0x0402 => {
         name       => "TemperatureMeasurement",
         attributes => {
-            0x0000 => { name => "temperature", is_reading => 1, is_attribute => 0,
+            0x0000 => { name => "temperature", is_reading => 1,
                         transform => sub {
                             my ($v) = @_;
                             return undef if $v != int($v) || $v < -27315 || $v > 32767;
@@ -204,7 +204,7 @@ my %MATTER_CLUSTERS = (
         attributes => {
             # Matter MeasuredValue = 10 * pressure [kPa]; numeric value
             # therefore equals pressure in hPa (see Matter spec, 0x0403).
-            0x0000 => { name => "pressure", is_reading => 1, is_attribute => 0,
+            0x0000 => { name => "pressure", is_reading => 1,
                         transform => sub {
                             my ($v) = @_;
                             return undef if $v != int($v) || $v < -32767 || $v > 32767;
@@ -215,7 +215,7 @@ my %MATTER_CLUSTERS = (
     0x0405 => {
         name       => "RelativeHumidityMeasurement",
         attributes => {
-            0x0000 => { name => "humidity", is_reading => 1, is_attribute => 0,
+            0x0000 => { name => "humidity", is_reading => 1,
                         transform => sub {
                             my ($v) = @_;
                             return undef if $v != int($v) || $v < 0 || $v > 10000;
@@ -226,7 +226,7 @@ my %MATTER_CLUSTERS = (
     0x0406 => {
         name       => "OccupancySensing",
         attributes => {
-            0x0000 => { name => "motion", is_reading => 1, is_attribute => 0,
+            0x0000 => { name => "motion", is_reading => 1,
                         transform => sub {
                             my ($v) = @_;
                             return undef if $v != int($v) || $v < 0 || $v > 255;
@@ -237,60 +237,60 @@ my %MATTER_CLUSTERS = (
     0x005B => {
         name       => "Air Quality",
         attributes => {
-            0x0000 => { name => "air_quality", is_reading => 1, is_attribute => 0 },
+            0x0000 => { name => "air_quality", is_reading => 1 },
         },
     },
     0x005C => {
         name       => "SmokeCoAlarm",
         attributes => {
-            0x0000 => { name => "alarm_expressed_state", is_reading => 1, is_attribute => 0 },
-            0x0001 => { name => "smoke_state", is_reading => 1, is_attribute => 0 },
-            0x0002 => { name => "co_state", is_reading => 1, is_attribute => 0 },
-            0x0003 => { name => "alarm_battery", is_reading => 1, is_attribute => 0 },
-            0x0004 => { name => "device_muted", is_reading => 1, is_attribute => 0 },
-            0x0005 => { name => "test_in_progress", is_reading => 1, is_attribute => 0 },
-            0x0006 => { name => "hardware_fault", is_reading => 1, is_attribute => 0 },
-            0x0007 => { name => "end_of_service", is_reading => 1, is_attribute => 0 },
-            0x0008 => { name => "interconnect_smoke_alarm", is_reading => 1, is_attribute => 0 },
-            0x0009 => { name => "interconnect_co_alarm", is_reading => 1, is_attribute => 0 },
+            0x0000 => { name => "alarm_expressed_state", is_reading => 1 },
+            0x0001 => { name => "smoke_state", is_reading => 1 },
+            0x0002 => { name => "co_state", is_reading => 1 },
+            0x0003 => { name => "alarm_battery", is_reading => 1 },
+            0x0004 => { name => "device_muted", is_reading => 1 },
+            0x0005 => { name => "test_in_progress", is_reading => 1 },
+            0x0006 => { name => "hardware_fault", is_reading => 1 },
+            0x0007 => { name => "end_of_service", is_reading => 1 },
+            0x0008 => { name => "interconnect_smoke_alarm", is_reading => 1 },
+            0x0009 => { name => "interconnect_co_alarm", is_reading => 1 },
         },
     },
     0x0090 => {
         name       => "ElectricalPowerMeasurement",
         attributes => {
-            0x0000 => { name => "power_mode", is_reading => 1, is_attribute => 0 },
-            0x0001 => { name => "number_of_measurement_types", is_reading => 1, is_attribute => 0 },
-            0x0004 => { name => "voltage", is_reading => 1, is_attribute => 0,
+            0x0000 => { name => "power_mode", is_reading => 1 },
+            0x0001 => { name => "number_of_measurement_types", is_reading => 1 },
+            0x0004 => { name => "voltage", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x0005 => { name => "current", is_reading => 1, is_attribute => 0,
+            0x0005 => { name => "current", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x0006 => { name => "reactive_current", is_reading => 1, is_attribute => 0,
+            0x0006 => { name => "reactive_current", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x0007 => { name => "apparent_current", is_reading => 1, is_attribute => 0,
+            0x0007 => { name => "apparent_current", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x0008 => { name => "power", is_reading => 1, is_attribute => 0,
+            0x0008 => { name => "power", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x0009 => { name => "reactive_power", is_reading => 1, is_attribute => 0,
+            0x0009 => { name => "reactive_power", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x000A => { name => "apparent_power", is_reading => 1, is_attribute => 0,
+            0x000A => { name => "apparent_power", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x000B => { name => "rms_voltage", is_reading => 1, is_attribute => 0,
+            0x000B => { name => "rms_voltage", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x000C => { name => "rms_current", is_reading => 1, is_attribute => 0,
+            0x000C => { name => "rms_current", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x000D => { name => "rms_power", is_reading => 1, is_attribute => 0,
+            0x000D => { name => "rms_power", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x000E => { name => "frequency", is_reading => 1, is_attribute => 0 },
-            0x0011 => { name => "power_factor", is_reading => 1, is_attribute => 0,
+            0x000E => { name => "frequency", is_reading => 1 },
+            0x0011 => { name => "power_factor", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 10000 : undef } },
-            0x0012 => { name => "neutral_current", is_reading => 1, is_attribute => 0,
+            0x0012 => { name => "neutral_current", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
         },
     },
     0x0091 => {
         name       => "ElectricalEnergyMeasurement",
         attributes => {
-            0x0001 => { name => "energy", is_reading => 1, is_attribute => 0,
+            0x0001 => { name => "energy", is_reading => 1,
                         transform => sub {
                             my ($v) = @_;
                             return undef if !defined($v) || ref($v) ne 'HASH';
@@ -302,63 +302,63 @@ my %MATTER_CLUSTERS = (
     0x040C => {
         name       => "CarbonMonoxideConcentrationMeasurement",
         attributes => {
-            0x0000 => { name => "co_concentration", is_reading => 1, is_attribute => 0 },
-            0x0001 => { name => "co_minimum", is_reading => 1, is_attribute => 0 },
-            0x0002 => { name => "co_maximum", is_reading => 1, is_attribute => 0 },
-            0x0008 => { name => "co_unit", is_reading => 1, is_attribute => 0 },
-            0x0009 => { name => "co_medium", is_reading => 1, is_attribute => 0 },
+            0x0000 => { name => "co_concentration", is_reading => 1 },
+            0x0001 => { name => "co_minimum", is_reading => 1 },
+            0x0002 => { name => "co_maximum", is_reading => 1 },
+            0x0008 => { name => "co_unit", is_reading => 1 },
+            0x0009 => { name => "co_medium", is_reading => 1 },
         },
     },
     0x040D => {
         name       => "CarbonDioxideConcentrationMeasurement",
         attributes => {
-            0x0000 => { name => "co2", is_reading => 1, is_attribute => 0,
+            0x0000 => { name => "co2", is_reading => 1,
                         transform => sub { return $_[0] >= 0 ? $_[0] : undef; } },
-            0x0008 => { name => "co2_unit", is_reading => 1, is_attribute => 0,
+            0x0008 => { name => "co2_unit", is_reading => 1,
                         transform => \&MATTERDevice_ConcentrationUnit },
         },
     },
     0x042A => {
         name       => "Pm25ConcentrationMeasurement",
         attributes => {
-            0x0000 => { name => "pm25", is_reading => 1, is_attribute => 0,
+            0x0000 => { name => "pm25", is_reading => 1,
                         transform => sub { return $_[0] >= 0 ? $_[0] : undef; } },
-            0x0008 => { name => "pm25_unit", is_reading => 1, is_attribute => 0,
+            0x0008 => { name => "pm25_unit", is_reading => 1,
                         transform => \&MATTERDevice_ConcentrationUnit },
         },
     },
     0x042E => {
         name       => "TotalVolatileOrganicCompoundsConcentrationMeasurement",
         attributes => {
-            0x0000 => { name => "tvoc", is_reading => 1, is_attribute => 0,
+            0x0000 => { name => "tvoc", is_reading => 1,
                         transform => sub { return $_[0] >= 0 ? $_[0] : undef; } },
-            0x0008 => { name => "tvoc_unit", is_reading => 1, is_attribute => 0,
+            0x0008 => { name => "tvoc_unit", is_reading => 1,
                         transform => \&MATTERDevice_ConcentrationUnit },
         },
     },
     0x0101 => {
         name       => "Door Lock",
         attributes => {
-            0x0000 => { name => "lock_state", is_reading => 1, is_attribute => 0 },
-            0x0001 => { name => "lock_type", is_reading => 1, is_attribute => 0 },
-            0x0002 => { name => "actuator_enabled", is_reading => 1, is_attribute => 0},
-            0x0003 => { name => "door_state", is_reading => 1, is_attribute => 0 },
-            0x0004 => { name => "door_open_events", is_reading => 1, is_attribute => 0 },
-            0x0005 => { name => "door_close_events", is_reading => 1, is_attribute => 0 },
-            0x0006 => { name => "open_period", is_reading => 1, is_attribute => 0 },
-            0x0011 => { name => "num_total_users_supported", is_reading => 1, is_attribute => 0 },
-            0x0012 => { name => "num_pin_users_supported", is_reading => 1, is_attribute => 0 },
-            0x0013 => { name => "num_rfid_users_supported", is_reading => 1, is_attribute => 0 },
-            0x0014 => { name => "num_week_day_schedule_per_user", is_reading => 1, is_attribute => 0 },
-            0x0015 => { name => "num_year_day_schedule_per_user", is_reading => 1, is_attribute => 0 },
-            0x0016 => { name => "num_holiday_schedules", is_reading => 1, is_attribute => 0 },
-            0x0017 => { name => "max_pin_code_length", is_reading => 1, is_attribute => 0, limit_range => [0, 255] },
-            0x0018 => { name => "min_pin_code_length", is_reading => 1, is_attribute => 0, limit_range => [0, 255] },
-            0x0019 => { name => "max_rfid_code_length", is_reading => 1, is_attribute => 0, limit_range => [0, 255] },
-            0x001A => { name => "min_rfid_code_length", is_reading => 1, is_attribute => 0, limit_range => [0, 255] },
-            0x001B => { name => "credential_rules_support", is_reading => 1, is_attribute => 0 },
-            0x001C => { name => "num_credentials_per_user", is_reading => 1, is_attribute => 0 },
-            0x0021 => { name => "language", is_reading => 1, is_attribute => 0 },
+            0x0000 => { name => "lock_state", is_reading => 1 },
+            0x0001 => { name => "lock_type", is_reading => 1 },
+            0x0002 => { name => "actuator_enabled", is_reading => 1},
+            0x0003 => { name => "door_state", is_reading => 1 },
+            0x0004 => { name => "door_open_events", is_reading => 1 },
+            0x0005 => { name => "door_close_events", is_reading => 1 },
+            0x0006 => { name => "open_period", is_reading => 1 },
+            0x0011 => { name => "num_total_users_supported", is_reading => 1 },
+            0x0012 => { name => "num_pin_users_supported", is_reading => 1 },
+            0x0013 => { name => "num_rfid_users_supported", is_reading => 1 },
+            0x0014 => { name => "num_week_day_schedule_per_user", is_reading => 1 },
+            0x0015 => { name => "num_year_day_schedule_per_user", is_reading => 1 },
+            0x0016 => { name => "num_holiday_schedules", is_reading => 1 },
+            0x0017 => { name => "max_pin_code_length", is_reading => 1, limit_range => [0, 255] },
+            0x0018 => { name => "min_pin_code_length", is_reading => 1, limit_range => [0, 255] },
+            0x0019 => { name => "max_rfid_code_length", is_reading => 1, limit_range => [0, 255] },
+            0x001A => { name => "min_rfid_code_length", is_reading => 1, limit_range => [0, 255] },
+            0x001B => { name => "credential_rules_support", is_reading => 1 },
+            0x001C => { name => "num_credentials_per_user", is_reading => 1 },
+            0x0021 => { name => "language", is_reading => 1 },
         },
         commands   => {
             0x00   => { name => "LockDoor" },
@@ -375,28 +375,28 @@ my %MATTER_CLUSTERS = (
             position_aware_tilt => 4,
         },
         attributes => {
-            0x0000 => { name => "wc_type", is_reading => 1, is_attribute => 0 },
-            0x0001 => { name => "physical_closed_limit_lift", is_reading => 0, is_attribute => 1, required_features => ["lift", "position_aware_lift", "absolute_position"] },
-            0x0002 => { name => "physical_closed_limit_tilt", is_reading => 0, is_attribute => 1, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
-            0x0003 => { name => "current_position_lift", is_reading => 1, is_attribute => 0, required_features => ["lift", "position_aware_lift", "absolute_position"] },
-            0x0004 => { name => "current_position_tilt", is_reading => 1, is_attribute => 0, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
-            0x0005 => { name => "number_of_actuations_lift", is_reading => 1, is_attribute => 0 },
-            0x0006 => { name => "number_of_actuations_tilt", is_reading => 1, is_attribute => 0},
-            0x0007 => { name => "ws_config_status", is_reading => 1, is_attribute => 0},
-            0x0008 => { name => "current_position_lift_percentage", is_reading => 1, is_attribute => 0 },
-            0x0009 => { name => "current_position_tilt_percentage", is_reading => 1, is_attribute => 0 },
-            0x000A => { name => "wc_operational_status", is_reading => 1, is_attribute => 0 },
-            0x000B => { name => "target_position_lift_percent_100_ths", is_reading => 1, is_attribute => 0 },
-            0x000C => { name => "target_position_tilt_percent_100_ths", is_reading => 1, is_attribute => 0 },
-            0x000D => { name => "wc_end_product_type", is_reading => 1, is_attribute => 0},
-            0x000E => { name => "current_position_lift_percent_100_ths", is_reading => 1, is_attribute => 0 },
-            0x000F => { name => "current_position_tilt_percent_100_ths", is_reading => 1, is_attribute => 0 },
-            0x0010 => { name => "installed_open_limit_lift", is_reading => 1, is_attribute => 0, required_features => ["lift", "position_aware_lift", "absolute_position"] },
-            0x0011 => { name => "installed_closed_limit_lift", is_reading => 1, is_attribute => 0, required_features => ["lift", "position_aware_lift", "absolute_position"] },
-            0x0012 => { name => "installed_open_limit_tilt", is_reading => 1, is_attribute => 0, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
-            0x0013 => { name => "installed_closed_limit_tilt", is_reading => 1, is_attribute => 0, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
-            0x0017 => { name => "wc_mode", is_reading => 1, is_attribute => 0 },
-            0x001A => { name => "wc_safety_status", is_reading => 1, is_attribute => 0 },
+            0x0000 => { name => "wc_type", is_reading => 1 },
+            0x0001 => { name => "physical_closed_limit_lift", is_reading => 1, limit_range => [0, 65535], required_features => ["lift", "position_aware_lift", "absolute_position"] },
+            0x0002 => { name => "physical_closed_limit_tilt", is_reading => 1, limit_range => [0, 65535], required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
+            0x0003 => { name => "current_position_lift", is_reading => 1, required_features => ["lift", "position_aware_lift", "absolute_position"] },
+            0x0004 => { name => "current_position_tilt", is_reading => 1, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
+            0x0005 => { name => "number_of_actuations_lift", is_reading => 1 },
+            0x0006 => { name => "number_of_actuations_tilt", is_reading => 1},
+            0x0007 => { name => "ws_config_status", is_reading => 1},
+            0x0008 => { name => "current_position_lift_percentage", is_reading => 1 },
+            0x0009 => { name => "current_position_tilt_percentage", is_reading => 1 },
+            0x000A => { name => "wc_operational_status", is_reading => 1 },
+            0x000B => { name => "target_position_lift_percent_100_ths", is_reading => 1 },
+            0x000C => { name => "target_position_tilt_percent_100_ths", is_reading => 1 },
+            0x000D => { name => "wc_end_product_type", is_reading => 1},
+            0x000E => { name => "current_position_lift_percent_100_ths", is_reading => 1 },
+            0x000F => { name => "current_position_tilt_percent_100_ths", is_reading => 1 },
+            0x0010 => { name => "installed_open_limit_lift", is_reading => 1, required_features => ["lift", "position_aware_lift", "absolute_position"] },
+            0x0011 => { name => "installed_closed_limit_lift", is_reading => 1, required_features => ["lift", "position_aware_lift", "absolute_position"] },
+            0x0012 => { name => "installed_open_limit_tilt", is_reading => 1, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
+            0x0013 => { name => "installed_closed_limit_tilt", is_reading => 1, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
+            0x0017 => { name => "wc_mode", is_reading => 1 },
+            0x001A => { name => "wc_safety_status", is_reading => 1 },
 
         },
         commands => {
@@ -411,27 +411,27 @@ my %MATTER_CLUSTERS = (
         name       => "Thermostat",
         features   => { heating => 0, cooling => 1, auto_mode => 5 },
         attributes => {
-            0x0000 => { name => "measured-temp", is_reading => 1, is_attribute => 0,
+            0x0000 => { name => "measured-temp", is_reading => 1,
                         transform => sub {
                             return undef if $_[0] != int($_[0]) ||
                                             $_[0] < -27315 || $_[0] > 32767;
                             return $_[0] / 100;
                         } },
-            0x0011 => { name => "desired-temp-cool", is_reading => 1, is_attribute => 0,
+            0x0011 => { name => "desired-temp-cool", is_reading => 1,
                         writable => 1, required_features => ['cooling'],
                         transform => sub {
                             return undef if $_[0] != int($_[0]) ||
                                             $_[0] < -27315 || $_[0] > 32767;
                             return $_[0] / 100;
                         } },
-            0x0012 => { name => "desired-temp", is_reading => 1, is_attribute => 0,
+            0x0012 => { name => "desired-temp", is_reading => 1,
                         writable => 1, required_features => ['heating'],
                         transform => sub {
                             return undef if $_[0] != int($_[0]) ||
                                             $_[0] < -27315 || $_[0] > 32767;
                             return $_[0] / 100;
                         } },
-            0x001C => { name => "mode", is_reading => 1, is_attribute => 0,
+            0x001C => { name => "mode", is_reading => 1,
                         writable => 1,
                         transform => sub {
                             my %modes = (0 => 'off', 1 => 'auto', 3 => 'cool',
@@ -444,21 +444,21 @@ my %MATTER_CLUSTERS = (
         name       => "FanControl",
         features   => { auto_mode => 1 },
         attributes => {
-            0x0000 => { name => "fan_mode", is_reading => 1, is_attribute => 0,
+            0x0000 => { name => "fan_mode", is_reading => 1,
                         writable => 1,
                         transform => sub {
                             my %modes = (0 => 'off', 1 => 'low', 2 => 'medium',
                                          3 => 'high', 4 => 'on', 5 => 'auto');
                             return $modes{$_[0]};
                         } },
-            0x0002 => { name => "fan_pct_setting", is_reading => 1, is_attribute => 0,
+            0x0002 => { name => "fan_pct_setting", is_reading => 1,
                         writable => 1,
                         transform => sub {
                             return undef if $_[0] != int($_[0]) ||
                                             $_[0] < 0 || $_[0] > 100;
                             return $_[0];
                         } },
-            0x0003 => { name => "fan_pct", is_reading => 1, is_attribute => 0,
+            0x0003 => { name => "fan_pct", is_reading => 1,
                         transform => sub {
                             return undef if $_[0] != int($_[0]) ||
                                             $_[0] < 0 || $_[0] > 100;
@@ -476,14 +476,14 @@ my %MATTER_CLUSTERS = (
             color_temperature => 4,
         },
         attributes => {
-            0x0000 => { name => "current_hue", is_reading => 1, is_attribute => 0, required_features => ["hue_saturation"] },
-            0x0001 => { name => "current_saturation", is_reading => 1, is_attribute => 0, required_features => ["hue_saturation"] },
-            0x0003 => { name => "current_x", is_reading => 1, is_attribute => 0, required_features => ["xy"] },
-            0x0004 => { name => "current_y", is_reading => 1, is_attribute => 0, required_features => ["xy"] },
-            0x0007 => { name => "color_temperature_mireds", is_reading => 1, is_attribute => 0, required_features => ["color_temperature"] },
-            0x0008 => { name => "color_mode", is_reading => 1, is_attribute => 0 },
-            0x400B => { name => "color_temp_min", is_reading => 1, is_attribute => 0, limit_range => [1, 65279], required_features => ["color_temperature"] },
-            0x400C => { name => "color_temp_max", is_reading => 1, is_attribute => 0, limit_range => [0, 65279], required_features => ["color_temperature"] },
+            0x0000 => { name => "current_hue", is_reading => 1, required_features => ["hue_saturation"] },
+            0x0001 => { name => "current_saturation", is_reading => 1, required_features => ["hue_saturation"] },
+            0x0003 => { name => "current_x", is_reading => 1, required_features => ["xy"] },
+            0x0004 => { name => "current_y", is_reading => 1, required_features => ["xy"] },
+            0x0007 => { name => "color_temperature_mireds", is_reading => 1, required_features => ["color_temperature"] },
+            0x0008 => { name => "color_mode", is_reading => 1 },
+            0x400B => { name => "color_temp_min", is_reading => 1, limit_range => [1, 65279], required_features => ["color_temperature"] },
+            0x400C => { name => "color_temp_max", is_reading => 1, limit_range => [0, 65279], required_features => ["color_temperature"] },
         },
         commands => {
             0x06 => { name => "MoveToHueAndSaturation", required_features => ["hue_saturation"] },
@@ -823,15 +823,6 @@ my ($hash, $arg) = @_;
             if ($modules{MATTERDevice}{defptr}{$key} // '') eq $hash;
     }
     return undef;
-}
-
-# --- Hilfsfunktion zum sauberen Setzen von Attributen (überschreibt User-Werte nicht ungefragt) ---
-sub MATTERDevice_SetAttributeIfNotExists($$$) {
-    my ($name, $attr_name, $val) = @_;
-    if (!defined(AttrVal($name, $attr_name, undef))) {
-        CommandAttr(undef, "$name $attr_name $val");
-        Log3 $name, 4, "MATTERDevice: Auto-set attribute $attr_name = $val for $name";
-    }
 }
 
 # Never interpret string "false" or malformed objects as Matter boolean true.
@@ -2270,7 +2261,6 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
     my $attr_name = $attr_info->{name};
     my $is_reading = $attr_info->{is_reading} // 0;
-    my $is_attribute = $attr_info->{is_attribute} // 0;
     my $transform = $attr_info->{transform};
 
     # Validate reported limit types before boolean coercion or publication.
@@ -2329,9 +2319,6 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
                 $attr_name =~ /^(?:contact|water_leak|rain|motion)$/) {
                 readingsBulkUpdate($hash, 'state', $value);
             }
-        }
-        if ($is_attribute) {
-            MATTERDevice_SetAttributeIfNotExists($name, $attr_name, $value);
         }
         if ($cluster_id == 0x0008 && ($attr_id == 0 || $attr_id == 3)) {
             my $pct = MATTERDevice_Percentage($hash);
@@ -3158,7 +3145,7 @@ one model cannot establish support for all models sharing the cluster.</p>
 <table><tr><th>Device class</th><th>Matter cluster</th><th>Hardware status</th></tr>
 <tr><td>OnOff lights / on-off plugs</td><td>OnOff, LevelControl</td><td><strong>untested</strong></td></tr>
 <tr><td>Color / color-temperature lights</td><td>ColorControl</td><td><strong>untested</strong></td></tr>
-<tr><td>Window coverings / blinds</td><td>WindowCovering</td><td><strong>untested</strong></td></tr>
+<tr><td>Window coverings / blinds</td><td>WindowCovering. Physical lift and tilt limits: <code>physical_closed_limit_lift</code>, <code>physical_closed_limit_tilt</code></td><td><strong>untested</strong></td></tr>
 <tr><td>Thermostats / fans / Identify</td><td>Thermostat, FanControl, Identify</td><td><strong>untested</strong></td></tr>
 <tr><td>Contact / water leak / rain sensors</td><td>BooleanState</td><td><strong>untested</strong></td></tr>
 <tr><td>Temperature / humidity / pressure / illumination</td><td>TemperatureMeasurement, RelativeHumidityMeasurement, PressureMeasurement, IlluminanceMeasurement</td><td><strong>untested</strong></td></tr>
@@ -3545,7 +3532,7 @@ mit demselben Matter-Cluster.</p>
 <table><tr><th>Geräteklasse</th><th>Matter-Cluster</th><th>Hardwarestatus</th></tr>
 <tr><td>Schaltbare Leuchten / Steckdosen</td><td>OnOff, LevelControl</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Farb-/Farbtemperaturleuchten</td><td>ColorControl</td><td><strong>ungetestet</strong></td></tr>
-<tr><td>Rollläden / Jalousien</td><td>WindowCovering</td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Rollläden / Jalousien</td><td>WindowCovering. Physische Schließgrenzen für Hub und Neigung: <code>physical_closed_limit_lift</code>, <code>physical_closed_limit_tilt</code></td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Thermostate / Lüfter / Identify</td><td>Thermostat, FanControl, Identify</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Kontakt-/Wasserleck-/Regensensoren</td><td>BooleanState</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Temperatur / Feuchte / Druck / Beleuchtungsstärke</td><td>TemperatureMeasurement, RelativeHumidityMeasurement, PressureMeasurement, IlluminanceMeasurement</td><td><strong>ungetestet</strong></td></tr>

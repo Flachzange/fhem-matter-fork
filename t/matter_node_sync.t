@@ -4965,4 +4965,30 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     ok($r->{helper}{available}, 'renaming the same IO preserves availability');
 }
 
+{
+    my $io = $defs{coverIO} = {NAME => 'coverIO', TYPE => 'MATTER'};
+    my $original_attr = \&CommandAttr;
+    my @limit_writes;
+    no warnings 'redefine';
+    local *CommandAttr = sub {
+        push @limit_writes, $_[1] if $_[1] =~ /\sphysical_closed_limit_(?:lift|tilt)\s/;
+        return $original_attr->(@_);
+    };
+    MATTER_ProcessNodeList($io, [{node_id => 9802, name => 'CoverLimits', available => JSON::true,
+        attributes => {'1/258/1' => 1250, '1/258/2' => 90, '2/258/2' => 45}}], 'get_nodes');
+    my $ep = 'MATTER_CoverLimits_EP1';
+    is(ReadingsVal($ep, 'physical_closed_limit_lift', undef), 1250, 'discovery publishes lift limit');
+    is(ReadingsVal($ep, 'physical_closed_limit_tilt', undef), 90, 'discovery publishes tilt limit');
+    for my $value (0, undef, 65536) {
+        MATTER_ParseMessage($io, encode_json({event => 'attribute_updated',
+            data => [9802, '1/258/2', $value]}));
+        is(ReadingsVal($ep, 'physical_closed_limit_tilt', undef), 0,
+           'valid zero or subsequent invalid report retains tilt limit zero');
+    }
+    is(ReadingsVal($ep, 'physical_closed_limit_lift', undef), 1250, 'tilt update preserves lift');
+    is(ReadingsVal('MATTER_CoverLimits_EP2', 'physical_closed_limit_tilt', undef), 45,
+       'sibling keeps its reported limit');
+    is_deeply(\@limit_writes, [], 'reports never attempt to configure covering attributes');
+}
+
 done_testing();
