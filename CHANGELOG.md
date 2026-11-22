@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-22  MATTER V0.30 (#59): Expose physical Window Covering lift and tilt limits as endpoint readings.
+
 - 2026-11-22  MATTER V0.29 (#58): Route incoming node reports and read replies to the current IO owner. Moving a root resets its availability and rejects occupied destination IDs.
 
 - 2026-11-22  MATTER V0.28 (#57): Preserve newer node_updated attribute values when applying delayed getConfig replies, including unrelated attributes and capability metadata from the reply.

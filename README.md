@@ -240,7 +240,7 @@ See the embedded DE/EN commandref for per-reading details and
 
 ## Known limitations
 
-- **Window coverings:** supports basic open/close, stop, lift percentage and tilt commands when exposed by the device; not every WindowCovering-cluster function is mapped.
+- **Window coverings:** supports basic open/close, stop, lift percentage and tilt commands when exposed by the device; the endpoint readings `physical_closed_limit_lift` and `physical_closed_limit_tilt` contain the last reported physical limits when available.
 - **Door locks:** basic `lock`/`unlock` commands and selected readings are implemented; management of users, PINs and credentials is not implemented.
 - **Thermostats / fans:** standard attributes, basic desired-temperature/mode and fan-mode/speed commands are supported when advertised. Advanced schedules, manufacturer features and unsupported writable attributes are not implemented.
 - **Transport:** the FHEM IO supports an IPv4 WebSocket connection without built-in TLS or authentication; the network boundary and security requirements are described above.
