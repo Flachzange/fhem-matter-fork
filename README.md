@@ -299,11 +299,21 @@ engine.
   `dim_step_down` and `dim_stop`, if the respective LevelControl commands
   are advertised. Set `attr <device> dimRate 60` for the next continuous move
   (1–254, default 30). These are device-native transitions, not FHEM timers.
-- Thermostat and fan endpoints offer `desired-temp`, `mode`, `fan_mode`
-  and `fan_pct` only when the corresponding standard attributes are
-  advertised. The server response is correlated and a write does not
-  optimistically update the device reading. Standard `identify` requires
-  an advertised Identify command.
+- Thermostat endpoints offer `desired-temp` (heating) and `desired-temp-cool`
+  (cooling) from advertised writable attributes and the corresponding features.
+  Celsius text inputs accept up to two decimals, without an arbitrary 5–30 °C
+  widget range; the device checks its actual limits. `mode` uses thermostat
+  features plus ControlSequenceOfOperation; `fan_mode` uses FanModeSequence
+  plus Auto support. Mode lists require the supplied sequence metadata and
+  do not infer capabilities from current values. Normal snapshots or explicit
+  `getConfig` supply it, without extra probes. Optional thermostat enum support
+  and controller ACLs remain device decisions.
+  `fan_pct` writes PercentSetting, distinct from the reported PercentCurrent.
+  Setter validation uses the same metadata as FHEMWEB. A correlated status
+  reply must match the written path; nonzero Matter status or malformed replies
+  appear in `lastError`. Existing null API acknowledgements remain accepted.
+  Neither acknowledgement updates physical readings. Standard `identify`
+  still requires an advertised command. See [HVAC write evidence](docs/hvac-writes.md).
 - `attr <root> diagnostics 1` enables passive Thread and Wi-Fi diagnostic
   readings, including roles, channels, neighbors and received signal levels.
   These readings exist only on the root and are not mirrored to endpoints.

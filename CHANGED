@@ -1,1 +1,1 @@
-2026-11-22  MATTER IO/Device V0.24: reconcile ICD capability removal from the root ServerList; gate ICD controller commands on current matterjs-server identification and schema >= 12. Preserve partial metadata, response ordering and historical ICD readings.
+2026-11-22  MATTER IO/Device V0.25: add cooling setpoints, device-dependent thermostat/fan mode choices and Celsius text inputs. Validate correlated Matter write statuses and paths; preserve device readings until reports arrive. No additional polling.

@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-22  MATTER IO/Device V0.25 (draft): add feature-gated desired-temp-cool writes; constrain thermostat/fan mode choices using standard writable targets, FeatureMap and operation/mode sequences, shared by FHEMWEB and explicit setters. Replace the arbitrary heating slider with Celsius text inputs. Correlate write status lists with the requested attribute path and reject nonzero/malformed/mismatched results; retain existing null acknowledgements and report-only telemetry. Keep bounded global metadata recovery aware of missing HVAC features. Add focused regression coverage and DE/EN documentation; hardware remains untested.
+
 - 2026-11-22  Tests/documentation (#32): verify existing pressure, CO2, PM2.5 and TVOC readings through snapshots and live reports, valid zero versus null/invalid values, pressure type bounds, sibling endpoints, separately supplied/unknown units and qualitative-only concentration features. No runtime, V0.24, commandref or updater change; hardware remains untested.
 
 - 2026-11-22  Tests/documentation (#30): verify persisted/manual contact, leak, rain, occupancy, temperature, humidity and illuminance readings through INITIALIZED/REREADCFG, offline/online snapshots and live reports. Cover saved DeviceTypeList interpretation, renamed devices, unknown BooleanState types, null/invalid values and same-node multi-IO isolation, including reading write counts. Existing V0.24 module behavior, commandref and updater manifest remain unchanged; real FHEM/configDB/hardware integration remains untested.
