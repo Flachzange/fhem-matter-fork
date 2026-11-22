@@ -844,6 +844,20 @@ sub MATTERDevice_NormalizeMatterId($) {
     return undef;
 }
 
+# A valid empty list revokes all IDs. One malformed element invalidates
+# the entire report, so it cannot partially revoke or grant capabilities.
+sub MATTERDevice_IdSet {
+    my ($value) = @_;
+    return undef unless ref($value) eq 'ARRAY';
+    my %ids;
+    for my $raw (@$value) {
+        my $id = MATTERDevice_NormalizeMatterId($raw);
+        return undef unless defined($id) && $id <= 0xFFFFFFFF;
+        $ids{$id} = 1;
+    }
+    return \%ids;
+}
+
 # Verarbeitet die globalen Matter-Attribute clusterunabhängig und speichert sie
 # pro Endpoint-Device und Cluster. Rückgabe 1 bedeutet: globales Attribut wurde behandelt.
 sub MATTERDevice_ProcessGlobalAttribute($$$$) {
@@ -851,30 +865,12 @@ sub MATTERDevice_ProcessGlobalAttribute($$$$) {
     return 0 if (!exists($MATTER_GLOBAL_ATTRIBUTES{$attr_id}));
 
     my $key = $MATTER_GLOBAL_ATTRIBUTES{$attr_id};
+    my $parsed = $attr_id <= 0xFFFB ? MATTERDevice_IdSet($value)
+                                     : MATTERDevice_NormalizeMatterId($value);
+    return 1 unless defined $parsed;
     my $cap = ($hash->{helper}{capabilities}{$cluster_id} //= {});
     $cap->{present} = 1;
-
-    # Die vier globalen Listen werden einheitlich als Sets gespeichert. Damit
-    # sind AcceptedCommandList, GeneratedCommandList, EventList und AttributeList
-    # über dieselbe generische Abfrage auswertbar.
-    if ($attr_id >= 0xFFF8 && $attr_id <= 0xFFFB) {
-        if (ref($value) eq 'ARRAY') {
-            my %ids;
-            foreach my $raw_id (@{$value}) {
-                my $id = MATTERDevice_NormalizeMatterId($raw_id);
-                $ids{$id} = 1 if (defined($id));
-            }
-            $cap->{$key} = \%ids;
-        }
-    }
-    elsif ($attr_id == 0xFFFC) {
-        my $feature_map = MATTERDevice_NormalizeMatterId($value);
-        $cap->{$key} = $feature_map if (defined($feature_map));
-    }
-    elsif ($attr_id == 0xFFFD) {
-        my $revision = MATTERDevice_NormalizeMatterId($value);
-        $cap->{$key} = $revision if (defined($revision));
-    }
+    $cap->{$key} = $parsed;
 
     # A changed FeatureMap/AttributeList can change the usable brightness
     # scale without another CurrentLevel report (including metadata recovery).
@@ -904,14 +900,7 @@ sub MATTERDevice_ApplyCapabilityMetadata($$;$) {
         my ($ep, $cluster, $attr_id) = (0 + $1, 0 + $2, 0 + $3);
         next if defined($endpoint_only) && $ep != $endpoint_only;
         next unless $targets{$ep} && exists $MATTER_GLOBAL_ATTRIBUTES{$attr_id};
-        my $value = $values->{$path};
-        if ($attr_id >= 0xFFF8 && $attr_id <= 0xFFFB) {
-            next unless ref($value) eq 'ARRAY';
-            next if grep { !defined(MATTERDevice_NormalizeMatterId($_)) } @$value;
-        } else {
-            next unless defined(MATTERDevice_NormalizeMatterId($value));
-        }
-        MATTERDevice_ProcessGlobalAttribute($targets{$ep}, $cluster, $attr_id, $value);
+        MATTERDevice_ProcessGlobalAttribute($targets{$ep}, $cluster, $attr_id, $values->{$path});
     }
 }
 
@@ -2448,13 +2437,27 @@ sub MATTERDevice_Parse($ $;$) {
         # getConfig synchronisiert die Capability-Metadaten der in der Antwort
         # enthaltenen Endpoints vollständig. Alte Cluster-/Command-Daten dürfen
         # nicht erhalten bleiben, wenn sie im aktuellen Datenmodell verschwunden sind.
-        my %result_endpoints;
+        my %reported_lists;
         foreach my $path (keys %{$decoded->{result}}) {
-            $result_endpoints{$1} = 1 if ($path =~ m{^(\d+)/(\d+)/(\d+)$});
+            next unless $path =~ m{^(\d+)/(\d+)/(\d+)$};
+            my ($ep, $cluster, $attr) = ($1, $2, $3);
+            my $lists = ($reported_lists{$ep} //= []);
+            push @$lists, [$cluster, $MATTER_GLOBAL_ATTRIBUTES{$attr}]
+                if $attr >= 0xFFF8 && $attr <= 0xFFFB;
         }
-        foreach my $ep (keys %result_endpoints) {
-            my $target_hash = ($ep == $my_endpoint) ? $hash : MATTERDevice_GetOrCreateChild($hash, $ep);
-            delete $target_hash->{helper}{capabilities} if ($target_hash);
+        foreach my $ep (keys %reported_lists) {
+            my $target = $ep == $my_endpoint ? $hash : MATTERDevice_GetOrCreateChild($hash, $ep);
+            next unless $target;
+            my $previous = delete $target->{helper}{capabilities};
+            # Seed only list paths present in the reply. A valid report replaces
+            # its seed (including []), a malformed one leaves it intact.
+            for my $list (@{$reported_lists{$ep}}) {
+                my ($cluster, $key) = @$list;
+                my $old = $previous->{$cluster}{$key};
+                next unless defined $old;
+                my $cap = ($target->{helper}{capabilities}{$cluster} //= {present => 1});
+                $cap->{$key} = $old;
+            }
         }
 
         for my $path (sort {
@@ -3048,6 +3051,7 @@ automated tests model reading restoration.</p></li>
   <li><b>Capabilities:</b> Set commands require a matching endpoint
       <code>AcceptedCommandList</code> entry and applicable
       <code>FeatureMap</code> / <code>ClusterRevision</code> constraints.
+      A malformed ID list preserves its last valid entries. An explicit empty list clears them.
       Until command metadata arrives, controls are not inferred from values,
       cluster presence or retired <code>has_*</code> settings. A saved
       <code>has_*=0</code> no longer disables a reported command.</li>
@@ -3427,7 +3431,8 @@ Reading-Wiederherstellung.</p></li>
   <li><b>Capabilities:</b> Set-Befehle erfordern einen passenden Eintrag in
       der <code>AcceptedCommandList</code> des jeweiligen Endpunkts sowie
       gegebenenfalls <code>FeatureMap</code>- und
-      <code>ClusterRevision</code>-Bedingungen. Solange die Metadaten fehlen,
+      <code>ClusterRevision</code>-Bedingungen. Bei einer fehlerhaften ID-Liste bleiben die
+      letzten gültigen Einträge erhalten. Eine ausdrücklich leere Liste löscht sie. Solange die Metadaten fehlen,
       werden keine Befehle aus Einzelwerten oder alten <code>has_*</code>-
       Einstellungen abgeleitet. Gespeicherte <code>has_*=0</code>-Werte
       sperren keine gemeldeten Befehle mehr.</li>

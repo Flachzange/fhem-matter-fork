@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-22  MATTER V0.31 (#60): Preserve valid endpoint capability lists across malformed reports and delayed reads. Valid empty lists revoke their entries.
+
 - 2026-11-22  MATTER V0.30 (#59): Expose physical Window Covering lift and tilt limits as endpoint readings.
 
 - 2026-11-22  MATTER V0.29 (#58): Route incoming node reports and read replies to the current IO owner. Moving a root resets its availability and rejects occupied destination IDs.

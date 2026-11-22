@@ -1,1 +1,1 @@
-2026-11-22  MATTER V0.30 (#59): Expose physical Window Covering lift and tilt limits as endpoint readings.
+2026-11-22  MATTER V0.31 (#60): Preserve valid endpoint capability lists across malformed reports and delayed reads. Valid empty lists revoke their entries.

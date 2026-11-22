@@ -4991,4 +4991,68 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     is_deeply(\@limit_writes, [], 'reports never attempt to configure covering attributes');
 }
 
+{
+    my $id;
+    my $io = $defs{listIO} = {NAME => 'listIO', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected', fhem => {helper => {
+            sendWS => sub { $id = JSON::decode_json($_[0])->{message_id}; 1 }
+        }}};
+    MATTER_ProcessNode($io, node(9803, 'ListProbe'));
+    my $root = $defs{MATTER_ListProbe};
+    my $ep = $defs{MATTER_ListProbe_EP1};
+    my $path = '1/6/65529';
+    my $read = sub {
+        is(MATTERDevice_Set($ep, $ep->{NAME}, 'getConfig'), undef, 'queue endpoint read');
+    };
+    my $reply = sub {
+        MATTER_ParseMessage($io, encode_json({message_id => $id, result => $_[0]}));
+    };
+    my $live = sub {
+        MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [9803, $path, $_[0]]}));
+    };
+    my $switches = sub {
+        return [sort grep { /^(?:on|off):/ } MATTERDevice_GetSetList($ep)];
+    };
+    my %routes = (
+        live => $live,
+        discovery => sub { MATTER_ProcessNodeList($io, [{node_id => 9803,
+            attributes => {$path => $_[0], '1/6/0' => JSON::false}}], 'get_nodes') },
+        getConfig => sub { $read->(); $reply->({$path => $_[0], '1/6/0' => JSON::true}) },
+        recovery => sub { MATTERDevice_ApplyCapabilityMetadata($root, {$path => $_[0]}) },
+    );
+    for my $route (sort keys %routes) {
+        my $report = $routes{$route};
+        $report->([0, 1]);
+        is_deeply($switches->(), [qw(off:noArg on:noArg)], "$route accepts both commands");
+        for my $bad ([0, undef], {}, [4294967296], undef) {
+            $report->($bad);
+            is_deeply($switches->(), [qw(off:noArg on:noArg)], "$route preserves the complete valid list");
+        }
+        $report->([0]);
+        is_deeply($switches->(), ['off:noArg'], "$route accepts a shorter list");
+        $report->([]);
+        is_deeply($switches->(), [], "$route accepts explicit revocation");
+    }
+    $read->();
+    $live->([0, undef]);
+    $reply->({$path => [0, 1], '1/6/0' => JSON::false});
+    is_deeply($switches->(), [qw(off:noArg on:noArg)], 'invalid live list cannot supersede valid read');
+    $read->();
+    $reply->({$path => [0, {}], '1/6/0' => JSON::true});
+    is(ReadingsVal($ep->{NAME}, 'state', ''), 'on', 'valid sibling path survives invalid list');
+    $read->();
+    $reply->({'1/6/0' => JSON::true});
+    is_deeply($switches->(), [], 'omitted list is cleared on complete read');
+    my %lists = (65528 => 'generated_commands', 65529 => 'accepted_commands',
+                 65530 => 'event_list', 65531 => 'attribute_list');
+    $read->();
+    $reply->({map { ("1/6/$_" => [0, '0x01']) } keys %lists});
+    $read->();
+    $reply->({map { ("1/6/$_" => [0, {}]) } keys %lists});
+    for my $key (sort values %lists) {
+        is_deeply($ep->{helper}{capabilities}{6}{$key}, {0 => 1, 1 => 1},
+                  "complete read retains the last valid $key");
+    }
+}
+
 done_testing();
