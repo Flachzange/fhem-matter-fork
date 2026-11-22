@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-22  MATTER V0.33 (#62): Reject surplus arguments for all noArg device setters before registering or sending a request.
+
 - 2026-11-22  MATTER V0.32 (#61): Release deleted IO definitions by sending device commands and reads through the existing JSON sender.
 
 - 2026-11-22  MATTER V0.31 (#60): Preserve valid endpoint capability lists across malformed reports and delayed reads. Valid empty lists revoke their entries.

@@ -4810,6 +4810,20 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
         my ($device) = @_;
         return {map {$_ => $device->{READINGS}{$_}} grep {$_ ne 'lastError'} keys %{$device->{READINGS}}};
     };
+    for my $case ([3, 'unlock', 'UnlockDoor'], [1, 'on', 'On']) {
+        my ($endpoint, $cmd, $expected) = @$case;
+        my @requests = $send->($endpoint, $cmd);
+        is_deeply([map { $_->{args}{command_name} } @requests], [$expected],
+                  "$cmd sends exactly the expected Matter command without arguments");
+        $reply->($_->{message_id}, result => undef) for @requests;
+
+        my $sent_before = scalar @sent;
+        my $device = $ep{$endpoint};
+        my $error = MATTERDevice_Set($device, $device->{NAME}, $cmd, 'unexpected');
+        like($error // '', qr/^Usage:.*no arguments/, "$cmd rejects a surplus argument");
+        is(scalar @sent, $sent_before, "invalid $cmd sends no command");
+        is_deeply($io->{helper}{pending_command}, {}, "invalid $cmd leaves no pending request");
+    }
     my %ids;
     for my $case (
         [1,'on'], [1,'off'], [1,'toggle'], [1,'off_with_effect','DelayedAllOff,NoFade'],
