@@ -700,7 +700,7 @@ sub MATTERDevice_UpdateAvailability($$) {
         readingsBulkUpdate($hash, 'state', $state) if $change_state;
         readingsEndUpdate($hash, 1);
     }
-    MATTERDevice_SyncNodeReadings($hash);
+    MATTERDevice_SyncNodeReadings($hash) if $change_available || $change_state;
 }
 
 # CommandAttr calls AttrFn before committing IODev. Reject collisions here;
@@ -2218,9 +2218,10 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
             }
             if (@types) {
                 my $ids = join(',', map { sprintf('0x%04X', $_) } sort { $a <=> $b } @types);
-                readingsSingleUpdate($hash, 'device_type_ids', $ids, 1)
-                    if ReadingsVal($name, 'device_type_ids', '') ne $ids;
-                MATTERDevice_EnsureTypeGroup($hash);
+                if (ReadingsVal($name, 'device_type_ids', '') ne $ids) {
+                    readingsSingleUpdate($hash, 'device_type_ids', $ids, 1);
+                    MATTERDevice_EnsureTypeGroup($hash);
+                }
             }
         }
         return;
@@ -2285,6 +2286,9 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     return if $cluster_id == 0x0008 && $attr_id == 0 &&
               ($value !~ /^\d+$/ || $value > 254);
 
+    my $model_changed = $cluster_id == 0x0028 && $attr_id == 3 &&
+        ($hash->{endpoint_id} // 0) == 0 && (!defined($hash->{READINGS}{model}{VAL}) ||
+        $hash->{READINGS}{model}{VAL} ne $value);
     readingsBeginUpdate($hash);
 
     # Spezieller Fall: OnOff State mappen
@@ -2312,8 +2316,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
     readingsEndUpdate($hash, 1);
     # Model on endpoint 0 identifies the physical node, not a single function.
-    MATTERDevice_SyncNodeReadings($hash)
-        if $cluster_id == 0x0028 && $attr_id == 0x0003 && ($hash->{endpoint_id} // 0) == 0;
+    MATTERDevice_SyncNodeReadings($hash) if $model_changed;
 }
 
 # Mirror fhem.pl Dispatch's receive internals. The context belongs to one
@@ -2878,21 +2881,23 @@ sub MATTERDevice_GetOrCreateChild($$) {
         $child = undef;
     }
 
-    unless ($child) {
-        foreach my $device (values %defs) {
-            next unless ($device->{TYPE} // '') eq 'MATTERDevice';
-            next unless ($device->{node_id} // '') eq $node_id;
-            next unless ($device->{endpoint_id} // -1) == $ep_id;
-            # Rebind an endpoint with a missing runtime IODev only to its
-            # explicitly configured MATTER IO; names are not identities.
-            if ($device->{IODev}) {
-                next unless $device->{IODev}{NAME} eq $io_name;
-            } else {
-                next unless AttrVal($device->{NAME}, 'IODev', '') eq $io_name;
-            }
-            $child = $device;
-            last;
+    if ($child) {
+        $child->{device} = $root_name if ($child->{device} // '') ne $root_name;
+        return $child;
+    }
+    foreach my $device (values %defs) {
+        next unless ($device->{TYPE} // '') eq 'MATTERDevice';
+        next unless ($device->{node_id} // '') eq $node_id;
+        next unless ($device->{endpoint_id} // -1) == $ep_id;
+        # Rebind an endpoint with a missing runtime IODev only to its
+        # explicitly configured MATTER IO; names are not identities.
+        if ($device->{IODev}) {
+            next unless $device->{IODev}{NAME} eq $io_name;
+        } else {
+            next unless AttrVal($device->{NAME}, 'IODev', '') eq $io_name;
         }
+        $child = $device;
+        last;
     }
 
     unless ($child) {

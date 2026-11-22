@@ -5153,4 +5153,41 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     like($log[-1], qr/Invalid JSON object/, 'public ParseFn rejects malformed JSON');
 }
 
+{
+    my $io = $defs{syncIO} = {NAME => 'syncIO', TYPE => 'MATTER'};
+    MATTER_ProcessNode($io, node(9806, 'SyncProbe'));
+    my $root = $defs{MATTER_SyncProbe};
+    my $ep = $defs{MATTER_SyncProbe_EP1};
+    my ($groups, $syncs) = (0, 0);
+    my $group = \&MATTERDevice_EnsureTypeGroup;
+    my $sync = \&MATTERDevice_SyncNodeReadings;
+    no warnings 'redefine';
+    local *MATTERDevice_EnsureTypeGroup = sub ($) { ++$groups; return $group->(@_) };
+    local *MATTERDevice_SyncNodeReadings = sub ($;$) { ++$syncs; return $sync->(@_) };
+    my $report = sub { MATTER_ParseMessage($io, encode_json($_[0])) };
+    $report->({event => 'attribute_updated', data => [9806, '1/8/0', 33]});
+    is_deeply([$groups, $syncs], [0, 0], 'cached live reading skips group and node synchronization');
+    is(ReadingsVal($ep->{NAME}, 'brightness', ''), 33, 'cached endpoint still receives telemetry');
+    my $attributes = {'1/6/0' => JSON::true, '1/8/0' => 44, '1/8/3' => 200};
+    ($groups, $syncs) = (0, 0);
+    $report->({event => 'node_updated', data => {node_id => 9806, available => JSON::true,
+        attributes => $attributes}});
+    is_deeply([$groups, $syncs], [0, 0], 'ordinary node report skips repeated endpoint maintenance');
+    my @cost;
+    for my $values ({'1/8/0' => 44}, $attributes) {
+        ($groups, $syncs) = (0, 0);
+        $io->{helper}{pending_command}{snapshot} = 'get_nodes';
+        $report->({message_id => 'snapshot', result => [{node_id => 9806, attributes => $values}]});
+        push @cost, [$groups, $syncs];
+    }
+    is_deeply($cost[1], $cost[0], 'discovery maintenance is independent of attribute count');
+    $report->({event => 'attribute_updated', data => [9806, '0/40/3', 'New model']});
+    is(ReadingsVal($ep->{NAME}, 'model', ''), 'New model', 'changed root model reaches cached child');
+    ($groups, $syncs) = (0, 0);
+    $report->({event => 'attribute_updated', data => [9806, '0/40/3', 'New model']});
+    is($syncs, 0, 'repeated root model skips endpoint synchronization');
+    $report->({event => 'node_updated', data => {node_id => 9806, available => JSON::false}});
+    is(ReadingsVal($ep->{NAME}, 'available', ''), 'false', 'changed root availability reaches child');
+}
+
 done_testing();
