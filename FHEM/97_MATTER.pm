@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.28 22.11.2026";
+my $MATTER_version = "V0.29 22.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -102,20 +102,20 @@ sub MATTER_Rename {
         next unless ($device->{TYPE} // '') eq 'MATTERDevice';
         my $configured = AttrVal($device->{NAME}, 'IODev', '');
         next unless (($device->{IODev} // '') eq $hash) || $configured eq $old;
+        if (($device->{endpoint_id} // 0) == 0 && ($device->{IODev} // '') eq $hash) {
+            my $node_id = $device->{node_id};
+            my $old_key = "$old:$node_id";
+            delete $modules{MATTERDevice}{defptr}{$old_key}
+                if ($modules{MATTERDevice}{defptr}{$old_key} // '') eq $device;
+            $modules{MATTERDevice}{defptr}{"$new:$node_id"} = $device;
+        }
         if ($configured eq $old || (!$configured && ($device->{IODev} // '') eq $hash)) {
             # A previously auto-assigned client needs an explicit new IODev
             # name so restart cannot silently select a different Matter IO.
             my $error = CommandAttr(undef, "$device->{NAME} IODev $new");
             Log3 $new, 2, "MATTER: Cannot update IODev for $device->{NAME}: $error" if $error;
         }
-        next unless ($device->{endpoint_id} // 0) == 0;
-        my $node_id = $device->{node_id};
-        next unless defined($node_id);
-        my $old_key = "$old:$node_id";
-        delete $modules{MATTERDevice}{defptr}{$old_key}
-            if ($modules{MATTERDevice}{defptr}{$old_key} // '') eq $device;
-        $modules{MATTERDevice}{defptr}{"$new:$node_id"} = $device
-            if ($device->{IODev} // '') eq $hash;
+
     }
     return undef;
 }
@@ -819,13 +819,7 @@ sub MATTER_ProcessNode($$) {
     }
 
     my $root_key = "$io_name:$node_id";
-    my $root = $modules{MATTERDevice}{defptr}{$root_key};
-    if ($root && (!$root->{NAME} || !$defs{$root->{NAME}} || $defs{$root->{NAME}} ne $root ||
-                  ($root->{node_id} // '') ne $node_id || ($root->{endpoint_id} // 0) != 0 ||
-                  !$root->{IODev} || $root->{IODev}{NAME} ne $io_name)) {
-        delete $modules{MATTERDevice}{defptr}{$root_key};
-        $root = undef;
-    }
+    my $root = MATTERDevice_LookupRoot($hash, $node_id);
 
     unless ($root) {
         # Reuse renamed roots by identity, never by the server-provided label.
@@ -871,26 +865,11 @@ sub MATTER_ProcessNode($$) {
             }
         }
 
-        # MATTERDevice_Define uses AssignIoPort by default. Save other IO owners
-        # before defining, as the temporary automatic assignment may reuse their defptr key.
-        my %other_roots;
-        foreach my $existing (values %defs) {
-            next unless ($existing->{TYPE} // '') eq 'MATTERDevice';
-            next unless ($existing->{node_id} // '') eq $node_id && ($existing->{endpoint_id} // 0) == 0;
-            next unless $existing->{IODev};
-            my $existing_io = $existing->{IODev}{NAME};
-            next if $existing_io eq $io_name;
-            $other_roots{"$existing_io:$node_id"} = $existing;
-        }
-
         my $error = CommandDefine(undef, "$device_name MATTERDevice $node_id");
         $root = $defs{$device_name};
         if ($error || !$root || ($root->{TYPE} // '') ne 'MATTERDevice' ||
             ($root->{node_id} // '') ne $node_id || ($root->{endpoint_id} // 0) != 0) {
             Log3 $io_name, 2, "MATTER: Cannot create root $device_name: " . ($error // 'invalid result');
-            foreach my $key (keys %other_roots) {
-                $modules{MATTERDevice}{defptr}{$key} = $other_roots{$key};
-            }
             return;
         }
 
@@ -901,17 +880,11 @@ sub MATTER_ProcessNode($$) {
             Log3 $io_name, 2, "MATTER: IODev assignment failed for $device_name: " .
                 ($attr_error // 'wrong IODev after assignment');
             CommandDelete(undef, $device_name);
-            foreach my $key (keys %other_roots) {
-                $modules{MATTERDevice}{defptr}{$key} = $other_roots{$key};
-            }
             return;
         }
         if ($old_io ne $io_name &&
             ($modules{MATTERDevice}{defptr}{"$old_io:$node_id"} // '') eq $root) {
             delete $modules{MATTERDevice}{defptr}{"$old_io:$node_id"};
-        }
-        foreach my $key (keys %other_roots) {
-            $modules{MATTERDevice}{defptr}{$key} = $other_roots{$key};
         }
 
         my $room_error = CommandAttr(undef, "$device_name room Matter");
@@ -1125,7 +1098,7 @@ sub MATTER_ParseMessage($$) {
                 $endpoint > 0 &&
                 defined($cluster) && !ref($cluster) && $cluster =~ /^\d+$/ &&
                 defined($event_id) && !ref($event_id) && $event_id =~ /^\d+$/) {
-                my $root = $modules{MATTERDevice}{defptr}{"$name:$node_id"};
+                my $root = MATTERDevice_LookupRoot($hash, $node_id);
                 if ($root) {
                     my $received = {};
                     MATTERDevice_RecordReceive($root, $received);
@@ -1141,7 +1114,7 @@ sub MATTER_ParseMessage($$) {
         if ($event eq 'node_removed') {
             if (defined($decoded->{data}) && !ref($decoded->{data}) && $decoded->{data} =~ /^\d+$/) {
                 MATTERDevice_RecordReceive(
-                    $modules{MATTERDevice}{defptr}{"$name:$decoded->{data}"}, {}
+                    MATTERDevice_LookupRoot($hash, $decoded->{data}), {}
                 );
                 MATTER_RecordSnapshotEvent($hash, $decoded->{data}, $event);
                 MATTER_SetNodeStatus($hash, $decoded->{data}, 'removed');
@@ -1163,8 +1136,7 @@ sub MATTER_ParseMessage($$) {
                 MATTER_RecordPendingReadValues($hash, $node_id, $attributes);
             }
             # Wir suchen das Root-Device (Endpoint 0) exakt passend zu DIESEM IO und DIESER Node!
-            my $root_key  = "$name:$node_id";
-            my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
+            my $root_hash = MATTERDevice_LookupRoot($hash, $node_id);
             
             if ($root_hash) {
                 # Das Root-Device verarbeitet das Event (und reicht es an den Endpoint weiter)
@@ -1182,7 +1154,7 @@ sub MATTER_ParseMessage($$) {
         if (my $pending = delete $hash->{helper}{pending_config}{$msg_id}) {
             my $node_id = ref($pending) eq 'HASH' ? $pending->{node_id} : $pending;
             my $received = {};
-            my $owner = $modules{MATTERDevice}{defptr}{"$name:$node_id"};
+            my $owner = MATTERDevice_LookupRoot($hash, $node_id);
             # Correlated replies (including errors/empty results) are received
             # messages even when their device values are blocked or stale.
             # A replacement device must never inherit an old request's traffic.
@@ -1207,44 +1179,40 @@ sub MATTER_ParseMessage($$) {
                         if $endpoints{$child->{endpoint_id}};
                 }
             }
-            if (ref($decoded->{result}) eq 'HASH') {
-                my $root_key = "$name:$node_id";
-                my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
-                if ($root_hash) {
-                    # Replies from another availability generation or a
-                    # replaced root cannot revive obsolete metadata.
-                    if (ref($pending) eq 'HASH') {
-                        return if defined($pending->{root_fuuid}) &&
-                            ($root_hash->{FUUID} // '') ne $pending->{root_fuuid};
-                        return if defined($pending->{availability_epoch}) &&
-                            ($root_hash->{helper}{availability_epoch} // 0) !=
-                            $pending->{availability_epoch};
+            if ($owner && ref($decoded->{result}) eq 'HASH') {
+                # Replies from another availability generation or a
+                # replaced root cannot revive obsolete metadata.
+                if (ref($pending) eq 'HASH') {
+                    return if defined($pending->{root_fuuid}) &&
+                        ($owner->{FUUID} // '') ne $pending->{root_fuuid};
+                    return if defined($pending->{availability_epoch}) &&
+                        ($owner->{helper}{availability_epoch} // 0) !=
+                        $pending->{availability_epoch};
+                }
+                # A newer manual read or live report can complete command
+                # discovery while this automatic read is still pending.
+                # Never let its older reply replace already usable metadata.
+                return if ref($pending) eq 'HASH' &&
+                    $pending->{capability_only} &&
+                    !MATTERDevice_NeedsCapabilityRefresh($owner);
+                my %fresh = %{$decoded->{result}};
+                if (ref($pending) eq 'HASH' && $pending->{live_values}) {
+                    # A later live report supersedes the matching read path.
+                    for my $path (keys %{$pending->{live_values}}) {
+                        $fresh{$path} = $pending->{live_values}{$path};
                     }
-                    # A newer manual read or live report can complete command
-                    # discovery while this automatic read is still pending.
-                    # Never let its older reply replace already usable metadata.
-                    return if ref($pending) eq 'HASH' &&
-                        $pending->{capability_only} &&
-                        !MATTERDevice_NeedsCapabilityRefresh($root_hash);
-                    my %fresh = %{$decoded->{result}};
-                    if (ref($pending) eq 'HASH' && $pending->{live_values}) {
-                        # A later live report supersedes the matching read path.
-                        for my $path (keys %{$pending->{live_values}}) {
-                            $fresh{$path} = $pending->{live_values}{$path};
-                        }
-                    }
-                    if (ref($pending) eq 'HASH' && $pending->{capability_only}) {
-                        # Automatic recovery requested global metadata only.
-                        MATTERDevice_ApplyCapabilityMetadata(
-                            $root_hash, \%fresh,
-                            $pending->{all_endpoints} ? undef :
-                                $pending->{endpoint_id}
-                        ) if keys %fresh;
-                    } else {
-                        MATTERDevice_Parse($root_hash, encode_json({
-                            message_id => $msg_id, result => \%fresh
-                        }), $received) if keys %fresh;
-                    }
+                }
+                if (ref($pending) eq 'HASH' && $pending->{capability_only}) {
+                    # Automatic recovery requested global metadata only.
+                    MATTERDevice_ApplyCapabilityMetadata(
+                        $owner, \%fresh,
+                        $pending->{all_endpoints} ? undef :
+                            $pending->{endpoint_id}
+                    ) if keys %fresh;
+                } else {
+                    MATTERDevice_Parse($owner, encode_json({
+                        message_id => $msg_id, result => \%fresh
+                    }), $received) if keys %fresh;
                 }
             }
             return;
