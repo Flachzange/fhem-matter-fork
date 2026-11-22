@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.27 22.11.2026";
+my $MATTER_version = "V0.28 22.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -974,6 +974,22 @@ sub MATTER_ValidLiveAttribute {
     return 1;
 }
 
+# Keep newer reports with the reads whose endpoints they cover.
+sub MATTER_RecordPendingReadValues {
+    my ($hash, $node_id, $attributes) = @_;
+    return unless ref($attributes) eq 'HASH';
+    foreach my $pending (values %{$hash->{helper}{pending_config} // {}}) {
+        next unless ref($pending) eq 'HASH' && $pending->{node_id} eq $node_id;
+        foreach my $path (keys %$attributes) {
+            next unless MATTER_ValidLiveAttribute($path, $attributes->{$path});
+            my ($endpoint) = split('/', $path);
+            next unless $pending->{all_endpoints} ||
+                (defined($pending->{endpoint_id}) && $pending->{endpoint_id} == $endpoint);
+            $pending->{live_values}{$path} = $attributes->{$path};
+        }
+    }
+}
+
 # Record only fields changed after a discovery request. Partial node_updated
 # events (for example availability-only) must not suppress unrelated endpoint
 # attributes from the older but otherwise useful full snapshot.
@@ -1092,8 +1108,11 @@ sub MATTER_ParseMessage($$) {
         my $event = $decoded->{event};
         if (($event eq 'node_added' || $event eq 'node_updated') && ref($decoded->{data}) eq 'HASH') {
             my $node_id = $decoded->{data}{node_id};
-            MATTER_RecordSnapshotEvent($hash, $node_id, $event, $decoded->{data})
-                if defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/;
+            if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
+                MATTER_RecordSnapshotEvent($hash, $node_id, $event, $decoded->{data});
+                MATTER_RecordPendingReadValues($hash, $node_id, $decoded->{data}{attributes})
+                    if $event eq 'node_updated';
+            }
             MATTER_ProcessNode($hash, $decoded->{data});
             return;
         }
@@ -1138,17 +1157,10 @@ sub MATTER_ParseMessage($$) {
         if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
             my $path = $decoded->{data}[1];
             if (MATTER_ValidLiveAttribute($path, $decoded->{data}[2])) {
+                my $attributes = { $path => $decoded->{data}[2] };
                 MATTER_RecordSnapshotEvent($hash, $node_id, $decoded->{event},
-                    { attributes => { $path => $decoded->{data}[2] } });
-                my ($endpoint) = split('/', $path);
-                foreach my $pending (values %{$hash->{helper}{pending_config} // {}}) {
-                    next unless ref($pending) eq 'HASH' &&
-                        $pending->{node_id} eq $node_id &&
-                        (($pending->{all_endpoints} // 0) ||
-                         (defined($pending->{endpoint_id}) &&
-                          $pending->{endpoint_id} == $endpoint));
-                    $pending->{live_values}{$path} = $decoded->{data}[2];
-                }
+                    { attributes => $attributes });
+                MATTER_RecordPendingReadValues($hash, $node_id, $attributes);
             }
             # Wir suchen das Root-Device (Endpoint 0) exakt passend zu DIESEM IO und DIESER Node!
             my $root_key  = "$name:$node_id";

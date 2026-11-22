@@ -385,7 +385,8 @@ engine.
   Once a valid online report arrives, normal snapshots, `node_updated`
   attributes and live reports are accepted. No additional per-attribute event
   is required. Explicit `getConfig` can update physical values while online.
-  Older read/discovery results cannot replace newer live values; requests from
+  Older read/discovery results preserve newer values reported via `attribute_updated` or
+  `node_updated` for each affected path; requests from
   earlier availability epochs or replaced roots remain rejected.
   Missing commands after a known offline/online transition retain the bounded
   metadata-only recovery (up to three event-driven attempts, 15 seconds apart,
