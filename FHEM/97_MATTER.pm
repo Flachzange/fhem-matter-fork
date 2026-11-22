@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.30 22.11.2026";
+my $MATTER_version = "V0.31 22.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -940,7 +940,7 @@ sub MATTER_ValidLiveAttribute {
         }
         return 1;
     }
-    return ref($value) eq 'ARRAY'
+    return defined(MATTERDevice_IdSet($value))
         if $attribute >= 0xFFF8 && $attribute <= 0xFFFB;
     return !ref($value) && $value =~ /^\d+$/
         if $attribute == 0xFFFC || $attribute == 0xFFFD;
