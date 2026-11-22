@@ -40,6 +40,7 @@
 - Do not silently add mandatory support for device classes or clusters merely because the Matter specification defines them. Extend mappings with focused tests and verified device/server evidence.
 
 - Optional Thread/Wi-Fi diagnostics and unmatched raw Matter attributes must not flood FHEM readings by default. Prefer explicit per-node opt-in, already supplied server attribute reports, bounded formatting and no new periodic polling. Do not mistake server/OTBR-level topology diagnostics for the diagnostic cluster attributes of a Matter endpoint.
+- The basic `networkType` reading is automatic and root-only. Derive it from operational `GeneralDiagnostics.NetworkInterfaces` entries, preserve multiple reported types and unknown values, and never substitute supported commissioning features for an active interface. Do not mirror a bridge's network type to its bridged devices. Keep existing offline/snapshot freshness gates and add no polling.
 - Keep change sets and issues clustered by coherent device behavior (sensor readings, switch events, actuation, diagnostics, OTA), but ensure each change has independently verifiable acceptance criteria; avoid duplicate tickets for the same behavior.
 
 ## Matter-specific regression reminders

@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.21 19.11.2026";
+my $MATTER_version = "V0.22 22.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -965,6 +965,8 @@ sub MATTER_ValidLiveAttribute {
         if $cluster == 6 && $attribute == 0;
     return !ref($value) && $value =~ /^\d+$/ && $value <= 254
         if $cluster == 8 && $attribute == 0;
+    return defined(MATTERDevice_NetworkType($value))
+        if $cluster == 51 && $attribute == 0;
     return ref($value) eq 'ARRAY'
         if $attribute >= 0xFFF8 && $attribute <= 0xFFFB;
     return !ref($value) && $value =~ /^\d+$/
@@ -1118,6 +1120,8 @@ sub MATTER_ParseMessage($$) {
         if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
             my $path = $decoded->{data}[1];
             if (MATTER_ValidLiveAttribute($path, $decoded->{data}[2])) {
+                MATTER_RecordSnapshotEvent($hash, $node_id, $decoded->{event},
+                    { attributes => { $path => $decoded->{data}[2] } });
                 my ($endpoint) = split('/', $path);
                 foreach my $pending (values %{$hash->{helper}{pending_config} // {}}) {
                     next unless ref($pending) eq 'HASH' &&
