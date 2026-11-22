@@ -48,7 +48,7 @@ The original [tostmann/THBR](https://github.com/tostmann/THBR) uses a host-based
 - **Automatic node synchronization:** complete `start_listening` snapshot on connection/reconnection plus `node_added`, `node_updated` and `node_removed` events. Manual `discover` is still available; there is no periodic node polling.
 - **FHEM device management:** optional `autocreate` (enabled by default), collision-safe root/endpoint identities, default room `Matter` for newly created devices, administrative root-node grouping, DeviceTypeList-based endpoint groups and links to endpoints in the root's FHEMWEB details. Existing names, rooms and custom groups are preserved; removed server nodes are marked rather than deleted.
 - **Device commands:** exposed from the relevant Matter command/feature metadata when available, using endpoint `AcceptedCommandList` and applicable Matter feature metadata; old `has_*` settings have no effect. Mappings include on/off, color, window covering, locks, native LevelControl continuous/step dimming, Identify, Thermostat and FanControl where supported.
-- **Device status and measurements:** separate `matter_status` (server membership) and `available` (server-reported reachability); cached device attributes are quarantined while offline, and restored only through fresh live attribute events on recovery. Readings include basic information, battery, smoke/CO, electrical metering, common environmental sensors, BooleanState contacts/leaks, Occupancy and Switch button events.
+- **Device status and measurements:** separate `matter_status` (server membership) and `available` (server-reported reachability); device attributes are blocked while offline or availability is unknown; valid online reports resume normal snapshot and live synchronization. Readings include basic information, battery, smoke/CO, electrical metering, common environmental sensors, BooleanState contacts/leaks, Occupancy and Switch button events.
 - **Network type:** root-only `networkType` reports operational Wi-Fi, Thread, Ethernet or Cellular interfaces from supplied Matter attributes, without extra requests or configuration. Multiple active types remain visible; a bridge's connection is never copied to its bridged endpoints.
 - **Optional diagnostics and maintenance:** `diagnostics=1` and `rawReadings=1` are explicitly opt-in and do not trigger additional polling. ICD metadata is detected passively; compatible roots can query controller-side ICD state. Supported nodes can request a server-backed firmware update check/install without firmware upload or automatic updates.
 - **Commissioning:** manual pairing codes or `MT:` QR payloads, with `network` (IP-only, default) or `auto` (IP and optionally BLE via the Matter server).
@@ -231,9 +231,9 @@ or 50–60 device range is assumed. Lighting uses the Matter maximum level 254;
 other LevelControl endpoints use a usable reported maximum, with protocol
 fallback 254. Brightness, percentage and RGB use the same scale. PIN/RFID lengths
 are informational bytes, not a new credential-management feature. Limits obey
-normal snapshot freshness and offline quarantine rules. During quarantine only
-an accepted brightness report recalculates percentage; limit/metadata recovery
-cannot overwrite manual percentage edits using old brightness. Readings survive ordinary
+normal availability and response-ordering rules. Offline/unknown reports
+cannot update limits or derived percentages. Online level, limit and metadata
+updates may recalculate percentage from reported brightness. Readings survive ordinary
 statefile/configDB restoration. No new polling or automatic reads are added.
 See the embedded DE/EN commandref for per-reading details and
 [protocol evidence](docs/device-limits.md) for source references and test scope.
@@ -262,7 +262,7 @@ with `isOperational=true` participate:
 Multiple types are sorted and deduplicated, for example `ethernet,wifi`;
 unknown active types remain visible alongside known types. The reading is
 absent until the first usable list. Missing, null or malformed lists leave
-the earlier value unchanged. Normal offline/snapshot quarantine applies,
+the earlier value unchanged. Normal availability and response-ordering rules apply,
 and unchanged values do not rewrite the reading. FHEM persists the reading
 normally; its value can be cached and does not establish current reachability
 or the route used by a particular Matter session. The reading stays on the
@@ -279,7 +279,7 @@ Matter roots and endpoints expose FHEM's conventional receive internals:
 look for `matterServer_TIME`. Each incoming message counts once for the root
 and once per addressed endpoint, even with multiple attributes or unchanged
 values. Mirrored root availability alone does not count as endpoint reception.
-Cached/quarantined snapshots and correlated replies, including server errors,
+Cached/blocked snapshots and correlated replies, including server errors,
 also count; this is **server reception, not a physical-device last-seen time**.
 These runtime internals generate no additional reading/DbLog events and reset
 on FHEM restart. An IO rename starts new fields under the new IO name while
@@ -329,27 +329,21 @@ engine.
   update or manufacturer's own update repository is implied. Status
   `update requested` is not proof of installation; the matching new
   software version or OTA device reports are needed.
-- When the server reports `available=false`, cached device attributes and
-  capability snapshots do not overwrite FHEM readings or local edits.
-  After an offline/online transition, live `attribute_updated` reports are
-  accepted, while unrequested cached device-state snapshots remain quarantined.
-  **Exception for command discovery:** FHEM checks whether known endpoints
-  are missing command or write-attribute metadata. Only when needed, it
-  requests the global Matter command/attribute/feature metadata after online
-  recovery, without reading physical device states. Known complete metadata
-  is reused without another request. Incomplete or failed requests can be
-  retried on later events, at least 15 seconds apart and at most three times
-  per recovery period; there is no periodic polling or timer. A matched
-  response may restore setters but cannot overwrite `state`, brightness,
-  battery, sensor values or other device readings. `set <endpoint> getConfig` is also available while the
-  node is online and quarantined; in that case only its global capability
-  metadata is used. An offline node rejects `getConfig`, and replies issued
-  before an intervening offline/online transition are ignored. The server
-  supplies its current advertised command model; FHEM cannot guarantee that
-  these metadata were re-interviewed from the physical device. Existing
-  endpoint identity, associations, IO ownership and reachability continue to
-  synchronize. Rarely reporting physical attributes can remain unchanged
-  until the device sends a fresh live report.
+- Device attributes and `getConfig` require current-session `available=true`.
+  Unknown/offline nodes retain saved values and local corrections. IO loss,
+  node removal and INITIALIZED/REREADCFG invalidate runtime availability;
+  a saved `available` reading alone cannot authorize updates.
+  Once a valid online report arrives, normal snapshots, `node_updated`
+  attributes and live reports are accepted. No additional per-attribute event
+  is required. Explicit `getConfig` can update physical values while online.
+  Older read/discovery results cannot replace newer live values; requests from
+  earlier availability epochs or replaced roots remain rejected.
+  Missing commands after a known offline/online transition retain the bounded
+  metadata-only recovery (up to three event-driven attempts, 15 seconds apart,
+  no polling). Automatic metadata reads are distinct from explicit `getConfig`.
+  FHEM uses the server's reported online data model, without a second per-value
+  freshness policy. Rarely reporting attributes may be cached, as on the server.
+  See [lifecycle behavior and evidence](docs/offline-lifecycle.md).
 
 ## Device-class hardware validation
 
