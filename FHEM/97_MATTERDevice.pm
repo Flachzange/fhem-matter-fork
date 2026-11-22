@@ -1455,6 +1455,7 @@ sub MATTERDevice_Set($$@) {
         };
     }
     elsif ($cmd =~ /^(?:dim_up|dim_down|dim_stop|dim_step_up|dim_step_down)$/) {
+        return "Usage: set $name $cmd (no arguments)" if @args;
         # Use the device's native LevelControl transitions. Never simulate a
         # continuous dim by issuing repeated pct commands from FHEM.
         my ($regular, $with_onoff, $mode);
@@ -1479,7 +1480,7 @@ sub MATTERDevice_Set($$@) {
         if ($regular == 0x01) {
             my $rate = AttrVal($name, 'dimRate', 30);
             return "dimRate must be an integer between 1 and 254"
-                unless defined($rate) && $rate =~ /^\d+$/ && $rate >= 1 && $rate <= 254;
+                unless defined($rate) && !ref($rate) && $rate =~ /\A[0-9]+\z/ && $rate >= 1 && $rate <= 254;
             $arguments->{moveMode} = $mode;
             $arguments->{rate} = int($rate);
         } elsif ($regular == 0x02) {
@@ -1680,34 +1681,50 @@ sub MATTERDevice_Set($$@) {
         my $sendWS = $hash->{IODev}{fhem}{helper}{sendWS};
         return "MATTER: Unable to send brightness command on $name"
             if $level_payload && !$sendWS->(encode_json($level_payload));
-        # FHEM attribute writes are asynchronous. Track the correlated
-        # server reply so a successful socket enqueue is never presented
-        # as a confirmed Matter write.
+        # Correlate attribute writes and native dim commands with server
+        # responses; socket enqueue alone does not confirm physical state.
         my $tracked_write = $payload && ($payload->{command} // '') eq 'write_attribute';
+        my $tracked_dim = $cmd =~ /\A(?:dim_up|dim_down|dim_stop|dim_step_up|dim_step_down)\z/;
+        my $tracked = $tracked_write || $tracked_dim;
         if ($tracked_write) {
             for my $pending (values %{$hash->{IODev}{helper}{pending_command} // {}}) {
                 next unless ref($pending) eq 'HASH' &&
                             ($pending->{type} // '') eq 'node_operation';
+                next if ($pending->{operation} // '') eq 'device_command';
                 return 'Another Matter operation is already pending for this node'
                     if ($pending->{node_id} // '') eq $node_id &&
                        ($pending->{fuuid} // '') eq ($hash->{FUUID} // '');
             }
         }
-        my $id = $tracked_write ? $payload->{message_id} : undef;
-        if ($tracked_write) {
+        # A newer dim command supersedes response tracking for this endpoint,
+        # not the hardware operation. Stop must never wait for a Move reply.
+        my @older_dim;
+        if ($tracked_dim) {
+            @older_dim = grep {
+                my $p = $io_hash->{helper}{pending_command}{$_};
+                ref($p) eq 'HASH' && ($p->{operation} // '') eq 'device_command' &&
+                ($p->{fuuid} // '') eq ($hash->{FUUID} // '') &&
+                ($p->{node_id} // '') eq $node_id &&
+                ($p->{endpoint_id} // -1) == $endpoint_id
+            } keys %{$io_hash->{helper}{pending_command} // {}};
+        }
+        my $id = $tracked ? $payload->{message_id} : undef;
+        if ($tracked) {
             $hash->{IODev}{helper}{pending_command}{$id} = {
-                type => 'node_operation', operation => 'write_attribute',
+                type => 'node_operation', operation => $payload->{command},
                 name => $name, fuuid => $hash->{FUUID}, node_id => $node_id,
-                attribute_path => $payload->{args}{attribute_path},
+                $tracked_write ? (attribute_path => $payload->{args}{attribute_path}) : (),
+                $tracked_dim ? (endpoint_id => $endpoint_id) : (),
                 started_at => gettimeofday(), timeout => 120,
             };
         }
         if ($payload && !$sendWS->(encode_json($payload))) {
             delete $hash->{IODev}{helper}{pending_command}{$id}
-                if $tracked_write;
+                if $tracked;
             return "MATTER: Unable to send device command on $name";
         }
-        return wantarray ? (undef, 1) : undef if $tracked_write;
+        delete $io_hash->{helper}{pending_command}{$_} for @older_dim;
+        return wantarray ? (undef, 1) : undef if $tracked;
     } else {
         return "No send function found in IODev for $name";
     }
@@ -1911,6 +1928,7 @@ sub MATTERDevice_SendNodeOperation {
     for my $pending (values %{$io->{helper}{pending_command} // {}}) {
         next unless ref($pending) eq 'HASH' &&
                     ($pending->{type} // '') eq 'node_operation';
+        next if ($pending->{operation} // '') eq 'device_command';
         return 'Another Matter operation is already pending for this node'
             if ($pending->{node_id} // '') eq $hash->{node_id} &&
                ($pending->{fuuid} // '') eq ($hash->{FUUID} // '');
@@ -1968,7 +1986,7 @@ sub MATTERDevice_HandleNodeOperation {
     my ($hash, $request, $reply) = @_;
     my $cmd = $request->{operation};
     my $reading = $cmd =~ /icd/ ? 'icd_request' :
-                  $cmd eq 'write_attribute' ? 'lastError' : 'firmware_update';
+                  $cmd =~ /\A(?:write_attribute|device_command)\z/ ? 'lastError' : 'firmware_update';
     if (exists($reply->{error_code}) || exists($reply->{error})) {
         if ($cmd eq 'check_node_update') {
             delete $hash->{helper}{firmware_available};
@@ -2049,6 +2067,12 @@ sub MATTERDevice_HandleNodeOperation {
             readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
             readingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
         }
+    } elsif ($cmd eq 'device_command') {
+        # Tracked native Move/Step/Stop commands have no response data.
+        # An API acknowledgement does not report the actual level or motion.
+        readingsSingleUpdate($hash, 'lastError',
+            exists($reply->{result}) && !defined($reply->{result}) ?
+                'none' : 'failed: invalid dim response', 1);
     } elsif ($cmd eq 'write_attribute') {
         my $error = MATTERDevice_WriteResponseError($request, $reply);
         readingsSingleUpdate($hash, 'lastError', defined($error) ? "failed: $error" : 'none', 1);
@@ -3175,7 +3199,19 @@ diagnostics preserves all existing readings.</p>
 <code>dim_step_up</code>, <code>dim_step_down</code> and <code>dim_stop</code>
 only when the corresponding commands are advertised. Optional per-device
 <code>dimRate</code> (1–254, default 30) sets the speed for continuous dimming.
-No FHEM dimming loop. Physical device variants <strong>untested</strong>.</p>
+The commands take no arguments. Steps use 20 native level units with
+transition time zero. Prefer the regular Move/Step/Stop command; use its
+WithOnOff variant only when the regular variant is not advertised. WithOnOff
+may also change on/off state. OptionsMask/Override are zero, leaving device
+options in effect. Correlated server failures, unexpected replies, timeouts
+and disconnects appear in <code>lastError</code>; <code>none</code> after a
+null reply means command acknowledgement, not a reported level or movement.
+Only the latest dim request per endpoint is tracked. A new command, including
+Stop, is sent without waiting for the older reply; older replies are ignored
+after successful enqueue. Timeout is checked by the existing heartbeat after
+120 seconds and means an unknown outcome. There is no automatic retry or
+Stop after timeout/reconnect. Physical readings change only with device
+reports. No FHEM dimming loop. Physical device variants <strong>untested</strong>.</p>
 <p>Additional environmental measurements: pressure (hPa), CO2, PM2.5 and TVOC
 with separately reported measurement units. These classes are
 <strong>untested</strong> on real devices.</p>
@@ -3528,7 +3564,21 @@ Das Abschalten erhält alle vorhandenen Readings.</p>
 <code>dim_step_up</code>, <code>dim_step_down</code> und <code>dim_stop</code>
 nur bei gemeldeten Befehlen. <code>dimRate</code> (1–254, Standard 30) legt
 die Geschwindigkeit für kontinuierliches Dimmen pro Gerät fest. Keine
-FHEM-Dimmschleife; Hardwarevarianten <strong>ungetestet</strong>.</p>
+FHEM-Dimmschleife. Die Befehle nehmen keine Argumente an. Schritte verwenden
+20 native Level-Einheiten mit Übergangszeit null. Move/Step/Stop werden
+bevorzugt; die jeweilige WithOnOff-Variante wird nur verwendet, wenn die
+normale Variante nicht gemeldet ist. WithOnOff kann auch den Schaltzustand
+verändern. OptionsMask/Override bleiben null; die Geräteoptionen gelten.
+Zugeordnete Serverfehler, unerwartete Antworten, Timeouts und Verbindungsabbrüche
+erscheinen in <code>lastError</code>. <code>none</code> nach einer null-Antwort
+bestätigt den Befehl, keinen Helligkeitswert oder eine Bewegung.
+Nur der letzte Dimmauftrag pro Endpoint wird nachverfolgt. Ein neuer Befehl,
+auch Stop, wird ohne Warten auf die ältere Antwort gesendet. Nach erfolgreicher
+Übergabe werden ältere Antworten ignoriert. Die vorhandene Heartbeat-Prüfung
+meldet nach 120 Sekunden einen Timeout mit unbekanntem Ausgang. Kein
+automatisches Wiederholen oder Stoppen nach Timeout/Reconnect. Physische
+Readings ändern sich nur durch Gerätemeldungen. Hardwarevarianten
+<strong>ungetestet</strong>.</p>
 <p>Weitere Umweltmesswerte: Luftdruck (hPa), CO2, PM2.5 und TVOC mit
 separaten, geräteseitig angegebenen Einheiten. Hardwarestatus:
 <strong>ungetestet</strong>.</p>

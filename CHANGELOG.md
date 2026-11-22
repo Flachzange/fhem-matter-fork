@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-22  MATTER IO/Device V0.26 (draft): reject unexpected native-dimming arguments and invalid dimRate values; correlate Move/Step/Stop replies with the endpoint using the existing pending-request lifecycle. Report server errors, invalid replies, timeouts and disconnects in lastError without changing reported state/brightness. Keep only the latest dim request per endpoint and send Stop without waiting for a Move response. Retain advertised regular/WithOnOff selection, fixed steps and no dim timers or automatic retries. Add variant, boundary, endpoint/IO and lifecycle regression coverage plus DE/EN documentation; hardware remains untested.
+
 - 2026-11-22  MATTER IO/Device V0.25 (draft): add feature-gated desired-temp-cool writes; constrain thermostat/fan mode choices using standard writable targets, FeatureMap and operation/mode sequences, shared by FHEMWEB and explicit setters. Replace the arbitrary heating slider with Celsius text inputs. Correlate write status lists with the requested attribute path and reject nonzero/malformed/mismatched results; retain existing null acknowledgements and report-only telemetry. Keep bounded global metadata recovery aware of missing HVAC features. Add focused regression coverage and DE/EN documentation; hardware remains untested.
 
 - 2026-11-22  Tests/documentation (#32): verify existing pressure, CO2, PM2.5 and TVOC readings through snapshots and live reports, valid zero versus null/invalid values, pressure type bounds, sibling endpoints, separately supplied/unknown units and qualitative-only concentration features. No runtime, V0.24, commandref or updater change; hardware remains untested.

@@ -298,7 +298,16 @@ engine.
 - Native dimming commands: `dim_up`, `dim_down`, `dim_step_up`,
   `dim_step_down` and `dim_stop`, if the respective LevelControl commands
   are advertised. Set `attr <device> dimRate 60` for the next continuous move
-  (1–254, default 30). These are device-native transitions, not FHEM timers.
+  (1–254, default 30); the commands themselves take no arguments. Steps use
+  20 native level units with transition time zero. The regular command is
+  preferred; the WithOnOff variant is used only if it is the advertised
+  alternative and may also affect OnOff state. OptionsMask/Override remain
+  zero, leaving the endpoint's configured options in effect.
+  These are device-native transitions, not FHEM timers. Server refusals,
+  unexpected responses, timeouts and connection loss appear in `lastError`.
+  Only the latest dim command per endpoint is tracked; `dim_stop` never waits
+  for a Move reply. A null response acknowledges the command, without
+  confirming brightness or physical motion. See [native dimming](docs/native-dimming.md).
 - Thermostat endpoints offer `desired-temp` (heating) and `desired-temp-cool`
   (cooling) from advertised writable attributes and the corresponding features.
   Celsius text inputs accept up to two decimals, without an arbitrary 5–30 °C

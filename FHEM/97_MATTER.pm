@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.25 22.11.2026";
+my $MATTER_version = "V0.26 22.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -519,10 +519,12 @@ sub MATTER_Close($) {
     for my $op (@incomplete_node_ops) {
         my $device = $defs{$op->{name}};
         next unless $device && ($device->{FUUID} // '') eq ($op->{fuuid} // '') &&
+                    ($device->{node_id} // '') eq ($op->{node_id} // '') &&
+                    (!defined($op->{endpoint_id}) || ($device->{endpoint_id} // 0) == $op->{endpoint_id}) &&
                     $device->{IODev} && $device->{IODev} eq $hash;
         my $reading = ($op->{operation} // '') =~ /icd/ ?
                       'icd_request' :
-                      ($op->{operation} // '') eq 'write_attribute' ?
+                      ($op->{operation} // '') =~ /\A(?:write_attribute|device_command)\z/ ?
                       'lastError' : 'firmware_update';
         readingsSingleUpdate($device, $reading, 'interrupted (outcome unknown)', 1);
     }
@@ -558,10 +560,12 @@ sub MATTER_Heartbeat($) {
         delete $hash->{helper}{pending_command}{$id};
         my $owner = $defs{$p->{name}};
         next unless $owner && ($owner->{FUUID} // '') eq ($p->{fuuid} // '') &&
+                    ($owner->{node_id} // '') eq ($p->{node_id} // '') &&
+                    (!defined($p->{endpoint_id}) || ($owner->{endpoint_id} // 0) == $p->{endpoint_id}) &&
                     $owner->{IODev} && $owner->{IODev} eq $hash;
         my $reading = ($p->{operation} // '') =~ /icd/ ?
                       'icd_request' :
-                      ($p->{operation} // '') eq 'write_attribute' ?
+                      ($p->{operation} // '') =~ /\A(?:write_attribute|device_command)\z/ ?
                       'lastError' : 'firmware_update';
         readingsSingleUpdate($owner, $reading, 'timeout (outcome unknown)', 1);
     }
@@ -1259,6 +1263,7 @@ sub MATTER_ParseMessage($$) {
             if ($owner && ($owner->{TYPE} // '') eq 'MATTERDevice' &&
                 ($owner->{FUUID} // '') eq ($cmd_type->{fuuid} // '') &&
                 ($owner->{node_id} // '') eq ($cmd_type->{node_id} // '') &&
+                (!defined($cmd_type->{endpoint_id}) || ($owner->{endpoint_id} // 0) == $cmd_type->{endpoint_id}) &&
                 $owner->{IODev} && $owner->{IODev} eq $hash) {
                 my $received = {};
                 MATTERDevice_RecordReceive(

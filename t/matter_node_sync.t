@@ -4311,4 +4311,199 @@ subtest 'Issue 33: HVAC capabilities, cooling writes and correlated Matter statu
     MATTER_Close($other);
 };
 
+subtest 'Issue 34: native dim variants, latest command replies and lifecycle' => sub {
+    my @requests;
+    my %peers;
+    my $connect = sub {
+        my ($io) = @_;
+        socketpair(my $socket, my $peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die 'dim socketpair';
+        $peers{$io->{NAME}} = $peer;
+        $io->{CD} = $socket; $io->{FD} = fileno($socket);
+        $io->{websocket} = 1; $io->{ws_status} = 'connected';
+        $io->{fhem}{helper}{sendWS} = sub {push @requests, JSON::decode_json($_[0]); return 1;};
+    };
+    my $io = $defs{ioDim} = {NAME => 'ioDim', TYPE => 'MATTER', READINGS => {}, helper => {}};
+    my $other = $defs{ioDimOther} = {NAME => 'ioDimOther', TYPE => 'MATTER', READINGS => {}, helper => {}};
+    $connect->($_) for ($io, $other);
+    my $values = {};
+    my @commands = ([1, 2, 3], [5, 6, 7], [1, 2, 3, 5, 6, 7], [0, 4], [1], [7]);
+    for my $ep (1..6) {
+        $values->{"$ep/8/65529"} = $commands[$ep - 1];
+        $values->{"$ep/8/65531"} = [0];
+        $values->{"$ep/8/65532"} = 0;
+        $values->{"$ep/8/0"} = 100;
+        $values->{"$ep/6/0"} = JSON::true;
+    }
+    for my $target ($io, $other) {
+        MATTER_ProcessNode($target, {node_id => 6600, name => 'DimMatrix', available => JSON::true, attributes => $values});
+    }
+    my $root = $modules{MATTERDevice}{defptr}{'ioDim:6600'};
+    my $other_root = $modules{MATTERDevice}{defptr}{'ioDimOther:6600'};
+    my %ep = map {$_->{endpoint_id} => $_} MATTERDevice_NodeChildren($root);
+    my %other_ep = map {$_->{endpoint_id} => $_} MATTERDevice_NodeChildren($other_root);
+    my $list = sub {return join(' ', MATTERDevice_GetSetList($_[0]));};
+    my $send = sub {
+        my ($endpoint, $cmd) = @_;
+        my @result = MATTERDevice_Set($ep{$endpoint}, $ep{$endpoint}{NAME}, $cmd);
+        is_deeply(\@result, [undef, 1], "$cmd accepted without a synthetic FHEM command event");
+        return $requests[-1]{message_id};
+    };
+    my $reply = sub {
+        my ($id, %response) = @_;
+        MATTER_ParseMessage($io, encode_json({message_id => $id, %response}));
+    };
+    my $pending = sub {return scalar keys %{$io->{helper}{pending_command} // {}};};
+    unlike($list->($root), qr/dim_/, 'root does not borrow endpoint dim commands');
+    unlike($list->($ep{4}), qr/dim_/, 'MoveToLevel alone does not authorize Move, Step or Stop');
+    like($list->($ep{5}), qr/dim_up:noArg/, 'Move-only endpoint offers continuous dimming');
+    unlike($list->($ep{5}), qr/dim_stop:|dim_step_/, 'Move does not imply Stop or Step support');
+    like($list->($ep{6}), qr/dim_stop:noArg/, 'advertised StopWithOnOff is usable without a prior local Move');
+    unlike($list->($ep{6}), qr/dim_up:|dim_down:|dim_step_/, 'Stop does not imply movement commands');
+    for my $case ([1, 'Move', 'Step', 'Stop'], [2, 'MoveWithOnOff', 'StepWithOnOff', 'StopWithOnOff'], [3, 'Move', 'Step', 'Stop']) {
+        my ($endpoint, $move, $step, $stop) = @$case;
+        my $timers = scalar @timers;
+        for my $item (['dim_up', $move, {moveMode => 0, rate => 30}],
+                      ['dim_down', $move, {moveMode => 1, rate => 30}],
+                      ['dim_step_up', $step, {stepMode => 0, stepSize => 20, transitionTime => 0}],
+                      ['dim_step_down', $step, {stepMode => 1, stepSize => 20, transitionTime => 0}],
+                      ['dim_stop', $stop, {}]) {
+            my ($cmd, $command, $fields) = @$item;
+            my $id = $send->($endpoint, $cmd);
+            is_deeply($requests[-1]{args}, {node_id => 6600, endpoint_id => $endpoint,
+                cluster_id => 8, command_name => $command,
+                payload => {optionsMask => 0, optionsOverride => 0, %$fields}},
+                "$cmd endpoint $endpoint selects the advertised command and exact Matter payload");
+            $reply->($id, result => undef);
+            is(ReadingsVal($ep{$endpoint}{NAME}, 'lastError', ''), 'none', 'null response is a command acknowledgement');
+        }
+        is(scalar(@timers), $timers, 'native movement adds no FHEM dim timer');
+        is(ReadingsVal($ep{$endpoint}{NAME}, 'brightness', ''), 100, 'command acknowledgements do not change reported brightness');
+        is(ReadingsVal($ep{$endpoint}{NAME}, 'state', ''), 'on', 'command acknowledgements do not change physical on/off state');
+    }
+    for my $cmd (qw(dim_up dim_down dim_step_up dim_step_down dim_stop)) {
+        my $before = scalar @requests;
+        like(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, $cmd, '50') // '', qr/Usage:.*no arguments/, "$cmd rejects an unexpected value");
+        is(scalar(@requests), $before, 'invalid argument sends nothing');
+    }
+    for my $rate ('0', '-1', '255', '1.5', 'x', '', "30\n") {
+        $attr{$ep{1}{NAME}}{dimRate} = $rate;
+        my $before = scalar @requests;
+        like(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'dim_up') // '', qr/dimRate must be/, 'invalid configured rate is rejected');
+        is(scalar(@requests), $before, 'invalid rate sends nothing');
+    }
+    for my $rate (1, 254) {
+        $attr{$ep{1}{NAME}}{dimRate} = $rate;
+        my $id = $send->(1, 'dim_up');
+        is($requests[-1]{args}{payload}{rate}, $rate, 'inclusive dimRate boundary is encoded unchanged');
+        $reply->($id, result => undef);
+    }
+    # Stop and Step use no rate, so a bad configured Move rate cannot prevent a Stop.
+    $attr{$ep{1}{NAME}}{dimRate} = 'invalid';
+    my $stop = $send->(1, 'dim_stop');
+    $reply->($stop, result => undef);
+    delete $attr{$ep{1}{NAME}}{dimRate};
+
+    my $move = $send->(1, 'dim_up');
+    $stop = $send->(1, 'dim_stop');
+    is($requests[-1]{args}{command_name}, 'Stop', 'Stop sends immediately while Move has no reply');
+    ok(!exists($io->{helper}{pending_command}{$move}), 'newer dim command retires older response tracking');
+    ok(exists($io->{helper}{pending_command}{$stop}), 'latest dim command remains tracked');
+    $reply->($stop, error_code => 8, details => 'synthetic device refusal');
+    like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/failed: synthetic device refusal/, 'server refusal is reported on the endpoint');
+    $reply->($move, result => undef);
+    like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/failed:/, 'late Move acknowledgement cannot clear newer Stop failure');
+    unlike(ReadingsVal($ep{1}{NAME}, 'firmware_update', ''), qr/failed:/, 'dim errors do not appear as firmware status');
+
+    for my $bad ({}, {result => {}}, {result => []}, {result => 0}, {result => JSON::true}) {
+        my $id = $send->(1, 'dim_stop');
+        $reply->($id, %$bad);
+        like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/failed: invalid dim response/, 'missing or unexpected response data is not an acknowledgement');
+    }
+    my $first = $send->(1, 'dim_up');
+    my $second = $send->(2, 'dim_down');
+    is($pending->(), 2, 'separate endpoints have independent latest commands');
+    $reply->($first, result => undef);
+    ok(exists($io->{helper}{pending_command}{$second}), 'one endpoint reply leaves the other pending');
+    $reply->($second, result => undef);
+    for (1..20) {$send->(1, 'dim_up');}
+    is($pending->(), 1, 'repeated dim commands keep one pending entry per endpoint');
+    $reply->($requests[-1]{message_id}, result => undef);
+
+    my $id = $send->(1, 'dim_up');
+    my $send_ok = $io->{fhem}{helper}{sendWS};
+    $io->{fhem}{helper}{sendWS} = sub {return 0;};
+    like(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'dim_stop') // '', qr/Unable to send/, 'failed enqueue returns a synchronous error');
+    ok(exists($io->{helper}{pending_command}{$id}), 'failed Stop enqueue preserves pending Move tracking');
+    is($pending->(), 1, 'failed enqueue leaves no phantom Stop request');
+    $io->{fhem}{helper}{sendWS} = $send_ok;
+    $reply->($id, result => undef);
+
+    $id = $send->(1, 'dim_stop');
+    MATTER_ParseMessage($other, encode_json({message_id => $id, result => undef}));
+    ok(exists($io->{helper}{pending_command}{$id}), 'same request ID on another IO cannot consume this command');
+    is(ReadingsVal($other_ep{1}{NAME}, 'lastError', 'absent'), 'absent', 'another IO with the same node and endpoint receives no dim status');
+    # Exercise response decoding through the real socket/frame parser as well.
+    my $json = encode_json({message_id => $id, result => undef});
+    my $wire = pack('CC', 0x81, length($json)) . $json;
+    is(syswrite($peers{$io->{NAME}}, $wire), length($wire), 'inject a complete WebSocket response');
+    MATTER_Read($io);
+    is($pending->(), 0, 'framed response is correlated and retired');
+    is(ReadingsVal($ep{1}{NAME}, 'lastError', ''), 'none', 'framed acknowledgement clears the latest command error');
+
+    for my $field (qw(FUUID node_id endpoint_id)) {
+        $id = $send->(1, 'dim_stop');
+        my $original = $ep{1}{$field};
+        $ep{1}{$field} = $field eq 'FUUID' ? 'replacement-uuid' : $original + 1;
+        readingsSingleUpdate($ep{1}, 'lastError', 'ownership sentinel', 1);
+        $reply->($id, result => undef);
+        is(ReadingsVal($ep{1}{NAME}, 'lastError', ''), 'ownership sentinel', "reply cannot update changed $field ownership");
+        $ep{1}{$field} = $original;
+    }
+
+    MATTER_ProcessNode($io, {node_id => 6600, attributes => {
+        '1/514/65531' => [2], '1/514/2' => 40}});
+    $id = $send->(1, 'dim_up');
+    is(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'fan_pct', 50), undef,
+       'tracking a dim reply does not introduce a lock for an unrelated setter');
+    my $write_id = $requests[-1]{message_id};
+    ok(exists($io->{helper}{pending_command}{$id}), 'unrelated write does not cancel the dim request');
+    $reply->($write_id, result => undef);
+    $stop = $send->(1, 'dim_stop');
+    $reply->($stop, result => undef);
+
+    # Metadata removal immediately changes the menu and direct SetFn permission.
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [6600, '1/8/65529', [3]]}));
+    unlike($list->($ep{1}), qr/dim_up:|dim_down:|dim_step_/, 'capability replacement removes unsupported movement commands');
+    my $before = scalar @requests;
+    like(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'dim_up') // '', qr/Unknown argument/, 'explicit unsupported Move is rejected');
+    is(scalar(@requests), $before, 'unsupported explicit command sends nothing');
+    $id = $send->(1, 'dim_stop');
+    $io->{helper}{pending_command}{$id}{started_at} = gettimeofday() - 121;
+    delete $io->{helper}{pending_pong};
+    MATTER_Heartbeat($io);
+    like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/timeout \(outcome unknown\)/, 'existing heartbeat reports command timeout without claiming motion stopped');
+    $reply->($id, result => undef);
+    like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/timeout/, 'timed-out command cannot later clear its error');
+    is(ReadingsVal($ep{1}{NAME}, 'brightness', ''), 100, 'timeout retains the last reported physical brightness');
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [6600, '1/8/0', 120]}));
+    is(ReadingsVal($ep{1}{NAME}, 'brightness', ''), 120, 'actual level report is still accepted after timeout');
+    is(MATTERDevice_Set($other_ep{1}, $other_ep{1}{NAME}, 'dim_up'), undef, 'same-node command can run independently on another IO');
+    my $other_id = $requests[-1]{message_id};
+    $id = $send->(1, 'dim_stop');
+    MATTER_Close($io);
+    like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/interrupted \(outcome unknown\)/, 'disconnect reports the unknown outcome on the endpoint');
+    ok(exists($other->{helper}{pending_command}{$other_id}), 'closing one IO preserves the other IO command');
+    MATTER_ParseMessage($other, encode_json({message_id => $other_id, result => undef}));
+    is(ReadingsVal($other_ep{1}{NAME}, 'lastError', ''), 'none', 'other IO response still reaches its own endpoint');
+    $connect->($io);
+    $reply->($id, result => undef);
+    like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/interrupted/, 'old reply after reconnect cannot confirm the interrupted command');
+    $id = $send->(1, 'dim_stop');
+    $reply->($id, result => undef);
+    is(ReadingsVal($ep{1}{NAME}, 'lastError', ''), 'none', 'new command works after reconnect');
+    MATTER_Close($io);
+    like(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'dim_stop') // '', qr/No active WebSocket/, 'disconnected Stop is rejected instead of pretending to stop');
+    MATTER_Close($other);
+};
+
 done_testing();
