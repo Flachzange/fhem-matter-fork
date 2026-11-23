@@ -507,6 +507,7 @@ sub MATTERDevice_Initialize($) {
     $hash->{FW_detailFn} = "MATTERDevice_FWDetail";
     $hash->{FW_deviceOverview} = 1; # Keep FHEMWEB DeviceOverview above the endpoint links.
     $hash->{AttrList} = "IODev " .
+                        "readOnly:0,1 " .
                         "dimRate:slider,1,1,254 " .
                         "diagnostics:0,1 " .
                         "rawReadings:0,1 " .
@@ -708,6 +709,13 @@ sub MATTERDevice_UpdateAvailability($$) {
 # the global ATTR event below observes the pointer actually installed by FHEM.
 sub MATTERDevice_Attr {
     my ($op, $name, $attr, $value) = @_;
+    if ($op eq 'set' && $attr eq 'readOnly') {
+        return 'readOnly is only supported on endpoints (endpoint_id > 0)'
+            unless ($defs{$name}{endpoint_id} // 0) > 0;
+        return 'readOnly must be 0 or 1'
+            unless defined($value) && $value =~ /\A[01]\z/;
+        return undef;
+    }
     return unless $op eq 'set' && $attr eq 'IODev';
     my $root = $defs{$name};
     return unless ($root->{endpoint_id} // 0) == 0;
@@ -1070,9 +1078,22 @@ sub MATTERDevice_CommandRequest {
     return { command => 'device_command', args => $args };
 }
 
+# A local control policy, independent of reported Matter capabilities. Reads,
+# incoming reports and completion of already-sent commands remain unchanged.
+sub MATTERDevice_ReadOnlyError {
+    my ($hash) = @_;
+    return undef unless ($hash->{endpoint_id} // 0) > 0 &&
+                        AttrVal($hash->{NAME}, 'readOnly', 0);
+    return "MATTER: $hash->{NAME} is read-only (readOnly=1); control commands blocked";
+}
+
 sub MATTERDevice_Set($$@) {
     my ($hash, $name, $cmd, @args) = @_;
 
+    if ($cmd ne '?' && $cmd ne 'getConfig') {
+        my $error = MATTERDevice_ReadOnlyError($hash);
+        return $error if defined $error;
+    }
     my @setList = MATTERDevice_GetSetList($hash);
     my $list_str = join(" ", @setList);
     my $valid = 0;
@@ -1676,6 +1697,8 @@ sub MATTERDevice_RootCapabilityReport {
 # emit several API requests (RGB); all belong to one diagnostic result.
 sub MATTERDevice_SendRequests {
     my ($hash, $requests, $reading, $timeout) = @_;
+    my $blocked = MATTERDevice_ReadOnlyError($hash);
+    return $blocked if defined $blocked;
     my $io = $hash->{IODev};
     return "MATTER: No active WebSocket connection for $hash->{NAME}"
         unless $io && $io->{CD} && $io->{websocket} &&
@@ -1706,12 +1729,17 @@ sub MATTERDevice_SendRequests {
     # Install ownership before send: a callback may complete or close the IO.
     $hash->{helper}{latest_request}{$reading} = $group;
     for my $i (0 .. $#$requests) {
-        next if MATTER_SendJsonCommand($io, $requests->[$i]);
+        # A synchronous reply can trigger a notify which enables readOnly
+        # between components of a compound setter. Do not send its remainder.
+        $blocked = MATTERDevice_ReadOnlyError($hash);
+        next if !defined($blocked) && MATTER_SendJsonCommand($io, $requests->[$i]);
         for my $unsent ($i .. $#ids) {
             my $request = delete $io->{helper}{pending_command}{$ids[$unsent]};
             MATTERDevice_CompleteRequest($io, $request, undef,
-                'failed: unable to send device command') if $request;
+                defined($blocked) ? "failed: $blocked" :
+                    'failed: unable to send device command') if $request;
         }
+        return $blocked if defined $blocked;
         return "MATTER: Unable to send device command on $hash->{NAME}";
     }
     return undef;
@@ -2380,6 +2408,7 @@ sub MATTERDevice_ProcessMessage {
 
 sub MATTERDevice_GetSetList($) {
     my ($hash) = @_;
+    return ('getConfig:noArg') if defined MATTERDevice_ReadOnlyError($hash);
     my $name = $hash->{NAME};
     my @list;
     my %seen;
@@ -2875,7 +2904,7 @@ automated tests model reading restoration.</p></li>
 </ul>
 <h4>Attributes</h4>
 <p>Select an attribute in FHEMWEB to show its description. Active device
-settings are <code>IODev</code>, <code>dimRate</code>, <code>diagnostics</code>
+settings are <code>IODev</code>, <code>readOnly</code>, <code>dimRate</code>, <code>diagnostics</code>
 and <code>rawReadings</code>. Device limits are readings, not configurable
 attributes. Remove saved limit attributes before restarting into V0.21,
 as described below.</p>
@@ -2888,6 +2917,20 @@ as described below.</p>
       specific to their server. Moving a root to another IO resets its state to
       unknown until that server reports availability. An occupied target ID
       is rejected. Each endpoint retains its own IODev assignment.</li>
+  <li><a id="MATTERDevice-attr-readOnly"></a><b>readOnly (0/1):</b>
+      Default <code>0</code>. On endpoints greater than 0, <code>1</code>
+      blocks all control commands and attribute writes from FHEM, including
+      Identify and Stop. Only <code>getConfig</code> remains in the set list;
+      direct control calls return an error, including calls from automations.
+      Readings, events, receive internals and capability reads continue normally.
+      Commands already sent retain their normal response handling and cannot
+      be recalled. If enabled between components of a compound command, only
+      the unsent remainder is blocked. Setting <code>0</code> or deleting the
+      attribute restores controls without additional reads or command replay.
+      The attribute is rejected on root nodes; it does not propagate to other
+      endpoints. It does not block root administration, other controllers,
+      direct server access or physical buttons and cannot guarantee that an
+      actuator stays on. Hardware validation: <strong>untested</strong>.</li>
   <li><a id="MATTERDevice-attr-dimRate"></a><b>dimRate:</b> Integer
       <code>1</code>–<code>254</code>, default <code>30</code>. Native
       LevelControl move rate in level units per second for the next
@@ -3257,7 +3300,7 @@ Reading-Wiederherstellung.</p></li>
 </ul>
 <h4>Attribute</h4>
 <p>Bei Auswahl eines Attributs in FHEMWEB erscheint dessen Beschreibung.
-Aktive Geräteeinstellungen sind <code>IODev</code>, <code>dimRate</code>,
+Aktive Geräteeinstellungen sind <code>IODev</code>, <code>readOnly</code>, <code>dimRate</code>,
 <code>diagnostics</code> und <code>rawReadings</code>. Gerätegrenzen sind
 Readings und keine konfigurierbaren Attribute. Gespeicherte Grenzwertattribute
 vor dem Neustart mit V0.21 wie unten beschrieben entfernen.</p>
@@ -3270,6 +3313,22 @@ vor dem Neustart mit V0.21 wie unten beschrieben entfernen.</p>
       gelten jeweils nur innerhalb ihres Servers. Nach dem Wechsel eines Roots
       bleibt sein Zustand unknown, bis der neue Server die Erreichbarkeit meldet.
       Eine belegte Ziel-ID wird abgewiesen. Endpunkte behalten ihr eigenes IODev.</li>
+  <li><a id="MATTERDevice-attr-readOnly"></a><b>readOnly (0/1):</b>
+      Standard <code>0</code>. Mit <code>1</code> an Endpunkten größer 0
+      sämtliche Steuerbefehle und Attributschreibzugriffe aus FHEM sperren,
+      einschließlich Identify und Stop. In der Set-Auswahl bleibt nur
+      <code>getConfig</code>; direkte Steueraufrufe liefern auch aus
+      Automatisierungen eine Fehlermeldung. Readings, Ereignisse,
+      Empfangs-Internals und Capability-Abfragen laufen unverändert weiter.
+      Bereits versendete Befehle werden regulär zugeordnet und lassen sich
+      nicht zurücknehmen. Bei Aktivierung zwischen Teilen eines mehrteiligen
+      Befehls wird nur der noch nicht versendete Rest gesperrt.
+      <code>0</code> oder Löschen des Attributs gibt die Steuerung ohne
+      zusätzliche Abfragen oder Befehlswiederholung frei. Am Root wird das
+      Attribut abgewiesen; andere Endpunkte sind unabhängig. Root-Verwaltung,
+      andere Controller, direkter Serverzugriff und physische Taster werden
+      nicht gesperrt; ein dauerhaft eingeschalteter Aktor wird nicht garantiert.
+      Hardwarestatus: <strong>ungetestet</strong>.</li>
   <li><a id="MATTERDevice-attr-dimRate"></a><b>dimRate:</b> Ganzzahl
       <code>1</code>–<code>254</code>, Standard <code>30</code>. Native
       LevelControl-Geschwindigkeit in Level-Einheiten pro Sekunde für den

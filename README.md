@@ -196,11 +196,26 @@ Supported MATTER IO attributes include `disable:0,1`, `autocreate:0,1` (default 
 
 A malformed capability list preserves the previous valid list for that endpoint and cluster. An explicit empty list clears its entries.
 
-MATTERDevice attributes include `IODev`, optional `diagnostics` / `rawReadings`, `dimRate`; device limits are readings rather than attributes. Commands are offered only when the endpoint advertises them in its Matter `AcceptedCommandList` and satisfies the relevant `FeatureMap` constraints. The module records the reported `ClusterRevision` as metadata. Set commands advertised as `noArg` reject additional arguments before sending. Old `has_*` settings no longer enable or disable commands; they are not automatically created or deleted. After restart, control commands may be temporarily absent until the Matter server reports command metadata. **Upgrade note:** review and remove saved `has_*` attributes **before restarting into V0.18**. FHEM no longer recognizes them in the module `AttrList` and may reject those lines when restoring `fhem.cfg` or configDB. No automatic migration deletes old user settings. After the manual cleanup, save the configuration as usual.
+MATTERDevice attributes include `IODev`, `readOnly:0,1`, optional `diagnostics` / `rawReadings`, `dimRate`; device limits are readings rather than attributes. Commands are offered only when the endpoint advertises them in its Matter `AcceptedCommandList` and satisfies the relevant `FeatureMap` constraints. The module records the reported `ClusterRevision` as metadata. Set commands advertised as `noArg` reject additional arguments before sending. Old `has_*` settings no longer enable or disable commands; they are not automatically created or deleted. After restart, control commands may be temporarily absent until the Matter server reports command metadata. **Upgrade note:** review and remove saved `has_*` attributes **before restarting into V0.18**. FHEM no longer recognizes them in the module `AttrList` and may reject those lines when restoring `fhem.cfg` or configDB. No automatic migration deletes old user settings. After the manual cleanup, save the configuration as usual.
 
 Selecting a module-specific attribute in FHEMWEB displays its German/English
-inline commandref help. Active MATTERDevice settings are `IODev`, `dimRate`,
+inline commandref help. Active MATTERDevice settings are `IODev`, `readOnly`, `dimRate`,
 `diagnostics` and `rawReadings`.
+
+**Endpoint control protection:** `readOnly:0,1` defaults to `0`. Set
+`readOnly=1` on a functional endpoint to block all its control commands and
+attribute writes from FHEM, including automation calls, Identify and Stop.
+The set list then offers only `getConfig`; direct control calls return an
+explicit error. Readings, events, receive internals and capability reads
+continue normally. Setting `0` or deleting the attribute restores the current
+capability-based controls without another read or replaying blocked commands.
+Already-sent commands retain normal completion handling; enabling protection
+between compound command components blocks only the unsent remainder.
+Roots reject the attribute and do not propagate it. Other endpoints,
+root administration, other Matter controllers, direct server access and physical
+buttons remain independent. This is protection against accidental FHEM control,
+not a guarantee that an actuator stays on. Endpoint `disable` is a separate
+proposed feature (#78), not part of this implementation.
 
 **V0.21 transition: device limits are readings.** The ten names
 `min_brightness`, `max_brightness`, `min_frequency`, `max_frequency`,
@@ -409,6 +424,12 @@ models, firmware and specific functions before changing that label.
 ## Development and tests
 
 `prove -v t/matter_node_sync.t` runs modeled FHEM callback tests and WebSocket socketpair tests (including fragmented TCP delivery, large frames, node identity, capability handling, commissioning and endpoint synchronization). `.github/workflows/perl-tests.yml` runs those Perl tests in CI. The suite tests module behavior against simulated peers, not physical device behavior.
+
+The readOnly regression for #77 covers all existing endpoint setter families,
+internal command/write callers, compound sends, explicit/automatic reads,
+continued reports/events, completion of prior commands, attribute restoration,
+and endpoint/multi-IO isolation. Tests model FHEM callbacks and server replies;
+live FHEM/configDB and hardware validation remain **untested**.
 
 The sensor lifecycle regression for #30 covers retained/manual readings after
 modeled restoration, INITIALIZED/REREADCFG, offline/online snapshots and live

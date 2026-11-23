@@ -1,1 +1,1 @@
-2026-11-22  MATTER V0.37 (#66): Remove the empty IO get callback and unused capability and disconnect code.
+2026-11-23  MATTER V0.38 (#77): Add readOnly protection for endpoint controls while reads, reports and events continue.

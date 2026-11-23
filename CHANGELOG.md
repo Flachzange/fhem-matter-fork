@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-23  MATTER V0.38 (#77): Add endpoint-only readOnly control protection with central command/write enforcement, dynamic set lists and preserved reads, reports, events and in-flight completions. Block unsent compound components if protection is enabled during a synchronous callback. Add focused regression coverage and DE/EN attribute help; hardware untested.
+
 - 2026-11-22  MATTER V0.37 (#66): Remove the empty IO get callback and unused capability and disconnect code.
 
 - 2026-11-22  MATTER V0.36 (#65): Consolidate device command construction and RGB brightness scaling.
