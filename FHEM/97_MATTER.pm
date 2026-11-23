@@ -901,30 +901,8 @@ sub MATTER_ProcessNode($$;$) {
 sub MATTER_ValidLiveAttribute {
     my ($path, $value) = @_;
     return 0 unless defined($path) && !ref($path) &&
-        $path =~ m{^\d+/(\d+)/(\d+)$} && defined($value);
-    my ($cluster, $attribute) = ($1, $2);
-    return defined(MATTERDevice_NormalizeBoolean($value))
-        if $cluster == 6 && $attribute == 0;
-    return !ref($value) && $value =~ /^\d+$/ && $value <= 254
-        if $cluster == 8 && $attribute == 0;
-    return defined(MATTERDevice_NetworkType($value))
-        if $cluster == 51 && $attribute == 0;
-    return !ref($value) && $value =~ /\A\d+\z/ && $value <= 5
-        if ($cluster == 513 && $attribute == 27) ||
-           ($cluster == 514 && $attribute == 1);
-    if ($cluster == 29 && $attribute == 1) {
-        return 0 unless ref($value) eq 'ARRAY';
-        for my $entry (@$value) {
-            my $id = MATTERDevice_NormalizeMatterId($entry);
-            return 0 unless defined($id) && $id <= 0xFFFFFFFF;
-        }
-        return 1;
-    }
-    return defined(MATTERDevice_IdSet($value))
-        if $attribute >= 0xFFF8 && $attribute <= 0xFFFB;
-    return !ref($value) && $value =~ /^\d+$/
-        if $attribute == 0xFFFC || $attribute == 0xFFFD;
-    return 1;
+        $path =~ m{^(\d+)/(\d+)/(\d+)$} && defined($value);
+    return defined MATTERDevice_AttributeValue($2, $3, $value, $1);
 }
 
 # Keep newer reports with the reads whose endpoints they cover.
@@ -1117,7 +1095,7 @@ sub MATTER_ParseMessage($$) {
         my ($node_id, undef, undef) = @{$decoded->{data}};
         if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
             my $path = $decoded->{data}[1];
-            if (MATTER_ValidLiveAttribute($path, $decoded->{data}[2])) {
+            if (defined($path) && !ref($path) && $path =~ m{^\d+/\d+/\d+$}) {
                 my $attributes = { $path => $decoded->{data}[2] };
                 MATTER_RecordSnapshotEvent($hash, $node_id, $decoded->{event},
                     { attributes => $attributes });

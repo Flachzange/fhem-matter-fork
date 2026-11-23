@@ -5836,4 +5836,72 @@ subtest 'Issue 81: explicit reads belong to the requesting endpoint instance' =>
     ok(!exists($defs{DuringReadReplacement}{READINGS}{state}), 'root read remains scoped to endpoint zero');
 };
 
+subtest 'Issue 82: only accepted values supersede pending reads and snapshots' => sub {
+    my @sent;
+    my $io = $defs{valueIO} = {NAME => 'valueIO', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected', test_send_text => sub {push @sent, JSON::decode_json($_[0]); 1}};
+    my @cases = (
+        [1, 1026, 0, 2000, -32768, 2200, 'temperature', 22],
+        [2, 1029, 0, 4000, 65535, 5000, 'humidity', 50],
+        [3, 1030, 0, 1, -1, 0, 'motion', 'nomotion'],
+        [4, 69, 0, JSON::true, 'false', JSON::false, 'boolean_state', 0],
+        [5, 768, 16395, 153, 0, 200, 'color_temp_min', 200],
+        [6, 1037, 8, 0, 255, 1, 'co2_unit', 'ppb'],
+    );
+    MATTER_ProcessNode($io, {node_id => 99120, name => 'ValueProbe', available => JSON::true,
+        attributes => {map {("$_->[0]/$_->[1]/$_->[2]" => $_->[3])} @cases}});
+    my $root = MATTERDevice_LookupRoot($io, 99120);
+    my %ep = map {$_->{endpoint_id} => $_} MATTERDevice_NodeChildren($root);
+    for my $row (@cases) {
+        my ($endpoint, $cluster, $attribute, $initial, $invalid, $fresh, $reading, $expected) = @$row;
+        my $path = "$endpoint/$cluster/$attribute";
+        for my $event (qw(attribute_updated node_updated)) {
+            MATTER_ProcessNode($io, {node_id => 99120, attributes => {$path => $initial}});
+            MATTERDevice_Set($ep{$endpoint}, $ep{$endpoint}{NAME}, 'getConfig');
+            my $id = $sent[-1]{message_id};
+            my $writes = $single_writes{$ep{$endpoint}{NAME}}{$reading} // 0;
+            MATTER_ParseMessage($io, encode_json($event eq 'attribute_updated'
+                ? {event => $event, data => [99120, $path, $invalid]}
+                : {event => $event, data => {node_id => 99120, attributes => {$path => $invalid}}}));
+            is($single_writes{$ep{$endpoint}{NAME}}{$reading} // 0, $writes, "$event rejects invalid $reading without a write");
+            MATTER_ParseMessage($io, encode_json({message_id => $id, result => {$path => $fresh}}));
+            is(ReadingsVal($ep{$endpoint}{NAME}, $reading, ''), $expected, "invalid $event cannot suppress valid read of $reading");
+        }
+        MATTER_ProcessNode($io, {node_id => 99120, attributes => {$path => $initial}});
+        MATTER_Set($io, $io->{NAME}, 'discover');
+        my $id = $sent[-1]{message_id};
+        MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {node_id => 99120, attributes => {$path => $invalid}}}));
+        MATTER_ParseMessage($io, encode_json({message_id => $id, result => [{node_id => 99120,
+            available => JSON::true, attributes => {$path => $fresh}}]}));
+        is(ReadingsVal($ep{$endpoint}{NAME}, $reading, ''), $expected, "invalid sensor report cannot mask discovery of $reading");
+    }
+    MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'getConfig');
+    my $id = $sent[-1]{message_id};
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99120, '1/1026/0', 2400]}));
+    MATTER_ParseMessage($io, encode_json({message_id => $id, result => {'1/1026/0' => 2100, '1/47/12' => 100}}));
+    is(ReadingsVal($ep{1}{NAME}, 'temperature', ''), 24, 'valid newer value still wins');
+    is(ReadingsVal($ep{1}{NAME}, 'battery_percent', ''), 50, 'unrelated response data is preserved');
+    CommandAttr(undef, "$root->{NAME} diagnostics 1");
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99120, '0/54/4', -70]}));
+    MATTER_Set($io, $io->{NAME}, 'discover');
+    my $diag_id = $sent[-1]{message_id};
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99120, '0/54/4', 'invalid']}));
+    MATTER_ParseMessage($io, encode_json({message_id => $diag_id, result => [{node_id => 99120,
+        available => JSON::true, attributes => {'0/54/4' => -60}}]}));
+    is(ReadingsVal($root->{NAME}, 'wifi_rssi', ''), -60, 'diagnostics use the same acceptance rule before snapshot masking');
+    my $writes = $single_writes{$ep{1}{NAME}}{temperature};
+    my $timers = scalar @timers;
+    is(MATTERDevice_AttributeValue(1026, 0, 2500), 25, 'shared conversion returns the publishable value');
+    ok(!defined(MATTERDevice_AttributeValue(1026, 0, -32768)), 'shared conversion rejects invalid sentinel');
+    is($single_writes{$ep{1}{NAME}}{temperature}, $writes, 'pure validation does not publish readings');
+    is(scalar @timers, $timers, 'pure validation creates no timers');
+    ok(!defined(MATTERDevice_AttributeValue(70, 8, 99)), 'ICD mode validity is shared with freshness');
+    ok(!defined(MATTERDevice_AttributeValue(42, 2, 99)), 'invalid OTA state cannot supersede a valid response');
+    CommandAttr(undef, "$ep{1}{NAME} rawReadings 1");
+    my $interfaces = [{isOperational => JSON::true, type => 1}];
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99120, '1/51/0', $interfaces]}));
+    is_deeply(JSON::decode_json(ReadingsVal($ep{1}{NAME}, 'raw_1_51_0', 'null')), $interfaces,
+        'root-only network interpretation leaves unmatched child raw structs intact');
+};
+
 done_testing();

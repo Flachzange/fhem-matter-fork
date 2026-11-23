@@ -160,15 +160,15 @@ my %MATTER_CLUSTERS = (
     0x002A => {
         name       => "OtaSoftwareUpdateRequestor",
         attributes => {
-            0x0002 => { name => "ota_update_state", is_reading => 0 },
-            0x0003 => { name => "ota_update_progress", is_reading => 1 },
+            0x0002 => { name => "ota_update_state", is_reading => 0, value_range => [0, 8] },
+            0x0003 => { name => "ota_update_progress", is_reading => 1, value_range => [0, 100] },
         },
     },
     0x0046 => {
         name       => "IcdManagement",
         attributes => {
-            0x0000 => { name => "icd_idle_mode_duration", is_reading => 1 },
-            0x0008 => { name => "icd_operating_mode", is_reading => 0 },
+            0x0000 => { name => "icd_idle_mode_duration", is_reading => 1, value_range => [0, 4294967295] },
+            0x0008 => { name => "icd_operating_mode", is_reading => 0, value_range => [0, 1] },
         },
     },
     0x0045 => {
@@ -962,17 +962,67 @@ sub MATTERDevice_IdSet {
     return \%ids;
 }
 
+# Pure conversion shared by freshness tracking and attribute publication.
+# undef means rejected; valid zero and empty ID sets remain valid values.
+sub MATTERDevice_AttributeValue {
+    my ($cluster, $attribute, $value, $endpoint) = @_;
+    $endpoint //= 0;
+    return undef unless defined $value;
+    if (exists $MATTER_GLOBAL_ATTRIBUTES{$attribute}) {
+        return $attribute <= 0xFFFB ? MATTERDevice_IdSet($value)
+                                    : MATTERDevice_NormalizeMatterId($value);
+    }
+    return MATTERDevice_IdSet($value) if $cluster == 29 && $attribute == 1;
+    if ($cluster == 29 && $attribute == 0) {
+        return undef unless ref($value) eq 'ARRAY';
+        my %types;
+        for my $entry (@$value) {
+            next unless ref($entry) eq 'HASH';
+            my $id = MATTERDevice_NormalizeMatterId(
+                $entry->{deviceType} // $entry->{device_type} // $entry->{'0'});
+            $types{$id} = 1 if defined($id) && $id <= 0xFFFFFFFF;
+        }
+        return keys(%types) ? join(',', map { sprintf('0x%04X', $_) }
+            sort {$a <=> $b} keys %types) : undef;
+    }
+    return MATTERDevice_NetworkType($value) if $endpoint == 0 && $cluster == 51 && $attribute == 0;
+    return MATTERDevice_NetworkDiagnosticValues($cluster, $attribute, $value)
+        if $endpoint == 0 && ($cluster == 53 || $cluster == 54);
+    if (($cluster == 513 && $attribute == 27) || ($cluster == 514 && $attribute == 1)) {
+        return !ref($value) && $value =~ /\A\d+\z/ && $value <= 5 ? 0 + $value : undef;
+    }
+    my $model = $MATTER_CLUSTERS{$cluster};
+    my $info = $model && $model->{attributes} ? $model->{attributes}{$attribute} : undef;
+    return $value unless $info; # Unmapped/raw values have no guessed schema.
+    if (my $range = $info->{limit_range} // $info->{value_range}) {
+        return undef unless !ref($value) && $value =~ /\A[0-9]+\z/ &&
+            $value >= $range->[0] && $value <= $range->[1];
+    }
+    my $boolean = MATTERDevice_NormalizeBoolean($value);
+    $value = $boolean if blessed($value) && defined($boolean);
+    if (my $transform = $info->{transform}) {
+        return undef if $cluster != 0x0091 &&
+            (ref($value) || $value !~ /\A-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?\z/);
+        $value = $transform->($value);
+    }
+    return undef if !defined($value) || ref($value);
+    return MATTERDevice_NormalizeBoolean($value)
+        if ($cluster == 6 || $cluster == 69) && $attribute == 0;
+    return undef if $cluster == 8 && $attribute == 0 &&
+        ($value !~ /\A\d+\z/ || $value > 254);
+    return $value;
+}
+
 # Verarbeitet die globalen Matter-Attribute clusterunabhängig und speichert sie
-# pro Endpoint-Device und Cluster. Rückgabe 1 bedeutet: globales Attribut wurde behandelt.
+# pro Endpoint/Cluster. Rückgabe ist der übernommene Wert, undef bei Ablehnung.
 sub MATTERDevice_ProcessGlobalAttribute($$$$) {
     my ($hash, $cluster_id, $attr_id, $value) = @_;
-    return 0 if (!exists($MATTER_GLOBAL_ATTRIBUTES{$attr_id}));
-    return 1 if MATTERDevice_IsDisabled($hash);
+    return undef if !exists($MATTER_GLOBAL_ATTRIBUTES{$attr_id}) || MATTERDevice_IsDisabled($hash);
 
     my $key = $MATTER_GLOBAL_ATTRIBUTES{$attr_id};
-    my $parsed = $attr_id <= 0xFFFB ? MATTERDevice_IdSet($value)
-                                     : MATTERDevice_NormalizeMatterId($value);
-    return 1 unless defined $parsed;
+    my $parsed = MATTERDevice_AttributeValue($cluster_id, $attr_id, $value);
+    return undef unless defined $parsed;
+    $hash->{helper}{seen_clusters}{$cluster_id} = 1;
     my $cap = ($hash->{helper}{capabilities}{$cluster_id} //= {});
     $cap->{present} = 1;
     $cap->{$key} = $parsed;
@@ -985,7 +1035,7 @@ sub MATTERDevice_ProcessGlobalAttribute($$$$) {
             if defined($pct) && ReadingsVal($hash->{NAME}, 'pct', '') ne "$pct";
     }
 
-    return 1;
+    return $parsed;
 }
 
 # Automatic command recovery applies structural metadata only. Explicit
@@ -1658,10 +1708,8 @@ sub MATTERDevice_NetworkType {
 }
 
 # Opt-in passive diagnostics: no additional server reads or polling.
-sub MATTERDevice_UpdateNetworkDiagnostics {
-    my ($hash, $cluster, $attr, $value) = @_;
-    return unless ($hash->{endpoint_id} // 0) == 0 &&
-                  AttrVal($hash->{NAME}, 'diagnostics', 0);
+sub MATTERDevice_NetworkDiagnosticValues {
+    my ($cluster, $attr, $value) = @_;
     my %readings;
     if ($cluster == 53) {
         if ($attr == 0 && defined($value) && !ref($value) &&
@@ -1713,7 +1761,14 @@ sub MATTERDevice_UpdateNetworkDiagnostics {
              $value >= -128 && $value <= 0) {
         $readings{wifi_rssi} = $value;
     }
-    while (my ($reading, $val) = each %readings) {
+    return keys(%readings) ? \%readings : undef;
+}
+
+sub MATTERDevice_UpdateNetworkDiagnostics {
+    my ($hash, $readings) = @_;
+    return unless ($hash->{endpoint_id} // 0) == 0 &&
+                  AttrVal($hash->{NAME}, 'diagnostics', 0);
+    while (my ($reading, $val) = each %$readings) {
         readingsSingleUpdate($hash, $reading, $val, 1)
             if ReadingsVal($hash->{NAME}, $reading, '') ne "$val";
     }
@@ -1755,14 +1810,8 @@ sub MATTERDevice_RootCapabilityReport {
     if ($cluster == 29 && $attr == 1) {
         # ServerList is a complete list even in a partial node report.
         # An omitted list or any malformed entry cannot revoke support.
-        return unless ref($value) eq 'ARRAY';
-        my ($supported, $ota) = (0, 0);
-        for my $entry (@$value) {
-            my $id = MATTERDevice_NormalizeMatterId($entry);
-            return unless defined($id) && $id <= 0xFFFFFFFF;
-            $supported = 1 if $id == 70;
-            $ota = 1 if $id == 42;
-        }
+        return unless ref($value) eq 'HASH';
+        my ($supported, $ota) = ($value->{70}, $value->{42});
         if ($ota) {
             $hash->{helper}{seen_clusters}{42} = 1;
         } else {
@@ -2097,8 +2146,17 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
     my $cluster = $MATTER_CLUSTERS{$cluster_id};
 
+    if (exists $MATTER_GLOBAL_ATTRIBUTES{$attr_id}) {
+        my $parsed = MATTERDevice_ProcessGlobalAttribute($hash, $cluster_id, $attr_id, $value);
+        MATTERDevice_RootCapabilityReport($hash, $cluster_id, $attr_id, $parsed)
+            if defined($parsed) && $cluster_id == 70;
+        return;
+    }
+    $value = MATTERDevice_AttributeValue($cluster_id, $attr_id, $value, $hash->{endpoint_id} // 0);
+    return unless defined $value;
+
     if ($cluster_id == 29 && $attr_id == 1) {
-        my $servers = MATTERDevice_IdSet($value);
+        my $servers = $value;
         if (defined $servers) {
             delete @{$hash->{helper}{capabilities}}{
                 grep { !$servers->{$_} } keys %{$hash->{helper}{capabilities} // {}}
@@ -2115,8 +2173,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     # the current physical mode reading. Partial reports keep earlier data.
     if (($cluster_id == 0x0201 && $attr_id == 27) ||
         ($cluster_id == 0x0202 && $attr_id == 1)) {
-        $hash->{helper}{capabilities}{$cluster_id}{mode_sequence} = 0 + $value
-            if defined($value) && !ref($value) && $value =~ /\A\d+\z/ && $value <= 5;
+        $hash->{helper}{capabilities}{$cluster_id}{mode_sequence} = $value;
         return;
     }
 
@@ -2165,45 +2222,30 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     # probe during discovery. Do not conflate a sleeping ICD with offline.
     # Process shared global attributes once, then derive ICD properties from
     # the same authoritative feature-map cache rather than maintaining two.
-    my $global = MATTERDevice_ProcessGlobalAttribute($hash, $cluster_id, $attr_id, $value);
     MATTERDevice_RootCapabilityReport($hash, $cluster_id, $attr_id, $value)
         if ($cluster_id == 70 || $cluster_id == 40 ||
             ($cluster_id == 29 && $attr_id == 1));
-    return if $global;
 
     # Descriptor cluster (0x001D), DeviceTypeList (0x0000).
     # Matter.js supplies an array of DeviceTypeStruct objects (deviceType, revision).
     # Persist the advertised IDs as a canonical reading. Unlike helper data,
     # regular FHEM readings survive a restart through the statefile/configDB.
     if ($cluster_id == 0x001D && $attr_id == 0x0000) {
-        if (ref($value) eq 'ARRAY') {
-            my (@types, %seen);
-            foreach my $entry (@{$value}) {
-                next unless ref($entry) eq 'HASH';
-                my $raw_id = $entry->{deviceType} // $entry->{device_type} // $entry->{'0'};
-                my $type_id = MATTERDevice_NormalizeMatterId($raw_id);
-                next unless defined($type_id) && $type_id <= 0xFFFFFFFF;
-                push @types, $type_id unless $seen{$type_id}++;
-            }
-            if (@types) {
-                my $ids = join(',', map { sprintf('0x%04X', $_) } sort { $a <=> $b } @types);
-                if (ReadingsVal($name, 'device_type_ids', '') ne $ids) {
-                    readingsSingleUpdate($hash, 'device_type_ids', $ids, 1);
-                    MATTERDevice_EnsureTypeGroup($hash);
-                }
-            }
+        if (ReadingsVal($name, 'device_type_ids', '') ne $value) {
+            readingsSingleUpdate($hash, 'device_type_ids', $value, 1);
+            MATTERDevice_EnsureTypeGroup($hash);
         }
         return;
     }
     if (($hash->{endpoint_id} // 0) == 0 &&
         $cluster_id == 0x0033 && $attr_id == 0) {
-        my $type = MATTERDevice_NetworkType($value);
+        my $type = $value;
         readingsSingleUpdate($hash, 'networkType', $type, 1)
             if defined($type) && ReadingsVal($name, 'networkType', '') ne $type;
         return;
     }
     if ($cluster_id == 0x0035 || $cluster_id == 0x0036) {
-        MATTERDevice_UpdateNetworkDiagnostics($hash, $cluster_id, $attr_id, $value);
+        MATTERDevice_UpdateNetworkDiagnostics($hash, $value);
         return;
     }
     my $attr_info = $cluster ? $cluster->{attributes}{$attr_id} : undef;
@@ -2214,27 +2256,6 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
     my $attr_name = $attr_info->{name};
     my $is_reading = $attr_info->{is_reading} // 0;
-    my $transform = $attr_info->{transform};
-
-    # Validate reported limit types before boolean coercion or publication.
-    # Null, malformed and out-of-domain reports preserve the last valid value.
-    if (my $range = $attr_info->{limit_range}) {
-        return unless defined($value) && !ref($value) &&
-            $value =~ /\A[0-9]+\z/ && $value >= $range->[0] && $value <= $range->[1];
-    }
-
-    my $boolean = MATTERDevice_NormalizeBoolean($value);
-    $value = $boolean if blessed($value) && defined($boolean);
-    return if !defined($value);
-    if ($transform && ref($transform) eq 'CODE') {
-        # Numeric transformations must not turn malformed values into zero.
-        if ($cluster_id != 0x0091) {
-            return if ref($value) || $value !~ /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/;
-        }
-        $value = $transform->($value);
-        return if !defined($value);
-    }
-    return if ref($value);
     if ($cluster_id == 0x0045 && $attr_id == 0) {
         my $active = MATTERDevice_NormalizeBoolean($value);
         return unless defined $active;
@@ -2250,11 +2271,6 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         }
         $is_reading = 1;
     }
-    return if $cluster_id == 0x0006 && $attr_id == 0 &&
-              !defined(MATTERDevice_NormalizeBoolean($value));
-    return if $cluster_id == 0x0008 && $attr_id == 0 &&
-              ($value !~ /^\d+$/ || $value > 254);
-
     my $model_changed = $cluster_id == 0x0028 && $attr_id == 3 &&
         ($hash->{endpoint_id} // 0) == 0 && (!defined($hash->{READINGS}{model}{VAL}) ||
         $hash->{READINGS}{model}{VAL} ne $value);
@@ -2951,6 +2967,7 @@ including the attributes carried by that same <code>node_updated</code>.
 No separate per-attribute report is required. Explicit <code>getConfig</code>
 replies may update physical values and capability metadata while online.
 Responses from earlier availability epochs or replaced roots are rejected. Explicit reads additionally verify the requesting FHEM instance and endpoint; a replacement cannot inherit its response, while rename remains supported.
+Freshness tracking uses the same side-effect-free value conversion as reading publication; rejected values never suppress valid pending results.
 Newer values from <code>attribute_updated</code> and <code>node_updated</code> take precedence per attribute path over older discovery/read results.</p>
 <p>After a known offline/online transition, only missing command metadata may
 trigger automatic recovery: at most three event-driven attempts, at least
@@ -3359,7 +3376,7 @@ einschließlich der Werte derselben <code>node_updated</code>-Meldung. Ein
 zusätzlicher Report pro Attribut ist nicht erforderlich. Explizites
 <code>getConfig</code> darf online Gerätewerte und Capability-Metadaten aktualisieren.
 Antworten aus früheren Availability-Zyklen oder für ersetzte Roots werden
-verworfen. Explizite Reads prüfen zusätzlich die anfragende FHEM-Instanz und den Endpoint; Ersatzgeräte übernehmen deren Antworten nicht, Rename derselben Instanz bleibt unterstützt. Neuere Werte aus <code>attribute_updated</code> und <code>node_updated</code> haben je Attributpfad Vorrang vor älteren Discovery-/Leseantworten.</p>
+verworfen. Explizite Reads prüfen zusätzlich die anfragende FHEM-Instanz und den Endpoint; Ersatzgeräte übernehmen deren Antworten nicht, Rename derselben Instanz bleibt unterstützt. Frischeabgleich und Reading-Übernahme verwenden dieselbe seiteneffektfreie Wertprüfung; verworfene Werte verdrängen keine gültigen ausstehenden Antworten. Neuere Werte aus <code>attribute_updated</code> und <code>node_updated</code> haben je Attributpfad Vorrang vor älteren Discovery-/Leseantworten.</p>
 <p>Nach einem bekannten Offline-/Online-Wechsel kann ausschließlich fehlende
 Befehlsmetadaten-Recovery automatisch ausgelöst werden: höchstens drei
 ereignisgesteuerte Versuche mit mindestens 15 Sekunden Abstand, ohne Polling.

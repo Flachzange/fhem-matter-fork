@@ -79,3 +79,24 @@ exercise the ownership guard and force replacement on the first Descriptor
 reading before other reply paths. The new regression failed before the fix;
 the full suite passes 1,017 top-level entries. No live FHEM/configDB/hardware
 test was performed.
+
+## #82: shared acceptance rules
+
+AttributeValue is a pure conversion of supplied data, shared by pending-path
+freshness and publication. It reuses the mapping table's transforms/ranges,
+ID-list parsing, Descriptor type parsing and network/diagnostic mappings.
+Unknown/raw values retain their independent schema; no generic numeric rule
+is applied to them. Global metadata publication returns its accepted value,
+including zero and empty sets, for root capability derivation.
+
+Post-implementation review traced live, node_updated, discovery, explicit
+read and automatic metadata paths, including compound Descriptor updates,
+ICD and diagnostic opt-in. It removed redundant validation before checking
+whether requests are pending and avoided autovivifying unknown clusters in
+the static mapping table. Diagnostic mapping is pure; opt-in and writes stay
+in its publisher. Nested energy validation remains the separate next issue.
+
+The new six-sensor/limit/unit matrix failed before the fix for both live event
+forms and discovery. After the fix all 1,018 top-level entries pass, including
+pure/no-side-effect checks, valid-newer precedence, unrelated response values
+and invalid diagnostic masking. No live FHEM/hardware validation is claimed.

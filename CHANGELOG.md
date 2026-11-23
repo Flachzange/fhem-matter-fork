@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-23  MATTER V0.40 (#82): Use pure shared attribute conversion for freshness tracking and publication. Rejected sensors, limits, enums, device types and network diagnostics cannot suppress valid pending results. Keep unknown/raw schemas independent and avoid duplicate validation without pending requests.
+
 - 2026-11-23  MATTER V0.40 (#81): Bind explicit reads to the requesting FHEM instance and endpoint scope using the shared request-owner check. Cancel owner reads on Undef/identity change/disable and exclude deleted endpoints from old shared responses. Preserve rename and stop processing after reentrant replacement.
 
 - 2026-11-23  MATTER V0.40 (#80): Merge partial getConfig metadata per path instead of resetting endpoint capabilities. Preserve omitted/invalid values; valid empty lists and endpoint Descriptor.ServerList revoke support. Read ServerList for endpoints and preserve newer lists across delayed reads/discovery and disable exclusions.
