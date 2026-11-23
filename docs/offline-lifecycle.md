@@ -23,6 +23,12 @@ transition retain the bounded event-driven metadata-only recovery (at most
 three attempts, at least 15 seconds apart). Explicit getConfig is an ordinary
 online read and may update physical values. No new polling is introduced.
 
+Endpoint `disable=1` adds a local pause even when the root is online. It does
+not change node-wide runtime availability or the processing of siblings.
+Re-enabling online reads the endpoint once; offline activation waits for normal
+synchronization. See [device request lifecycle](device-requests.md) for pending
+reply exclusions and the difference from readOnly.
+
 ## Matter-server evidence
 
 Inspected 2026-11-22 at

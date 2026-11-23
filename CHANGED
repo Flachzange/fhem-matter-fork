@@ -1,1 +1,1 @@
-2026-11-23  MATTER V0.38 (#77): Add readOnly protection for endpoint controls while reads, reports and events continue.
+2026-11-23  MATTER V0.39 (#78): Add local endpoint disable with preserved readings and one-shot online reactivation.

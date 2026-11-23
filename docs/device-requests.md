@@ -33,12 +33,12 @@ An initially blocked invocation leaves readings and request state unchanged.
 If a component was already sent, the ordinary group completion reports the
 unsent remainder as failed and retains correlation of any outstanding part.
 
-No capability, availability, receive or completion gate is added. Explicit
+For readOnly, no capability, availability, receive or completion gate is added. Explicit
 getConfig and automatic metadata reads retain their separate paths; normal
 reports/events and results of previously sent commands continue. Unlocking
 needs no read, replay, timer or transient mode state. Roots reject the attribute.
-This does not implement endpoint disable (#78) or restrict root administration,
-other controllers, direct server access or physical controls.
+This does not restrict root administration, other controllers, direct server
+access or physical controls. Endpoint disable is described below.
 
 FHEM `DoSet` calls SetFn in list context and returns a nonempty error before
 synthesizing a command event. `CommandAttr`/`CommandDeleteAttr` call AttrFn
@@ -50,6 +50,29 @@ The #77 regression covers every current setter family, internal command/write
 callers, compound send reentry, reads, live/snapshot/button reception, prior
 completions, modeled attribute restoration and endpoint/multi-IO isolation.
 Live FHEM/configDB and hardware validation remain **ungetestet / untested**.
+
+### Endpoint disable (V0.39, #78)
+
+`disable=1` pauses functional endpoint updates and all sends/reads. A shared
+control check covers direct calls and the common sender; attribute, metadata,
+snapshot reset, button and root-mirroring paths skip disabled targets. Physical
+state, readings/timestamps and capabilities remain unchanged. Structural root
+association and receive internals remain active.
+
+Both transitions retire owned commands and endpoint reads in the existing IO
+registries. Outstanding shared reads and discovery snapshots gain an endpoint
+exclusion, so late replies cannot update a re-enabled child or destroy valid
+sibling data. Exclusions expire with those existing requests; no persistent
+generation or second request registry is introduced. Local exclusions alone
+must not prevent authoritative missing-node detection.
+
+AttrFn sets one transient `enable_sync` marker for a real disabled-to-enabled
+transition. Notify consumes it after the attribute commit and before publishing
+anything, mirrors current root status and invokes existing endpoint getConfig
+once if connected/online. Startup or offline activation does not probe; ordinary
+online synchronization supplies subsequent data. There are no new timers,
+background retries or command replays. readOnly remains independent. Previously
+sent commands may still execute physically; canceling correlation is local only.
 
 ### Correlation and results
 

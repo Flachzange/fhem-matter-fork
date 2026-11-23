@@ -508,6 +508,7 @@ sub MATTERDevice_Initialize($) {
     $hash->{FW_deviceOverview} = 1; # Keep FHEMWEB DeviceOverview above the endpoint links.
     $hash->{AttrList} = "IODev " .
                         "readOnly:0,1 " .
+                        "disable:0,1 " .
                         "dimRate:slider,1,1,254 " .
                         "diagnostics:0,1 " .
                         "rawReadings:0,1 " .
@@ -542,6 +543,7 @@ sub MATTERDevice_NeedsCapabilityRefresh($) {
     my ($root) = @_;
     return 0 unless $root && ($root->{endpoint_id} // 0) == 0;
     foreach my $device ($root, MATTERDevice_NodeChildren($root)) {
+        next if MATTERDevice_IsDisabled($device);
         my %observed = map { $_ => 1 }
             keys %{$device->{helper}{seen_clusters} // {}};
         # GetSetList probes may autovivify empty capability hashes for other
@@ -709,11 +711,48 @@ sub MATTERDevice_UpdateAvailability($$) {
 # the global ATTR event below observes the pointer actually installed by FHEM.
 sub MATTERDevice_Attr {
     my ($op, $name, $attr, $value) = @_;
-    if ($op eq 'set' && $attr eq 'readOnly') {
-        return 'readOnly is only supported on endpoints (endpoint_id > 0)'
-            unless ($defs{$name}{endpoint_id} // 0) > 0;
-        return 'readOnly must be 0 or 1'
-            unless defined($value) && $value =~ /\A[01]\z/;
+    # FHEM deleteattr accepts a name pattern, or no name to clear all attrs.
+    $attr = 'disable' if $op eq 'del' && (!defined($attr) || 'disable' =~ /^$attr$/);
+    if ($attr eq 'readOnly' || $attr eq 'disable') {
+        return "$attr is only supported on endpoints (endpoint_id > 0)"
+            if $op eq 'set' && ($defs{$name}{endpoint_id} // 0) == 0;
+        return "$attr must be 0 or 1"
+            if $op eq 'set' && (!defined($value) || $value !~ /\A[01]\z/);
+        return undef unless $attr eq 'disable' &&
+            ($defs{$name}{endpoint_id} // 0) > 0;
+        my $hash = $defs{$name};
+        my $disabled = $op eq 'set' && $value eq '1';
+        return undef if !!AttrVal($name, 'disable', 0) == !!$disabled;
+        if (!$disabled) {
+            # Consumed by Notify after FHEM commits the attribute change.
+            $hash->{helper}{enable_sync} = 1;
+        } else {
+            delete $hash->{helper}{enable_sync};
+        }
+        # Cancel on both edges: shared reads may also have started while the
+        # endpoint was disabled. No persistent request generation is needed.
+        delete $hash->{helper}{latest_request};
+        my $io = $hash->{IODev};
+        return undef unless $io;
+        my ($node, $ep) = @{$hash}{qw(node_id endpoint_id)};
+        for my $id (keys %{$io->{helper}{pending_command} // {}}) {
+            my $request = $io->{helper}{pending_command}{$id};
+            if (ref($request) eq 'HASH') {
+                delete $io->{helper}{pending_command}{$id}
+                    if ($request->{owner} // '') eq $hash;
+            } elsif ($request eq 'get_nodes' || $request eq 'start_listening') {
+                $io->{helper}{pending_snapshot_touched}{$id}{$node}{excluded_endpoints}{$ep} = 1;
+            }
+        }
+        for my $id (keys %{$io->{helper}{pending_config} // {}}) {
+            my $request = $io->{helper}{pending_config}{$id};
+            next unless ref($request) eq 'HASH' && $request->{node_id} eq $node;
+            if (($request->{endpoint_id} // -1) == $ep) {
+                delete $io->{helper}{pending_config}{$id};
+            } else {
+                $request->{excluded_endpoints}{$ep} = 1;
+            }
+        }
         return undef;
     }
     return unless $op eq 'set' && $attr eq 'IODev';
@@ -747,11 +786,28 @@ sub MATTERDevice_LookupRoot {
 # Migrate that legacy default once, without altering other user formatting.
 sub MATTERDevice_Notify($$) {
     my ($hash, $dev) = @_;
-    return unless ($hash->{endpoint_id} // 0) == 0 &&
-                  ($dev->{NAME} // '') eq 'global';
-    my $name = $hash->{NAME};
+    return unless ($dev->{NAME} // '') eq 'global';
     my $events = $dev->{CHANGED} // [];
     my $startup = grep { $_ eq 'INITIALIZED' || $_ eq 'REREADCFG' } @$events;
+    if (($hash->{endpoint_id} // 0) > 0) {
+        return if MATTERDevice_IsDisabled($hash) || !delete($hash->{helper}{enable_sync});
+        return if $startup; # Root availability is invalidated during restoration.
+        my $root = MATTERDevice_LookupRoot($hash->{IODev}, $hash->{node_id});
+        my $io = $hash->{IODev};
+        if ($root && $root->{helper}{available} && $io->{CD} &&
+            $io->{websocket} && ($io->{ws_status} // '') eq 'connected') {
+            MATTERDevice_SyncNodeReadings($root, $hash);
+            my $status = ReadingsVal($root->{NAME}, 'matter_status', undef);
+            readingsSingleUpdate($hash, 'matter_status', $status, 1)
+                if defined($status) && !MATTERDevice_IsDisabled($hash) &&
+                   ReadingsVal($hash->{NAME}, 'matter_status', '') ne $status;
+            my $error = MATTERDevice_Set($hash, $hash->{NAME}, 'getConfig');
+            Log3 $hash->{NAME}, 3, "MATTERDevice: Enable synchronization failed: $error"
+                if defined $error;
+        }
+        return;
+    }
+    my $name = $hash->{NAME};
     my $io = $hash->{IODev};
     return unless $startup || ($io && grep { $_ eq "ATTR $name IODev $io->{NAME}" } @$events);
     if ($io) {
@@ -870,6 +926,7 @@ sub MATTERDevice_IdSet {
 sub MATTERDevice_ProcessGlobalAttribute($$$$) {
     my ($hash, $cluster_id, $attr_id, $value) = @_;
     return 0 if (!exists($MATTER_GLOBAL_ATTRIBUTES{$attr_id}));
+    return 1 if MATTERDevice_IsDisabled($hash);
 
     my $key = $MATTER_GLOBAL_ATTRIBUTES{$attr_id};
     my $parsed = $attr_id <= 0xFFFB ? MATTERDevice_IdSet($value)
@@ -1078,10 +1135,20 @@ sub MATTERDevice_CommandRequest {
     return { command => 'device_command', args => $args };
 }
 
-# A local control policy, independent of reported Matter capabilities. Reads,
-# incoming reports and completion of already-sent commands remain unchanged.
-sub MATTERDevice_ReadOnlyError {
+# Endpoint disable deliberately uses the attribute alone, not physical state
+# or FHEM IsDisabled's unrelated inactive/interval conventions.
+sub MATTERDevice_IsDisabled {
     my ($hash) = @_;
+    return ($hash->{endpoint_id} // 0) > 0 && AttrVal($hash->{NAME}, 'disable', 0);
+}
+
+# Local policy, independent of reported Matter capabilities. Reads bypass
+# readOnly, but are blocked along with control commands while disabled.
+sub MATTERDevice_ControlError {
+    my ($hash, $read) = @_;
+    return "MATTER: $hash->{NAME} is disabled (disable=1)"
+        if MATTERDevice_IsDisabled($hash);
+    return undef if $read;
     return undef unless ($hash->{endpoint_id} // 0) > 0 &&
                         AttrVal($hash->{NAME}, 'readOnly', 0);
     return "MATTER: $hash->{NAME} is read-only (readOnly=1); control commands blocked";
@@ -1090,8 +1157,8 @@ sub MATTERDevice_ReadOnlyError {
 sub MATTERDevice_Set($$@) {
     my ($hash, $name, $cmd, @args) = @_;
 
-    if ($cmd ne '?' && $cmd ne 'getConfig') {
-        my $error = MATTERDevice_ReadOnlyError($hash);
+    if ($cmd ne '?') {
+        my $error = MATTERDevice_ControlError($hash, $cmd eq 'getConfig');
         return $error if defined $error;
     }
     my @setList = MATTERDevice_GetSetList($hash);
@@ -1697,7 +1764,7 @@ sub MATTERDevice_RootCapabilityReport {
 # emit several API requests (RGB); all belong to one diagnostic result.
 sub MATTERDevice_SendRequests {
     my ($hash, $requests, $reading, $timeout) = @_;
-    my $blocked = MATTERDevice_ReadOnlyError($hash);
+    my $blocked = MATTERDevice_ControlError($hash);
     return $blocked if defined $blocked;
     my $io = $hash->{IODev};
     return "MATTER: No active WebSocket connection for $hash->{NAME}"
@@ -1731,7 +1798,7 @@ sub MATTERDevice_SendRequests {
     for my $i (0 .. $#$requests) {
         # A synchronous reply can trigger a notify which enables readOnly
         # between components of a compound setter. Do not send its remainder.
-        $blocked = MATTERDevice_ReadOnlyError($hash);
+        $blocked = MATTERDevice_ControlError($hash);
         next if !defined($blocked) && MATTER_SendJsonCommand($io, $requests->[$i]);
         for my $unsent ($i .. $#ids) {
             my $request = delete $io->{helper}{pending_command}{$ids[$unsent]};
@@ -1761,6 +1828,7 @@ sub MATTERDevice_CompleteRequest {
         MATTERDevice_RecordReceive(MATTERDevice_LookupRoot($io, $request->{node_id}), $received);
         MATTERDevice_RecordReceive($owner, $received);
     }
+    return if MATTERDevice_IsDisabled($owner);
     my $group = $request->{group};
     --$group->{remaining};
     my $reading = $request->{reading};
@@ -1968,6 +2036,7 @@ sub MATTERDevice_HandleNodeOperation {
 }
 sub MATTERDevice_ProcessAttributeValue($$$$) {
     my ($hash, $cluster_id, $attr_id, $value) = @_; # quick unpack
+    return if MATTERDevice_IsDisabled($hash);
     my $name = $hash->{NAME};
 
     # Cluster-ID und Attribut-ID sicher als numerischen/hexadezimalen Wert behandeln
@@ -2287,6 +2356,7 @@ sub MATTERDevice_ProcessMessage {
         foreach my $ep (keys %reported_lists) {
             my $target = $ep == $my_endpoint ? $hash : MATTERDevice_GetOrCreateChild($hash, $ep);
             next unless $target;
+            next if MATTERDevice_IsDisabled($target);
             my $previous = delete $target->{helper}{capabilities};
             # Seed only list paths present in the reply. A valid report replaces
             # its seed (including []), a malformed one leaves it intact.
@@ -2359,6 +2429,7 @@ sub MATTERDevice_ProcessMessage {
         } MATTERDevice_NodeChildren($hash);
         return unless $child;
         MATTERDevice_RecordReceive($child, $received);
+        return if MATTERDevice_IsDisabled($child);
         readingsSingleUpdate($child, 'button', $value, 0);
         DoTrigger($child->{NAME}, "button: $value");
         return;
@@ -2408,7 +2479,8 @@ sub MATTERDevice_ProcessMessage {
 
 sub MATTERDevice_GetSetList($) {
     my ($hash) = @_;
-    return ('getConfig:noArg') if defined MATTERDevice_ReadOnlyError($hash);
+    return () if MATTERDevice_IsDisabled($hash);
+    return ('getConfig:noArg') if defined MATTERDevice_ControlError($hash);
     my $name = $hash->{NAME};
     my @list;
     my %seen;
@@ -2620,6 +2692,7 @@ sub MATTERDevice_SyncNodeReadings($;$) {
     foreach my $child (@children) {
         my @changes;
         foreach my $reading (qw(model available)) {
+            next if MATTERDevice_IsDisabled($child);
             next if $reading eq 'model' &&
                 !$root->{helper}{available};
             my $source = $root->{READINGS}{$reading};
@@ -2819,7 +2892,7 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
   <li><b>Set:</b> Depending on the reported capabilities:
       <code>on</code>, <code>off</code>, <code>brightness</code>, <code>ct</code>,
       <code>rgb</code>, <code>getConfig</code> and supported device-specific commands.</li>
-  <li><b>Attributes:</b> <code>IODev</code>, opt-in
+  <li><b>Attributes:</b> <code>IODev</code>, endpoint <code>readOnly</code> / <code>disable</code>, opt-in
       <code>diagnostics</code> / <code>rawReadings</code>, dimming
       <code>dimRate</code>. Physical limits are reported readings.
       Retired <code>has_*</code> settings are ignored; they are neither
@@ -2904,7 +2977,7 @@ automated tests model reading restoration.</p></li>
 </ul>
 <h4>Attributes</h4>
 <p>Select an attribute in FHEMWEB to show its description. Active device
-settings are <code>IODev</code>, <code>readOnly</code>, <code>dimRate</code>, <code>diagnostics</code>
+settings are <code>IODev</code>, <code>readOnly</code>, <code>disable</code>, <code>dimRate</code>, <code>diagnostics</code>
 and <code>rawReadings</code>. Device limits are readings, not configurable
 attributes. Remove saved limit attributes before restarting into V0.21,
 as described below.</p>
@@ -2917,6 +2990,21 @@ as described below.</p>
       specific to their server. Moving a root to another IO resets its state to
       unknown until that server reports availability. An occupied target ID
       is rejected. Each endpoint retains its own IODev assignment.</li>
+  <li><a id="MATTERDevice-attr-disable"></a><b>disable (0/1):</b>
+      Default <code>0</code>, endpoints greater than 0 only. With <code>1</code>,
+      block endpoint commands including getConfig, values, capability updates,
+      mirrored status and button events. Existing readings and timestamps stay
+      unchanged; no artificial disabled/off state is written. Identity and root
+      association remain intact; receive internals still record server traffic.
+      Pending endpoint requests are discarded locally; shared replies exclude
+      this endpoint, including after re-enabling. Commands already sent cannot
+      be recalled. Setting <code>0</code> or deleting the attribute resumes
+      processing and reads getConfig once if the IO is connected and the root
+      is online. Otherwise normal online synchronization resumes later, without
+      polling or command replay. Repeated settings add no queries. Roots reject
+      the attribute; siblings, the server and other controllers remain active.
+      readOnly is independent and remains set. Hardware validation:
+      <strong>untested</strong>.</li>
   <li><a id="MATTERDevice-attr-readOnly"></a><b>readOnly (0/1):</b>
       Default <code>0</code>. On endpoints greater than 0, <code>1</code>
       blocks all control commands and attribute writes from FHEM, including
@@ -3210,7 +3298,7 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
   <li><b>Set:</b> Abhängig von den Fähigkeiten z. B. <code>on</code>,
       <code>off</code>, <code>brightness</code>, <code>ct</code>,
       <code>rgb</code>, <code>getConfig</code> und weitere Gerätebefehle.</li>
-  <li><b>Attribute:</b> <code>IODev</code>, optionale
+  <li><b>Attribute:</b> <code>IODev</code>, Endpunkt-<code>readOnly</code> / <code>disable</code>, optionale
       <code>diagnostics</code> / <code>rawReadings</code>,
       <code>dimRate</code>. Gerätegrenzwerte werden als Readings gemeldet.
       Alte <code>has_*</code>-Attribute werden ignoriert, nicht mehr erzeugt
@@ -3300,7 +3388,7 @@ Reading-Wiederherstellung.</p></li>
 </ul>
 <h4>Attribute</h4>
 <p>Bei Auswahl eines Attributs in FHEMWEB erscheint dessen Beschreibung.
-Aktive Geräteeinstellungen sind <code>IODev</code>, <code>readOnly</code>, <code>dimRate</code>,
+Aktive Geräteeinstellungen sind <code>IODev</code>, <code>readOnly</code>, <code>disable</code>, <code>dimRate</code>,
 <code>diagnostics</code> und <code>rawReadings</code>. Gerätegrenzen sind
 Readings und keine konfigurierbaren Attribute. Gespeicherte Grenzwertattribute
 vor dem Neustart mit V0.21 wie unten beschrieben entfernen.</p>
@@ -3313,6 +3401,22 @@ vor dem Neustart mit V0.21 wie unten beschrieben entfernen.</p>
       gelten jeweils nur innerhalb ihres Servers. Nach dem Wechsel eines Roots
       bleibt sein Zustand unknown, bis der neue Server die Erreichbarkeit meldet.
       Eine belegte Ziel-ID wird abgewiesen. Endpunkte behalten ihr eigenes IODev.</li>
+  <li><a id="MATTERDevice-attr-disable"></a><b>disable (0/1):</b>
+      Standard <code>0</code>, nur an Endpunkten größer 0. Mit <code>1</code>
+      Endpunktbefehle einschließlich getConfig, Werte, Capability-Updates,
+      gespiegelte Statuswerte und Tasterereignisse sperren. Vorhandene Readings
+      und Zeitstempel bleiben erhalten; kein künstlicher disabled/off-Zustand.
+      Identität und Root-Zuordnung bleiben bestehen; Empfangs-Internals erfassen
+      weiterhin Servernachrichten. Ausstehende Endpunktanfragen werden lokal
+      verworfen; Sammelantworten lassen diesen Endpunkt auch nach dem erneuten
+      Aktivieren aus. Bereits versendete Befehle lassen sich nicht zurücknehmen.
+      <code>0</code> oder Löschen des Attributs setzt die Verarbeitung fort und
+      liest bei verbundenem IO und online gemeldetem Root einmalig getConfig.
+      Andernfalls folgt die normale Online-Synchronisierung, ohne Polling oder
+      Befehlswiederholung. Wiederholtes Setzen erzeugt keine weiteren Abfragen.
+      Am Root abgewiesen; Geschwister, Server und andere Controller bleiben aktiv.
+      readOnly bleibt unabhängig erhalten. Hardwarestatus:
+      <strong>ungetestet</strong>.</li>
   <li><a id="MATTERDevice-attr-readOnly"></a><b>readOnly (0/1):</b>
       Standard <code>0</code>. Mit <code>1</code> an Endpunkten größer 0
       sämtliche Steuerbefehle und Attributschreibzugriffe aus FHEM sperren,
