@@ -14,7 +14,7 @@ Device commands, explicit configuration reads and automatic capability reads pas
 | MATTER IO parser / heartbeat / close | Remove each pending entry and call the same completion function for reply, timeout or IO loss |
 
 All ordinary device_command and write_attribute setters use this path:
-on/off/toggle/effects, levels/colors/frequency, coverings, locks, Identify,
+on/off/toggle/effects, levels/colors/levelFrequency, coverings, locks, Identify,
 native dimming and thermostat/fan writes. OTA/ICD use the same sender and
 completion functions while retaining their administrative operation policy.
 Read-only getConfig/capability requests keep their existing read reconciliation

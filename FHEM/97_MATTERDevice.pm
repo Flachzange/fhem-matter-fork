@@ -72,7 +72,7 @@ my @MATTER_DISPLAY_TYPES = (
     (map { [$_, 'button'] } (0x000F, 0x0103, 0x0104, 0x0105)),
     [0x002C, 'air'], [0x0510, 'electrical'],
     [0x0302, 'temperature'], [0x0307, 'humidity'],
-    [0x0305, 'pressure'], [0x0106, 'illuminance'],
+    [0x0305, 'pressure'], [0x0106, 'brightness'],
     [0x0306, 'unsupported'], # Type label only; no FlowMeasurement parser.
 );
 
@@ -80,7 +80,6 @@ my @MATTER_DISPLAY_TYPES = (
 my %MATTER_DISPLAY_ENUMS = (
     alarm_expressed_state => [qw(normal smoke_alarm co_alarm battery_alert testing
                                 hardware_fault end_of_service interconnect_smoke interconnect_co)],
-    lock_state => [qw(not_fully_locked locked unlocked unlatched)],
     air_quality => [qw(unknown good fair moderate poor very_poor extremely_poor)],
 );
 
@@ -115,7 +114,10 @@ sub MATTERDevice_DefaultState {
     return $value->('state') if $kind eq 'state' || ($hash->{endpoint_id} // 0) == 0;
     return 'unknown' if $kind eq 'unsupported';
     return $enum->('alarm_expressed_state') if $kind eq 'alarm';
-    return $enum->('lock_state') if $kind eq 'lock';
+    if ($kind eq 'lock') {
+        my $v = $value->('state');
+        return $v =~ /\A(?:not_fully_locked|locked|unlocked|unlatched)\z/ ? $v : 'unknown';
+    }
     if ($kind eq 'boolean') {
         return $value->('state') if exists $hash->{READINGS}{state};
         my $v = $value->('boolean_state');
@@ -130,8 +132,8 @@ sub MATTERDevice_DefaultState {
     if ($kind eq 'covering') {
         my @positions;
         for my $axis (qw(lift tilt)) {
-            my $v = $number->("current_position_${axis}_percent_100_ths");
-            $v = defined($v) ? $v / 100 : $number->("current_position_${axis}_percentage");
+            my $sources = MATTERDevice_ReadingSources($hash);
+            my $v = $sources->{$axis} ? $number->($axis eq 'lift' ? 'pct' : 'tilt') : undef;
             if (defined($v) && $v >= 0 && $v <= 100) {
                 push @positions, "$axis: $v %";
             } elsif (defined(my $raw = $number->("current_position_$axis"))) {
@@ -183,7 +185,8 @@ sub MATTERDevice_DefaultState {
     }
     return $quantity->('temperature', '°C') . ' / ' . $quantity->('humidity', '%')
         if ($kind eq 'temperature' || $kind eq 'humidity') && $types{0x0302} && $types{0x0307};
-    my %units = (temperature => '°C', humidity => '%', pressure => 'hPa', illuminance => 'lx');
+    return 'unknown' if $kind eq 'brightness' && !MATTERDevice_ReadingSources($hash)->{light};
+    my %units = (temperature => '°C', humidity => '%', pressure => 'hPa', brightness => 'lx');
     return $quantity->($kind, $units{$kind});
 }
 
@@ -217,6 +220,60 @@ sub MATTERDevice_ReadingsSingleUpdate {
     my $result = readingsBulkUpdate($hash, $reading, $value);
     MATTERDevice_ReadingsEndUpdate($hash, $trigger);
     return $result;
+}
+
+# A few public names have different meanings across clusters. Persist their
+# observed sources so restore/report ordering cannot reinterpret lux as a level
+# or dim percent as a blind position. This metadata never authorizes commands.
+sub MATTERDevice_ReadingSources {
+    my ($hash) = @_;
+    return { map { $_ => 1 } grep {
+        /\A(?:level|light|cover|lift|tilt|liftFine|tiltFine|battery_charge_level|battery_replacement_needed|alarm_battery)\z/
+    } split(/ /, ReadingsVal($hash->{NAME}, '.matterReadingSources', '')) };
+}
+
+sub MATTERDevice_LevelNames {
+    my ($hash) = @_;
+    my $sources = MATTERDevice_ReadingSources($hash);
+    return ($sources->{light} ? 'level' : 'brightness',
+            $sources->{cover} ? 'dimmerPct' : 'pct');
+}
+
+# Called inside the attribute's reading batch, before publishing any events.
+# Keep quantities distinct when another currently reported function appears.
+# Move only values with recorded source provenance, never infer units from values. The core's explicit timestamp argument preserves
+# the original measurement time while the new name gets its own event.
+sub MATTERDevice_RecordReadingSources {
+    my ($hash, @new) = @_;
+    my $sources = MATTERDevice_ReadingSources($hash);
+    my @moves;
+    push @moves, ['brightness', 'level']
+        if grep($_ eq 'light', @new) && !$sources->{light} && $sources->{level};
+    push @moves, ['pct', 'dimmerPct']
+        if grep($_ eq 'cover', @new) && !$sources->{cover} && $sources->{level};
+    for my $move (@moves) {
+        my ($old, $new) = @$move;
+        my $reading = $hash->{READINGS}{$old};
+        next unless $reading && defined $reading->{VAL};
+        readingsBulkUpdate($hash, $new, $reading->{VAL}, undef, $reading->{TIME});
+        readingsDelete($hash, $old);
+    }
+    my $changed = grep { !$sources->{$_}++ } @new;
+    readingsBulkUpdate($hash, '.matterReadingSources', join(' ', sort keys %$sources)) if $changed;
+}
+
+sub MATTERDevice_UpdateBatteryState {
+    my ($hash) = @_;
+    my $sources = MATTERDevice_ReadingSources($hash);
+    my @warnings;
+    for my $reading (qw(battery_charge_level battery_replacement_needed alarm_battery)) {
+        next unless $sources->{$reading};
+        my $v = ReadingsVal($hash->{NAME}, $reading, '');
+        my $max = $reading eq 'battery_replacement_needed' ? 1 : 2;
+        push @warnings, $v if $v =~ /\A[0-2]\z/ && $v <= $max;
+    }
+    return unless @warnings;
+    readingsBulkUpdate($hash, 'batteryState', (grep { $_ > 0 } @warnings) ? 'low' : 'ok');
 }
 
 # Explicit Matter MeasurementUnitEnum values. Never assume that a
@@ -269,7 +326,7 @@ my %MATTER_CLUSTERS = (
             0x0000 => { name => "brightness", is_reading => 1 },
             0x0002 => { name => "min_brightness", is_reading => 1, limit_range => [0, 254] },
             0x0003 => { name => "max_brightness", is_reading => 1, limit_range => [0, 254] },
-            0x0004 => { name => "frequency", is_reading => 1, required_features => ["frequency"] },
+            0x0004 => { name => "levelFrequency", is_reading => 1, value_range => [0, 65535], required_features => ["frequency"] },
             0x0005 => { name => "min_frequency", is_reading => 1, limit_range => [0, 65535], required_features => ["frequency"] },
             0x0006 => { name => "max_frequency", is_reading => 1, limit_range => [0, 65535], required_features => ["frequency"] },
             0x4000 => { name => "startup_current_level", is_reading => 1, required_features => ["lighting"] },
@@ -304,11 +361,12 @@ my %MATTER_CLUSTERS = (
         attributes => {
             0x0000 => { name => "power_source_status", is_reading => 1 },
             0x0002 => { name => "power_source_description", is_reading => 1 },
-            0x000B => { name => "battery_voltage_mV", is_reading => 1 },
-            0x000C => { name => "battery_percent", is_reading => 1,
-                        transform => sub { defined($_[0]) ? $_[0] / 2 : undef } },
+            0x000B => { name => "batteryVoltage", is_reading => 1, value_range => [0, 4294967295],
+                        transform => sub { $_[0] / 1000 } },
+            0x000C => { name => "batteryPercent", is_reading => 1, value_range => [0, 200],
+                        transform => sub { int($_[0] / 2 + 0.5) } },
             0x000D => { name => "battery_time_remaining_s", is_reading => 1 },
-            0x000E => { name => "battery_charge_level", is_reading => 1 },
+            0x000E => { name => "battery_charge_level", is_reading => 1, value_range => [0, 2] },
             0x000F => { name => "battery_replacement_needed", is_reading => 1 },
             0x0010 => { name => "battery_replaceability", is_reading => 1 },
             0x0013 => { name => "battery_replacement_description", is_reading => 1 },
@@ -340,7 +398,7 @@ my %MATTER_CLUSTERS = (
     0x0400 => {
         name       => "IlluminanceMeasurement",
         attributes => {
-            0x0000 => { name => "illuminance", is_reading => 1,
+            0x0000 => { name => "brightness", is_reading => 1,
                         transform => sub {
                             my ($v) = @_;
                             return undef if $v != int($v) || $v < 0 || $v >= 65535;
@@ -407,7 +465,7 @@ my %MATTER_CLUSTERS = (
             0x0000 => { name => "alarm_expressed_state", is_reading => 1, value_range => [0, 8] },
             0x0001 => { name => "smoke_state", is_reading => 1 },
             0x0002 => { name => "co_state", is_reading => 1 },
-            0x0003 => { name => "alarm_battery", is_reading => 1 },
+            0x0003 => { name => "alarm_battery", is_reading => 1, value_range => [0, 2] },
             0x0004 => { name => "device_muted", is_reading => 1 },
             0x0005 => { name => "test_in_progress", is_reading => 1 },
             0x0006 => { name => "hardware_fault", is_reading => 1 },
@@ -441,7 +499,8 @@ my %MATTER_CLUSTERS = (
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
             0x000D => { name => "rms_power", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x000E => { name => "frequency", is_reading => 1 },
+            0x000E => { name => "frequency", is_reading => 1, value_range => [0, 1000000],
+                        transform => sub { $_[0] / 1000 } },
             0x0011 => { name => "power_factor", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 10000 : undef } },
             0x0012 => { name => "neutral_current", is_reading => 1,
@@ -508,7 +567,8 @@ my %MATTER_CLUSTERS = (
     0x0101 => {
         name       => "Door Lock",
         attributes => {
-            0x0000 => { name => "lock_state", is_reading => 1, value_range => [0, 3] },
+            0x0000 => { name => "state", is_reading => 1, value_range => [0, 3],
+                        transform => sub { (qw(not_fully_locked locked unlocked unlatched))[$_[0]] } },
             0x0001 => { name => "lock_type", is_reading => 1 },
             0x0002 => { name => "actuator_enabled", is_reading => 1},
             0x0003 => { name => "door_state", is_reading => 1 },
@@ -552,15 +612,15 @@ my %MATTER_CLUSTERS = (
             0x0005 => { name => "number_of_actuations_lift", is_reading => 1 },
             0x0006 => { name => "number_of_actuations_tilt", is_reading => 1},
             0x0007 => { name => "ws_config_status", is_reading => 1},
-            0x0008 => { name => "current_position_lift_percentage", is_reading => 1, value_range => [0, 100] },
-            0x0009 => { name => "current_position_tilt_percentage", is_reading => 1, value_range => [0, 100] },
+            0x0008 => { name => "pct", is_reading => 1, value_range => [0, 100] },
+            0x0009 => { name => "tilt", is_reading => 1, value_range => [0, 100] },
             0x000A => { name => "wc_operational_status", is_reading => 1, value_range => [0, 63],
                          transform => sub { return undef if grep { (($_[0] >> $_) & 3) == 3 } (0, 2, 4); return $_[0]; } },
             0x000B => { name => "target_position_lift_percent_100_ths", is_reading => 1 },
             0x000C => { name => "target_position_tilt_percent_100_ths", is_reading => 1 },
             0x000D => { name => "wc_end_product_type", is_reading => 1},
-            0x000E => { name => "current_position_lift_percent_100_ths", is_reading => 1, value_range => [0, 10000] },
-            0x000F => { name => "current_position_tilt_percent_100_ths", is_reading => 1, value_range => [0, 10000] },
+            0x000E => { name => "pct", is_reading => 1, value_range => [0, 10000] },
+            0x000F => { name => "tilt", is_reading => 1, value_range => [0, 10000] },
             0x0010 => { name => "installed_open_limit_lift", is_reading => 1, required_features => ["lift", "position_aware_lift", "absolute_position"] },
             0x0011 => { name => "installed_closed_limit_lift", is_reading => 1, required_features => ["lift", "position_aware_lift", "absolute_position"] },
             0x0012 => { name => "installed_open_limit_tilt", is_reading => 1, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
@@ -646,11 +706,11 @@ my %MATTER_CLUSTERS = (
             color_temperature => 4,
         },
         attributes => {
-            0x0000 => { name => "current_hue", is_reading => 1, required_features => ["hue_saturation"] },
-            0x0001 => { name => "current_saturation", is_reading => 1, required_features => ["hue_saturation"] },
+            0x0000 => { name => "hue", is_reading => 1, value_range => [0, 254], required_features => ["hue_saturation"] },
+            0x0001 => { name => "sat", is_reading => 1, value_range => [0, 254], required_features => ["hue_saturation"] },
             0x0003 => { name => "current_x", is_reading => 1, required_features => ["xy"] },
             0x0004 => { name => "current_y", is_reading => 1, required_features => ["xy"] },
-            0x0007 => { name => "color_temperature_mireds", is_reading => 1, required_features => ["color_temperature"] },
+            0x0007 => { name => "ct", is_reading => 1, value_range => [1, 65279], required_features => ["color_temperature"] },
             0x0008 => { name => "color_mode", is_reading => 1 },
             0x400B => { name => "color_temp_min", is_reading => 1, limit_range => [1, 65279], required_features => ["color_temperature"] },
             0x400C => { name => "color_temp_max", is_reading => 1, limit_range => [0, 65279], required_features => ["color_temperature"] },
@@ -715,7 +775,7 @@ sub MATTERDevice_InvalidateIdentity {
     delete @{$hash}{grep { /^endpoint_\d+$/ } keys %$hash};
     # These saved metadata values also authorize controls, scaling or device
     # interpretation. They cannot describe a different Matter identity.
-    readingsDelete($hash, $_) for qw(device_type_ids icd_supported
+    readingsDelete($hash, $_) for qw(.matterReadingSources device_type_ids icd_supported
         icd_lit_supported software_version specification_version);
     for my $cluster (values %MATTER_CLUSTERS) {
         for my $attribute (values %{$cluster->{attributes} // {}}) {
@@ -1184,7 +1244,8 @@ sub MATTERDevice_AttributeValue {
     }
     return undef if !defined($value) || ref($value);
     return MATTERDevice_NormalizeBoolean($value)
-        if ($cluster == 6 || $cluster == 69) && $attribute == 0;
+        if (($cluster == 6 || $cluster == 69) && $attribute == 0) ||
+           ($cluster == 47 && $attribute == 15);
     return undef if $cluster == 8 && $attribute == 0 &&
         ($value !~ /\A\d+\z/ || $value > 254);
     return $value;
@@ -1208,10 +1269,15 @@ sub MATTERDevice_ProcessGlobalAttribute($$$$) {
     # scale without another CurrentLevel report (including metadata recovery).
     if ($cluster_id == 0x0008 && ($attr_id == 0xFFFB || $attr_id == 0xFFFC)) {
         my $pct = MATTERDevice_Percentage($hash);
-        MATTERDevice_ReadingsSingleUpdate($hash, 'pct', $pct, 1)
-            if defined($pct) && ReadingsVal($hash->{NAME}, 'pct', '') ne "$pct";
+        MATTERDevice_ReadingsSingleUpdate($hash, (MATTERDevice_LevelNames($hash))[1], $pct, 1)
+            if defined($pct) && ReadingsVal($hash->{NAME}, (MATTERDevice_LevelNames($hash))[1], '') ne "$pct";
     }
 
+    if ($cluster_id == 0x0102) {
+        readingsBeginUpdate($hash);
+        MATTERDevice_RecordReadingSources($hash, 'cover');
+        MATTERDevice_ReadingsEndUpdate($hash, 1);
+    }
     return $parsed;
 }
 
@@ -1390,7 +1456,8 @@ sub MATTERDevice_MaxBrightness {
 # Recalculate derived percentage without manufacturing a CurrentLevel report.
 sub MATTERDevice_Percentage($) {
     my ($hash) = @_;
-    my $level = ReadingsVal($hash->{NAME}, 'brightness', undef);
+    return undef unless MATTERDevice_ReadingSources($hash)->{level};
+    my $level = ReadingsVal($hash->{NAME}, (MATTERDevice_LevelNames($hash))[0], undef);
     return undef unless defined($level) && !ref($level) &&
         $level =~ /\A[0-9]+\z/ && $level <= 254;
     my $max = MATTERDevice_MaxBrightness($hash);
@@ -1467,14 +1534,14 @@ sub MATTERDevice_Set($$@) {
             ($io_hash->{ws_status} // '') eq 'connected';
 
     # Direct FHEM commands must not coerce malformed numeric arguments to zero.
-    if ($cmd =~ /^(?:brightness|pct|tilt|ct|frequency)$/) {
+    if ($cmd =~ /^(?:brightness|level|pct|dimmerPct|tilt|ct|levelFrequency)$/) {
         return "Usage: set $name $cmd <non-negative integer>"
             unless @args == 1 && defined($args[0]) && $args[0] =~ /\A\d+\z/;
-        return "$cmd must be between 0 and 100" if ($cmd eq 'pct' || $cmd eq 'tilt') && $args[0] > 100;
-        return "Invalid brightness" if $cmd eq 'brightness' &&
+        return "$cmd must be between 0 and 100" if ($cmd eq 'pct' || $cmd eq 'dimmerPct' || $cmd eq 'tilt') && $args[0] > 100;
+        return "Invalid brightness" if ($cmd eq 'brightness' || $cmd eq 'level') &&
             $args[0] > MATTERDevice_MaxBrightness($hash);
-        return "Invalid color temperature" if $cmd eq 'ct' && (!$args[0] || $args[0] > 65534);
-        return "Invalid frequency" if $cmd eq 'frequency' && (!$args[0] || $args[0] > 65535);
+        return "Invalid color temperature" if $cmd eq 'ct' && (!$args[0] || $args[0] > 65279);
+        return "Invalid frequency" if $cmd eq 'levelFrequency' && (!$args[0] || $args[0] > 65535);
     }
 
     if ($cmd eq 'checkFirmwareUpdate' || $cmd eq 'updateFirmware') {
@@ -1574,15 +1641,15 @@ sub MATTERDevice_Set($$@) {
     elsif ($cmd eq "stop") {
         $payload = MATTERDevice_CommandRequest($hash, 0x0102, "StopMotion");
     }
-    elsif ($cmd eq "brightness") {
+    elsif ($cmd eq "brightness" || $cmd eq "level") {
         my $use_with_onoff = MATTERDevice_CommandSupported($hash, 0x0008, 0x04);
         $payload = MATTERDevice_CommandRequest($hash, 0x0008, ($use_with_onoff ? "MoveToLevelWithOnOff" : "MoveToLevel"),
             { level => int($args[0]), transitionTime => 0, optionsMask => 0, optionsOverride => 0 });
     }
-    elsif ($cmd eq "pct") {
+    elsif ($cmd eq "pct" || $cmd eq "dimmerPct") {
         my $can_wc_pct = MATTERDevice_CommandSupported($hash, 0x0102, 0x05);
-        if ($can_wc_pct) {
-            my $position = $args[0] * 100;
+        if ($cmd eq "pct" && $can_wc_pct) {
+            my $position = (100 - $args[0]) * 100;
             $payload = MATTERDevice_CommandRequest($hash, 0x0102, "GoToLiftPercentage",
                 { liftPercent100thsValue => $position });
         } else {
@@ -1828,7 +1895,7 @@ sub MATTERDevice_Set($$@) {
 
         return undef;
     }
-    elsif ($cmd eq "frequency") {
+    elsif ($cmd eq "levelFrequency") {
         $payload = MATTERDevice_CommandRequest($hash, 0x0008, "MoveToClosestFrequency",
             { frequency => int($args[0]) });
     }
@@ -2460,6 +2527,27 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         $hash->{READINGS}{model}{VAL} ne $value);
     readingsBeginUpdate($hash);
 
+    if ($cluster_id == 8 && $attr_id == 0) {
+        MATTERDevice_RecordReadingSources($hash, 'level');
+        $attr_name = (MATTERDevice_LevelNames($hash))[0];
+    } elsif ($cluster_id == 0x0400 && $attr_id == 0) {
+        MATTERDevice_RecordReadingSources($hash, 'light');
+    } elsif ($cluster_id == 0x0102) {
+        MATTERDevice_RecordReadingSources($hash, 'cover');
+        if ($attr_id == 8 || $attr_id == 9 || $attr_id == 14 || $attr_id == 15) {
+            my $axis = $attr_id == 8 || $attr_id == 14 ? 'lift' : 'tilt';
+            my $fine = $attr_id >= 14;
+            my $sources = MATTERDevice_ReadingSources($hash);
+            if (!$fine && $sources->{"${axis}Fine"}) {
+                MATTERDevice_ReadingsEndUpdate($hash, 1);
+                return;
+            }
+            MATTERDevice_RecordReadingSources($hash, $axis, $fine ? ("${axis}Fine") : ());
+            $value /= 100 if $fine;
+            $value = 100 - $value if $axis eq 'lift';
+        }
+    }
+
     # Spezieller Fall: OnOff State mappen
     if ($cluster_id == 6 && $attr_id == 0 && ($hash->{endpoint_id} // 0) > 0) {
         my $state_val = $value ? "on" : "off";
@@ -2467,7 +2555,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     }
     # Alle anderen Werte direkt als Reading speichern
     elsif (defined($attr_name)) {
-        if ($is_reading) {
+        if ($is_reading && !($attr_name eq 'state' && ($hash->{endpoint_id} // 0) == 0)) {
             readingsBulkUpdate($hash, $attr_name, $value);
             # FHEM's native state also represents standard binary sensor
             # endpoints. This is device telemetry, never a command echo.
@@ -2478,11 +2566,16 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         }
         if ($cluster_id == 0x0008 && ($attr_id == 0 || $attr_id == 3)) {
             my $pct = MATTERDevice_Percentage($hash);
-            readingsBulkUpdate($hash, 'pct', $pct) if defined $pct;
+            readingsBulkUpdate($hash, (MATTERDevice_LevelNames($hash))[1], $pct) if defined $pct;
         }
     }
 
 
+    if (($cluster_id == 47 && ($attr_id == 14 || $attr_id == 15)) ||
+        ($cluster_id == 92 && $attr_id == 3)) {
+        MATTERDevice_RecordReadingSources($hash, $attr_name);
+        MATTERDevice_UpdateBatteryState($hash);
+    }
     MATTERDevice_ReadingsEndUpdate($hash, 1);
     # Model on endpoint 0 identifies the physical node, not a single function.
     MATTERDevice_SyncNodeReadings($hash) if $model_changed;
@@ -2778,13 +2871,14 @@ sub MATTERDevice_GetSetList($) {
     );
     $add->("toggle:noArg") if (MATTERDevice_CommandSupported($hash, 0x0006, 0x02));
 
+    my ($level_name, $pct_name) = MATTERDevice_LevelNames($hash);
     my $can_level =
         MATTERDevice_CommandSupported($hash, 0x0008, 0x04) ||
         MATTERDevice_CommandSupported($hash, 0x0008, 0x00);
     if ($can_level) {
         my $max_level = MATTERDevice_MaxBrightness($hash);
-        $add->($max_level > 0 ? "brightness:slider,0,1,$max_level" : 'brightness:textField');
-        $add->("pct:slider,0,1,100");
+        $add->($max_level > 0 ? "$level_name:slider,0,1,$max_level" : "$level_name:textField");
+        $add->("$pct_name:slider,0,1,100");
     }
 
     $add->("dim_up:noArg") if (
@@ -2815,7 +2909,7 @@ sub MATTERDevice_GetSetList($) {
         my $max = MATTERDevice_ReportedLimit($hash, 0x0008, 0x0006);
         # Frequency zero means undefined, not a usable slider boundary.
         $add->(defined($min) && defined($max) && $min > 0 && $min <= $max
-            ? "frequency:slider,$min,1,$max" : 'frequency:textField');
+            ? "levelFrequency:slider,$min,1,$max" : 'levelFrequency:textField');
     }
 
     $add->($MATTER_CLUSTERS{0x0006}{commands}{0x40}{set_list})
@@ -3300,12 +3394,12 @@ extra Matter requests are used.</p>
 <ul>
 <li>Lights/plugs, contacts, motion, leaks and rain retain their physical
 <code>state</code>. A plug's electrical readings do not replace its on/off display.</li>
-<li>Temperature/humidity/pressure/illuminance use their existing readings and
+<li>Temperature/humidity/pressure and measured brightness use their functional readings and
 units; a combined temperature/humidity endpoint shows both, for example
 <code>22.34 °C / 48 %</code>, with <code>unknown</code> for missing components.</li>
-<li>Door locks display <code>lock_state</code> as not_fully_locked, locked,
+<li>Door locks display functional <code>state</code> as not_fully_locked, locked,
 unlocked or unlatched, distinct from the door contact. Coverings show current
-lift/tilt percentages in the reported Matter direction (0 open, 100 closed),
+lift <code>pct</code> (100 open, 0 closed) and native <code>tilt</code> percentages,
 then raw absolute positions explicitly labelled raw if necessary, otherwise
 reported stopped/opening/closing status. Targets are not current positions.</li>
 <li>Thermostats show reported mode, measured temperature and the heating/cooling
@@ -3330,6 +3424,40 @@ Structural companions do not participate. Missing primary data never switches
 to a lower-priority type. All new display classes remain <strong>hardware
 untested</strong>; actual local FHEM/FHEMWEB tests use synthetic reports.</p>
 
+<h4>Functional readings (hardware untested)</h4>
+<table>
+<tr><th>Reading</th><th>Meaning</th></tr>
+<tr><td>batteryPercent / batteryVoltage</td><td>Integer 0..100 % (native half-percent rounded half up) / volts (mV divided by 1000).</td></tr>
+<tr><td>batteryState</td><td>ok/low from known same-endpoint warning sources, without percent/voltage thresholds.</td></tr>
+<tr><td>ct</td><td>Positive mireds 1..65279; matching setter.</td></tr>
+<tr><td>hue / sat</td><td>Native Matter integers 0..254, not degrees or percent.</td></tr>
+<tr><td>brightness</td><td>Measured illuminance in lux, using the logarithmic conversion.</td></tr>
+<tr><td>pct / tilt for coverings</td><td>Lift percent open (100=open, 0=closed) / native tilt percent. Fine reports take precedence.</td></tr>
+<tr><td>state for locks</td><td>not_fully_locked / locked / unlocked / unlatched; native state events. Door contact is separate.</td></tr>
+<tr><td>frequency</td><td>Measured electrical frequency in Hz (native mHz divided by 1000).</td></tr>
+<tr><td>levelFrequency</td><td>Independent LevelControl frequency in native units, with matching setter; min_frequency/max_frequency are its limits.</td></tr>
+</table>
+<p>The covering pct setter uses percent open as well: 25 sends native
+liftPercent100thsValue=7500. Tilt uses its native direction. Commands and target
+positions never update physical positions. Fine-position priority survives restoration.</p>
+<p>Pure dimmers use brightness=0..254 and pct=0..100. With illuminance on the
+same endpoint, native dimmer reading/setter is <code>level</code>, and brightness
+means lux. With covering, dim percent is <code>dimmerPct</code>, and pct belongs
+to covering. Both combinations can coexist. Setters/widgets use the same names
+and still require reported capabilities.</p>
+<p>Hidden <code>.matterReadingSources</code> persists origins for these collisions,
+position precision and battery reconciliation, without own events or command
+permissions. Quantities remain separate when additional functions are reported;
+only source-proven values are reassigned, preserving measurement timestamps.
+Identity changes clear provenance; rename preserves it.</p>
+<p>Any known same-endpoint charge warning/critical level, replacement request
+or SmokeCoAlarm battery warning means low. At least one valid source and no known
+warning are required for ok. Missing/null data never means all-clear. Detailed
+battery_charge_level, battery_replacement_needed and alarm_battery preserve
+cause/severity; a normal source cannot hide another warning. No cross-endpoint
+aggregation, polling or extra reads. See
+<a href="https://github.com/Flachzange/fhem-matter-fork/blob/testing/docs/reading-conventions.md">functional names, source evidence and test scope</a>.</p>
+
 <h4>Device-limit readings and upgrade from V0.20</h4>
 <p>The following ordinary readings are populated from accepted device reports
 or snapshots, independently for each endpoint. They survive normal FHEM
@@ -3343,7 +3471,7 @@ statefile/configDB restoration. No extra reads or polling are introduced.</p>
 <tr><td><code>min_rfid_code_length</code>, <code>max_rfid_code_length</code></td><td>DoorLock MinRFIDCodeLength / MaxRFIDCodeLength, bytes. Informational; no RFID management is added.</td></tr>
 </table>
 <p>Valid CT limits determine the colorpicker range. Valid positive frequency
-limits determine the frequency slider range. Missing, undefined, reversed or
+limits determine the levelFrequency slider range. Missing, undefined, reversed or
 metadata-excluded boundaries leave the advertised command available with a
 text field instead; no 153&ndash;500 or 50&ndash;60 device range is invented.
 The Lighting feature uses the standardized level maximum 254. Other
@@ -3766,9 +3894,9 @@ nicht ihre on/off-Anzeige.</li>
 <li>Temperatur/Feuchte/Druck/Helligkeit verwenden die bestehenden Readings mit
 Einheiten. Ein kombinierter Temperatur-/Feuchte-Endpunkt zeigt beide Werte,
 etwa <code>22.34 °C / 48 %</code>; fehlende Komponenten bleiben unknown.</li>
-<li>Türschlösser zeigen <code>lock_state</code> als not_fully_locked, locked,
+<li>Türschlösser zeigen das funktionale <code>state</code> als not_fully_locked, locked,
 unlocked oder unlatched, getrennt vom Türkontakt. Jalousien zeigen gemeldete
-aktuelle Lift-/Tilt-Prozentwerte in Matter-Richtung (0 offen, 100 geschlossen),
+aktuelle Lift-<code>pct</code> (100 offen, 0 geschlossen) und native <code>tilt</code>-Prozentwerte,
 ersatzweise absolute Rohpositionen ausdrücklich mit raw, sonst den gemeldeten
 Status stopped/opening/closing. Zielpositionen sind keine Istpositionen.</li>
 <li>Thermostate zeigen gemeldeten Modus, Isttemperatur und die zum Modus passenden
@@ -3794,6 +3922,41 @@ Durchfluss. Strukturelle Begleittypen zählen nicht. Fehlende Hauptdaten führen
 nicht zur Anzeige eines niedriger priorisierten Typs. Alle neuen
 Anzeigeklassen sind <strong>Hardware-ungetestet</strong>; die lokale Prüfung
 mit echtem FHEM/FHEMWEB verwendet synthetische Meldungen.</p>
+
+<h4>Funktionale Readings (Hardware ungetestet)</h4>
+<table>
+<tr><th>Reading</th><th>Bedeutung</th></tr>
+<tr><td>batteryPercent / batteryVoltage</td><td>Ganzzahlige 0..100 % (native Halbprozent kaufmännisch gerundet) / Volt (mV geteilt durch 1000).</td></tr>
+<tr><td>batteryState</td><td>ok/low aus bekannten Warnquellen desselben Endpunkts, ohne Prozent-/Spannungsschwellen.</td></tr>
+<tr><td>ct</td><td>Positive Mired 1..65279; gleicher Setter.</td></tr>
+<tr><td>hue / sat</td><td>Native Matter-Ganzzahlen 0..254, keine Grad oder Prozent.</td></tr>
+<tr><td>brightness</td><td>Gemessene Helligkeit in Lux, mit logarithmischer Umrechnung.</td></tr>
+<tr><td>pct / tilt bei Jalousien</td><td>Lift-Prozent offen (100=offen, 0=geschlossen) / native Tilt-Prozent. Feine Meldungen haben Vorrang.</td></tr>
+<tr><td>state bei Schlössern</td><td>not_fully_locked / locked / unlocked / unlatched; native state-Events. Türkontakt bleibt getrennt.</td></tr>
+<tr><td>frequency</td><td>Gemessene elektrische Frequenz in Hz (native mHz geteilt durch 1000).</td></tr>
+<tr><td>levelFrequency</td><td>Unabhängige LevelControl-Frequenz in nativer Einheit samt Setter; min_frequency/max_frequency sind ihre Grenzen.</td></tr>
+</table>
+<p>Auch der Jalousie-pct-Setter verwendet Prozent offen: 25 sendet nativ
+liftPercent100thsValue=7500. Tilt verwendet seine native Richtung. Befehle und
+Zielpositionen ändern keine Istpositionen. Die Priorität feiner Positionen
+bleibt beim Wiederherstellen erhalten.</p>
+<p>Reine Dimmer verwenden brightness=0..254 und pct=0..100. Mit Helligkeitsmessung
+auf demselben Endpunkt heißt das native Dimm-Reading samt Setter <code>level</code>;
+brightness bedeutet Lux. Mit Jalousiefunktion heißt Dimmprozent <code>dimmerPct</code>,
+pct gehört zur Jalousie. Beide Kombinationen können gemeinsam auftreten.
+Setter/Widgets verwenden dieselben Namen und benötigen gemeldete Capabilities.</p>
+<p>Das verborgene <code>.matterReadingSources</code> speichert die Herkunft für
+Kollisionen, Positionsauflösung und Batteriezusammenführung, ohne eigene Events
+oder Befehlsfreigaben. Bei zusätzlich gemeldeten Funktionen bleiben die Größen
+getrennt; nur eindeutig zugeordnete Werte werden unter Erhalt des Messzeitstempels
+neu zugeordnet. Identitätswechsel löschen die Herkunft; Rename erhält sie.</p>
+<p>Jede bekannte Ladungswarnung/kritisch, Austauschbedarf oder SmokeCoAlarm-
+Batteriewarnung desselben Endpunkts bedeutet low. Für ok ist mindestens eine
+gültige Quelle und keine bekannte Warnung nötig. Fehlende/null Daten sind keine
+Entwarnung. battery_charge_level, battery_replacement_needed und alarm_battery
+behalten Ursache/Schweregrad; normale Quellen verdecken keine andere Warnung.
+Keine endpunktübergreifende Zusammenführung, Polling oder zusätzlichen Abfragen.
+Siehe <a href="https://github.com/Flachzange/fhem-matter-fork/blob/testing/docs/reading-conventions.md">funktionale Namen, Quellen und Testumfang</a>.</p>
 
 <h4>Gerätegrenzen als Readings und Umstieg von V0.20</h4>
 <p>Die folgenden normalen Readings entstehen aus akzeptierten Gerätemeldungen
