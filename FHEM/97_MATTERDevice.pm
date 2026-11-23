@@ -1057,12 +1057,20 @@ sub MATTERDevice_ApplyCapabilityMetadata($$;$) {
     foreach my $child (MATTERDevice_NodeChildren($root)) {
         $targets{$child->{endpoint_id}} = $child;
     }
-    for my $path (sort keys %$values) {
+    for my $path (sort {
+        ($a =~ m{/29/1$} ? 1 : 0) <=> ($b =~ m{/29/1$} ? 1 : 0)
+    } keys %$values) {
         next unless $path =~ m{^(\d+)/(\d+)/(\d+)$};
         my ($ep, $cluster, $attr_id) = (0 + $1, 0 + $2, 0 + $3);
         next if defined($endpoint_only) && $ep != $endpoint_only;
-        next unless $targets{$ep} && exists $MATTER_GLOBAL_ATTRIBUTES{$attr_id};
-        MATTERDevice_ProcessGlobalAttribute($targets{$ep}, $cluster, $attr_id, $values->{$path});
+        next unless $targets{$ep};
+        # A newer live ServerList may have been reconciled into this reply.
+        # Apply it last so older global metadata cannot revive removed clusters.
+        if ($cluster == 29 && $attr_id == 1) {
+            MATTERDevice_ProcessAttributeValue($targets{$ep}, $cluster, $attr_id, $values->{$path});
+        } elsif (exists $MATTER_GLOBAL_ATTRIBUTES{$attr_id}) {
+            MATTERDevice_ProcessGlobalAttribute($targets{$ep}, $cluster, $attr_id, $values->{$path});
+        }
     }
 }
 

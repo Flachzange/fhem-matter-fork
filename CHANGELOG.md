@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-23  MATTER V0.40 review follow-up: Apply reconciled newer ServerLists after automatic recovery metadata; retain sibling metadata and metadata-only scope.
+
 - 2026-11-23  MATTER V0.40 (#85): Remove the unused scalar pending_config representation. Keep one structured request format, realistic owner-aware read fixtures and the independent mixed command registry.
 
 - 2026-11-23  MATTER V0.40 (#84): Resolve a node_event endpoint once in the common device path. Retain generic reception accounting for unmapped/disabled endpoints and repeated button events; no new cache or index.

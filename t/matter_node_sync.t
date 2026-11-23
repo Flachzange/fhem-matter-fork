@@ -6036,4 +6036,23 @@ subtest 'Issue 84: node events resolve endpoints once before any publication' =>
     is($root->{MSGCNT}, $root_count, 'malformed event is not counted');
 };
 
+
+subtest 'Recovery preserves newer structural revocation' => sub {
+ my @sent;
+ my $io=$defs{auditIO}={NAME=>'auditIO',TYPE=>'MATTER',CD=>1,websocket=>1,ws_status=>'connected',helper=>{},test_send_text=>sub {push @sent,JSON::decode_json($_[0]);1}};
+ MATTER_ProcessNode($io,{node_id=>99200,name=>'Audit',available=>JSON::true,attributes=>{'1/6/65529'=>[0,1],'1/6/0'=>JSON::false,'2/6/0'=>JSON::false}});
+ my $root=MATTERDevice_LookupRoot($io,99200);
+ my %ep=map {$_->{endpoint_id}=>$_} MATTERDevice_NodeChildren($root);
+ MATTER_ParseMessage($io,encode_json({event=>'node_updated',data=>{node_id=>99200,available=>JSON::false}}));
+ MATTER_ParseMessage($io,encode_json({event=>'node_updated',data=>{node_id=>99200,available=>JSON::true}}));
+ my $id=$sent[-1]{message_id};
+ is($sent[-1]{command},'read_attribute','online recovery starts real metadata read');
+ MATTER_ParseMessage($io,encode_json({event=>'attribute_updated',data=>[99200,'1/29/1',[29,47]]}));
+ ok(!MATTERDevice_CommandAccepted($ep{1},6,1),'new list revokes On');
+ MATTER_ParseMessage($io,encode_json({message_id=>$id,result=>{'1/6/65529'=>[0,1],'2/6/65529'=>[0,1],'2/6/0'=>JSON::true}}));
+ ok(!MATTERDevice_CommandAccepted($ep{1},6,1),'old automatic reply cannot restore On');
+ ok(MATTERDevice_CommandAccepted($ep{2},6,1),'unrelated endpoint metadata is retained');
+ is(ReadingsVal($ep{2}{NAME},'state',''),'off','automatic recovery still ignores physical values');
+};
+
 done_testing();

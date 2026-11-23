@@ -180,3 +180,13 @@ module sources with modeled FHEM/HttpUtils callbacks; this is not a standalone
 syntax/integration check with an installed FHEM core. No live FHEM, configDB
 restart, physical device/firmware operation, or server-version compatibility
 matrix was exercised. No transport or server implementation was changed.
+
+## Follow-up: structural revocation during automatic recovery
+
+A newer live ServerList was reconciled into automatic replies but ignored by
+the metadata-only consumer. That consumer now applies structural lists last,
+using the existing attribute publisher. It still ignores physical values.
+Reviewed IO reconciliation, metadata application, explicit-read ordering and
+disable exclusions. Regression covers actual offline/online-triggered recovery,
+revocation, useful sibling metadata and rejection of physical reply values.
+All 1,022 top-level tests pass; no live hardware validation.
