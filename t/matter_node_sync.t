@@ -19,6 +19,9 @@ my $preferred_io = 'ioA';
 my $fail_io_for = '';
 my $reading_event_hook;
 
+# Presentation semantics are exercised by the actual-core suite, not these stubs.
+sub evalStateFormat { return; }
+sub ReplaceEventMap { return $_[1]; }
 sub Log3 { push @log, $_[2]; }
 sub AttrVal { return exists $attr{$_[0]}{$_[1]} ? $attr{$_[0]}{$_[1]} : $_[2]; }
 sub ReadingsVal {

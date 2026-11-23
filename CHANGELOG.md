@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-23  MATTER V0.41 (#89): Add type-dependent endpoint STATE defaults for all currently named types, preserving explicit stateFormat, existing state readings/events and offline/disable data. Present measured values, lock/covering/HVAC/alarm/air/electrical data and last button events without redundant readings, attributes, polling or new requests; validate newly displayed enums/current positions. Add real FHEM/FHEMWEB/statefile tests in both encoding modes and require a default display for future functional types in AGENTS-MATTER.md. Hardware untested.
+
 - 2026-11-23  MATTER V0.40 review follow-up: Keep active explicit reads cancellable during synchronous publication; reject reentrant duplicates and clean temporary registrations on completion.
 
 - 2026-11-23  MATTER V0.40 review follow-up: Apply reconciled newer ServerLists after automatic recovery metadata; retain sibling metadata and metadata-only scope.

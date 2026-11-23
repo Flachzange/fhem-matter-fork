@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.40 23.11.2026";
+my $MATTER_version = "V0.41 23.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -773,7 +773,7 @@ sub MATTER_SetNodeStatus($$$) {
     }
     foreach my $device (@devices) {
         next if MATTERDevice_IsDisabled($device);
-        readingsSingleUpdate($device, 'matter_status', $status, 1)
+        MATTERDevice_ReadingsSingleUpdate($device, 'matter_status', $status, 1)
             if ReadingsVal($device->{NAME}, 'matter_status', '') ne $status;
         next unless ($device->{endpoint_id} // 0) == 0;
         if ($status eq 'removed') {

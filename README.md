@@ -180,6 +180,25 @@ Root devices use `DEF = <node_id>` (for example `18`); endpoints use `DEF = <nod
 
 MATTERDevice leaves FHEM's initial `STATE` unchanged during configuration loading, allowing normal statefile restoration. Once initialization finishes, root nodes (endpoint 0) expose a native `state` reading, without an automatically configured `stateFormat` attribute: `online` for server-reported `available=true`, `offline` for `available=false`, `unknown` when no fresh reachability report is available or the MATTER IO loses its connection, and `removed` when the server removes a node or omits it from a complete node list. `online` is not inferred from mere node-list membership. The module does not introduce reachability polling. Only root `state` changes; endpoint device states remain independent and `available` retains the last raw server report, even during connection loss.
 
+Endpoint **STATE display** now has a device-type default, without creating a
+stateFormat attribute or additional state readings. Temperature, humidity,
+pressure and illumination use their existing readings with units; a combined
+temperature/humidity endpoint shows both. Locks, coverings, thermostats, fans,
+alarms, air-quality and electrical sensors use their own reported functional
+values. On/off and binary-sensor state readings retain their existing values
+and events. Button displays show `last: short` (or the last other
+reported event), never an inferred actuator state. An explicit `stateFormat`
+always takes precedence, including after restoration; deleting it restores
+the default. Missing data is `unknown`, and valid zero remains zero. Offline
+or disabled endpoints retain their last values. Structural/unknown types use
+an existing state or `unknown`; the Flow Sensor label alone has no measurement
+parser and displays `unknown`. No polling or additional Matter requests are
+added. The [complete type/priority table and evidence](docs/endpoint-display.md)
+cover every currently named type. Hardware behavior of these new displays is
+**untested**; synthetic reports are verified with an actual local FHEM core
+and FHEMWEB, including live longpoll and statefile restoration.
+
+
 **Upgrade from V0.15:** At FHEM `INITIALIZED` / `REREADCFG`, roots that still have the old exact `stateFormat available` setting but no new-style `state` reading have that attribute removed automatically. Custom `stateFormat` values are preserved. Because V0.15 did not mark attributes as auto-created, an intentionally manually configured, identical `stateFormat available` cannot be distinguished from the old automatic default. Once migrated and a new `state` reading exists, that value can be deliberately configured again. Save the FHEM configuration after the update/restart to persist the migration.
 
 Matter `Descriptor.DeviceTypeList` is stored per endpoint in the **`device_type_ids` reading** as canonical comma-separated hexadecimal IDs (for example `0x0011,0x0076`). Both the root detail's endpoint type labels and automatic device-type groups use this reading rather than temporary helper metadata. Once a valid DeviceTypeList has been received, FHEM restores the IDs after restart through its normal statefile or configDB handling, even when the Matter server is still disconnected. Repeated identical values do not produce additional reading events. Invalid Descriptor responses do not erase previously known IDs. For endpoints that have **never** supplied a valid DeviceTypeList, the existing cluster-based fallback is still based on currently observed runtime clusters; the fix does not invent an authoritative device type or add polling. The runtime capabilities/command metadata remains transient and is not treated as a persisted reading.

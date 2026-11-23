@@ -1,9 +1,1 @@
-2026-11-23  MATTER V0.40 (#79): Invalidate old permissions and firmware offers when changing Matter identity.
-2026-11-23  MATTER V0.40 (#80): Preserve metadata on partial reads; revoke clusters only from valid structural lists.
-2026-11-23  MATTER V0.40 (#81): Bind read replies to their requesting device instance and endpoint.
-2026-11-23  MATTER V0.40 (#82): Share value acceptance between freshness tracking and publication.
-2026-11-23  MATTER V0.40 (#83): Reject malformed inner energy values without resetting the stored counter.
-2026-11-23  MATTER V0.40 (#84): Resolve addressed event endpoints once while preserving reception and button events.
-2026-11-23  MATTER V0.40 (#85): Remove the unused scalar read-request representation and redundant compatibility checks.
-2026-11-23  MATTER V0.40: Preserve newer structural revocation during automatic capability recovery.
-2026-11-23  MATTER V0.40: Cancel the remainder of an active endpoint read across synchronous disable/enable.
+2026-11-23  MATTER V0.41 (#89): Add endpoint display defaults by device type while preserving custom stateFormat, physical readings and offline/disable behavior.
