@@ -4,3 +4,4 @@
 2026-11-23  MATTER V0.40 (#82): Share value acceptance between freshness tracking and publication.
 2026-11-23  MATTER V0.40 (#83): Reject malformed inner energy values without resetting the stored counter.
 2026-11-23  MATTER V0.40 (#84): Resolve addressed event endpoints once while preserving reception and button events.
+2026-11-23  MATTER V0.40 (#85): Remove the unused scalar read-request representation and redundant compatibility checks.

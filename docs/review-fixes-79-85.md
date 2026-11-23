@@ -139,3 +139,21 @@ there is no new public control or changed event vocabulary to document.
 The new instrumented regression failed before the change; all 1,020 top-level
 entries pass after it. The measured claim is one global lookup instead of two
 per valid event, not a real-world latency or hardware benchmark.
+
+## #85: one internal read-request representation
+
+Removed the scalar pending_config branch and its redundant hash checks. Both
+production writers already register structured requests: explicit getConfig
+with its device owner and automatic metadata recovery with root/epoch scope.
+The unrelated mixed pending_command registry and external JSON shape checks
+retain their type guards.
+
+Post-implementation review searched every registry writer, reader and cleanup
+path. The remaining no-owner endpoint-specific cancellation fallback had no
+producer either and was removed. The old scalar metadata test now sends an
+actual getConfig request; response fixtures include the owner, FUUID, epoch
+and timestamp appropriate to their explicit or automatic request type.
+All 1,021 top-level entries pass, including read errors, empty responses,
+reception accounting, freshness, cancellation and identity changes. This is
+an internal simplification with no new public option or migration, so README
+and commandref need no further behavior description.

@@ -583,10 +583,9 @@ sub MATTERDevice_CancelRequests {
     }
     for my $id (keys %{$io->{helper}{pending_config} // {}}) {
         my $request = $io->{helper}{pending_config}{$id};
-        next unless ref($request) eq 'HASH' && $request->{node_id} eq $node;
+        next unless $request->{node_id} eq $node;
         if (($request->{owner} // '') eq $hash ||
-            ($ep == 0 && ($request->{root_fuuid} // '') eq ($hash->{FUUID} // '')) ||
-            ($ep > 0 && !exists($request->{owner}) && ($request->{endpoint_id} // -1) == $ep)) {
+            ($ep == 0 && ($request->{root_fuuid} // '') eq ($hash->{FUUID} // ''))) {
             delete $io->{helper}{pending_config}{$id};
         } elsif ($ep > 0) {
             $request->{excluded_endpoints}{$ep} = 1;
@@ -1609,16 +1608,14 @@ sub MATTERDevice_Set($$@) {
             my $pending_reads = ($ioHash->{helper}{pending_config} //= {});
             foreach my $id (keys %$pending_reads) {
                 my $entry = $pending_reads->{$id};
-                if (ref($entry) eq 'HASH' &&
-                    gettimeofday() - ($entry->{created_at} // 0) > 120) {
+                if (gettimeofday() - ($entry->{created_at} // 0) > 120) {
                     delete $pending_reads->{$id};
                     next;
                 }
                 # Do not allow a second request for this endpoint to return
                 # an older configuration after a newer response was applied.
                 return "MATTER: getConfig already in progress for $name"
-                    if ref($entry) eq 'HASH' &&
-                       $entry->{node_id} eq $node_id &&
+                    if $entry->{node_id} eq $node_id &&
                        $entry->{endpoint_id} == $endpoint_id;
             }
             return "MATTER: Too many pending read requests"

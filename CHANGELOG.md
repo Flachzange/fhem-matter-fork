@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-23  MATTER V0.40 (#85): Remove the unused scalar pending_config representation. Keep one structured request format, realistic owner-aware read fixtures and the independent mixed command registry.
+
 - 2026-11-23  MATTER V0.40 (#84): Resolve a node_event endpoint once in the common device path. Retain generic reception accounting for unmapped/disabled endpoints and repeated button events; no new cache or index.
 
 - 2026-11-23  MATTER V0.40 (#83): Validate the inner EnergyMeasurementStruct integer and its specified 0..2^62 mWh range before conversion. Preserve good readings on malformed data, retain zero and named/TLV fields, and prevent invalid structs from masking valid pending reads.

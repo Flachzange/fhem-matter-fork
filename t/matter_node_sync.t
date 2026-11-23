@@ -1637,9 +1637,11 @@ is($bulk_writes{$metadata_ep1->{NAME}}{model} // 0, $model_writes + 1,
    'a changed model produces exactly one endpoint update');
 
 # getConfig read_attribute results use the same propagation path.
-$defs{ioA}{helper}{pending_config}{95001} = 95;
+is(MATTERDevice_Set($metadata_root, $metadata_root->{NAME}, 'getConfig'), undef,
+   'root metadata read uses the actual getConfig sender');
+my $metadata_read_id = $sent_requests[-1]{message_id};
 MATTER_ParseMessage($defs{ioA}, encode_json({
-    message_id => 95001,
+    message_id => $metadata_read_id,
     result => {'0/40/3' => 'Synthetic Model C'},
 }));
 is(ReadingsVal($metadata_ep2->{NAME}, 'model', ''), 'Synthetic Model C',
@@ -3397,7 +3399,9 @@ is($r1->{MSGCNT}, 4, 'Switch event counts for target endpoint');
 # Matched reads, including the capability-only bypass and errors, are counted
 # independently of whether values may be imported. Unknown replies are ignored.
 $defs{ioReceive}{helper}{pending_config}{70002} = {
-    node_id => 4100, endpoint_id => 1, root_fuuid => $rr->{FUUID}
+    node_id => 4100, endpoint_id => 1, root_fuuid => $rr->{FUUID},
+    owner => $r1, fuuid => $r1->{FUUID}, created_at => $mock_time,
+    availability_epoch => $rr->{helper}{availability_epoch} // 0,
 };
 MATTER_ParseMessage($defs{ioReceive}, encode_json({
     message_id => 70002, result => {'1/6/65529' => [0, 1], '1/6/65532' => 0}
@@ -3405,7 +3409,9 @@ MATTER_ParseMessage($defs{ioReceive}, encode_json({
 is($rr->{MSGCNT}, 6, 'blocked correlated read counts for root');
 is($r1->{MSGCNT}, 5, 'blocked read counts once for requested endpoint');
 $defs{ioReceive}{helper}{pending_config}{70003} = {
-    node_id => 4100, endpoint_id => 1, root_fuuid => $rr->{FUUID}
+    node_id => 4100, endpoint_id => 1, root_fuuid => $rr->{FUUID},
+    owner => $r1, fuuid => $r1->{FUUID}, created_at => $mock_time,
+    availability_epoch => $rr->{helper}{availability_epoch} // 0,
 };
 MATTER_ParseMessage($defs{ioReceive}, encode_json({message_id => 70003, error_code => 1}));
 is($rr->{MSGCNT}, 7, 'correlated server error is a received node message');
@@ -3418,7 +3424,9 @@ MATTER_ParseMessage($defs{ioReceive}, '{broken');
 MATTERDevice_Parse($rr, encode_json({node_id => 4101, attributes => {'1/6/0' => JSON::true}}));
 is($rr->{MSGCNT}, 7, 'unmatched replies, malformed input and foreign nodes do not count');
 $defs{ioReceive}{helper}{pending_config}{70004} = {
-    node_id => 4100, endpoint_id => 1, root_fuuid => 'replaced-owner'
+    node_id => 4100, endpoint_id => 1, root_fuuid => 'replaced-owner',
+    owner => $r1, fuuid => $r1->{FUUID}, created_at => $mock_time,
+    availability_epoch => $rr->{helper}{availability_epoch} // 0,
 };
 MATTER_ParseMessage($defs{ioReceive}, encode_json({message_id => 70004, result => {}}));
 is($rr->{MSGCNT}, 7, 'a replaced request owner does not inherit receipt');
@@ -3429,7 +3437,9 @@ MATTER_ParseMessage($defs{ioReceive}, encode_json({
     event => 'node_updated', data => {node_id => 4100, available => JSON::true}
 }));
 $defs{ioReceive}{helper}{pending_config}{70005} = {
-    node_id => 4100, all_endpoints => 1, root_fuuid => $rr->{FUUID},
+    node_id => 4100, endpoint_id => 1, root_fuuid => $rr->{FUUID},
+    owner => $r1, fuuid => $r1->{FUUID}, created_at => $mock_time,
+    availability_epoch => $rr->{helper}{availability_epoch} // 0,
     live_values => {'2/6/0' => JSON::false}
 };
 MATTER_ParseMessage($defs{ioReceive}, encode_json({
@@ -3497,7 +3507,9 @@ is($defs{MATTER_ReceiveMinimal}{MSGCNT}, 1, 'node announcement without attribute
 my $before_empty = $rr->{MSGCNT};
 my $endpoint_before_empty = $r1->{MSGCNT};
 $defs{ioReceiveRenamed}{helper}{pending_config}{70007} = {
-    node_id => 4100, all_endpoints => 1, root_fuuid => $rr->{FUUID}
+    node_id => 4100, endpoint_id => -1, all_endpoints => 1, capability_only => 1,
+    root_fuuid => $rr->{FUUID}, created_at => $mock_time,
+    availability_epoch => $rr->{helper}{availability_epoch} // 0,
 };
 MATTER_ParseMessage($defs{ioReceiveRenamed}, encode_json({message_id => 70007, result => {}}));
 is($rr->{MSGCNT}, $before_empty + 1, 'empty correlated wildcard reply counts for root');
@@ -3637,13 +3649,21 @@ subtest 'Matter node network type through existing server routing' => sub {
     }]}));
     is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'ethernet',
        'invalid attribute_updated event cannot suppress valid discovery data');
-    $io->{helper}{pending_config}{8103} = {node_id => 5100, all_endpoints => 1};
+    $io->{helper}{pending_config}{8103} = {
+        node_id => 5100, endpoint_id => 0, owner => $nr, fuuid => $nr->{FUUID},
+        root_fuuid => $nr->{FUUID}, created_at => $mock_time,
+        availability_epoch => $nr->{helper}{availability_epoch} // 0,
+    };
     $report->($thread);
     MATTER_ParseMessage($io, encode_json({message_id => 8103,
         result => {'0/51/0' => $ethernet}}));
     is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'thread',
        'late correlated getConfig cannot overwrite a newer live interface list');
-    $io->{helper}{pending_config}{8104} = {node_id => 5100, all_endpoints => 1};
+    $io->{helper}{pending_config}{8104} = {
+        node_id => 5100, endpoint_id => 0, owner => $nr, fuuid => $nr->{FUUID},
+        root_fuuid => $nr->{FUUID}, created_at => $mock_time,
+        availability_epoch => $nr->{helper}{availability_epoch} // 0,
+    };
     $report->([{isOperational => 'false', type => 1}]);
     MATTER_ParseMessage($io, encode_json({message_id => 8104,
         result => {'0/51/0' => $ethernet}}));
