@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-23  MATTER V0.39 (#78): Add endpoint-only disable: pause controls, reads, functional updates and events while preserving identity and readings. Reuse existing request registries to discard endpoint requests and exclude stale shared replies on both transitions; synchronize once on online activation without polling or replay. Keep root/siblings and readOnly independent. Add regression coverage and DE/EN help; hardware untested.
+
 - 2026-11-23  MATTER V0.38 (#77): Add endpoint-only readOnly control protection with central command/write enforcement, dynamic set lists and preserved reads, reports, events and in-flight completions. Block unsent compound components if protection is enabled during a synchronous callback. Add focused regression coverage and DE/EN attribute help; hardware untested.
 
 - 2026-11-22  MATTER V0.37 (#66): Remove the empty IO get callback and unused capability and disconnect code.

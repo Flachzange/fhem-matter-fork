@@ -158,7 +158,13 @@ sub CommandDeleteAttr {
         my $error = MATTERDevice_Attr('del', $name, $key, undef);
         return $error if defined($error);
     }
-    delete $attr{$name}{$key};
+    if (defined $key) {
+        delete $attr{$name}{$_} for grep { /^$key$/ } keys %{$attr{$name} // {}};
+    } else {
+        delete $attr{$name};
+    }
+    MATTERDevice_Notify($defs{$name}, { NAME => 'global', CHANGED => ["DELETEATTR $command"] })
+        if $init_done && $defs{$name}{TYPE} eq 'MATTERDevice';
     return undef;
 }
 sub CommandDelete {
@@ -4817,6 +4823,234 @@ subtest 'Issue 34: native dim variants, latest command replies and lifecycle' =>
     MATTER_Close($io);
     like(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'dim_stop') // '', qr/No active WebSocket/, 'disconnected Stop is rejected instead of pretending to stop');
     MATTER_Close($other);
+};
+
+subtest 'Issue 78: disable pauses one endpoint and reuses existing synchronization' => sub {
+    my (@sent, @peers);
+    my $connect = sub {
+        my ($name) = @_;
+        socketpair(my $socket, my $peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die 'disable socketpair';
+        push @peers, $peer;
+        my $io = $defs{$name} = {NAME => $name, TYPE => 'MATTER', READINGS => {},
+            CD => $socket, websocket => 1, ws_status => 'connected', helper => {}};
+        $io->{test_send_text} = sub {push @sent, JSON::decode_json($_[0]); 1};
+        return $io;
+    };
+    my $io = $connect->('disableEndpointIO');
+    my $other = $connect->('disableEndpointOtherIO');
+    my $values = {'0/40/3' => 'Initial model',
+        '1/6/0' => JSON::false, '1/6/65529' => [0,1,2], '1/6/65532' => 0,
+        '2/6/0' => JSON::false, '2/6/65529' => [0,1,2], '2/6/65532' => 0};
+    for my $fixture ([$io, 7800, 'DisableA'], [$io, 7801, 'DisableB'], [$other, 7800, 'DisableOther']) {
+        MATTER_ProcessNode($fixture->[0], {node_id => $fixture->[1], name => $fixture->[2],
+            available => JSON::true, attributes => $values});
+    }
+    my $root = MATTERDevice_LookupRoot($io, 7800);
+    my ($ep, $sibling) = MATTERDevice_NodeChildren($root);
+    my $name = $ep->{NAME};
+    my $uuid = $ep->{FUUID};
+    my $reply = sub {
+        my ($id, %body) = @_;
+        MATTER_ParseMessage($io, encode_json({message_id => $id, %body}));
+    };
+    my $set = sub {
+        my ($device, $cmd, @args) = @_;
+        my @result = MATTERDevice_Set($device, $device->{NAME}, $cmd, @args);
+        is($result[0], undef, "$cmd accepted on active endpoint");
+        return $sent[-1]{message_id};
+    };
+    my $on = $set->($ep, 'on');
+    my $old_read = $set->($ep, 'getConfig');
+    my $sibling_read = $set->($sibling, 'getConfig');
+    my $sibling_command = $set->($sibling, 'on');
+    my ($metadata_id, $error) = MATTERDevice_RequestCapabilityRefresh($root);
+    is($error, undef, 'start node-wide metadata read before disabling');
+    my @snapshot_ids;
+    for my $command (qw(get_nodes start_listening)) {
+        my $id = MATTER_NextMessageId($io);
+        $io->{helper}{pending_command}{$id} = $command;
+        push @snapshot_ids, $id;
+    }
+    my $epoch = $root->{helper}{availability_epoch};
+    my @timers_before = @timers;
+    is(CommandAttr(undef, "$name disable 1"), undef, 'disable attribute accepted');
+    like(CommandAttr(undef, "$name disable bad") // '', qr/must be 0 or 1/, 'invalid disable rejected');
+    like(CommandAttr(undef, "$root->{NAME} disable 1") // '', qr/only supported on endpoints/, 'root disable rejected');
+    is(CommandAttr(undef, "$name disable 1"), undef, 'repeated disable is harmless');
+    is($root->{helper}{availability_epoch}, $epoch, 'endpoint disable does not invalidate the node');
+    ok(!exists($io->{helper}{pending_command}{$on}), 'old endpoint command retired');
+    ok(!exists($io->{helper}{pending_config}{$old_read}), 'old endpoint read retired');
+    ok(exists($io->{helper}{pending_config}{$sibling_read}), 'sibling read remains pending');
+    ok(exists($io->{helper}{pending_command}{$sibling_command}), 'sibling command remains pending');
+    ok($io->{helper}{pending_config}{$metadata_id}{excluded_endpoints}{1}, 'shared read excludes disabled endpoint');
+    is_deeply([MATTERDevice_GetSetList($ep)], [], 'disabled endpoint offers no setter, including getConfig');
+    my $before = scalar @sent;
+    for my $cmd (qw(on off toggle getConfig)) {
+        like(MATTERDevice_Set($ep, $name, $cmd) // '', qr/disable=1/, "$cmd returns disable error");
+    }
+    like(MATTERDevice_SendRequests($ep, [MATTERDevice_CommandRequest($ep, 6, 'On')], 'lastError', 120) // '',
+         qr/disable=1/, 'internal command caller cannot bypass disable');
+    like(MATTERDevice_SendRequests($ep, [{command => 'write_attribute', args => {
+        node_id => 7800, attribute_path => '1/6/0', value => 1}}], 'lastError', 120) // '',
+         qr/disable=1/, 'internal attribute writer cannot bypass disable');
+    is(scalar @sent, $before, 'disabled calls send nothing');
+    my $saved = JSON::decode_json(encode_json($ep->{READINGS}));
+    my $capabilities = JSON::decode_json(encode_json($ep->{helper}{capabilities}));
+    my $received = $ep->{MSGCNT};
+    my $events = scalar @direct_events;
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [7800, '1/6/0', JSON::true]}));
+    MATTER_ParseMessage($io, encode_json({event => 'node_event', data => {
+        node_id => 7800, endpoint_id => 1, cluster_id => 59, event_id => 1}}));
+    MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {
+        node_id => 7800, available => JSON::false, attributes => {'1/6/0' => JSON::true}}}));
+    MATTER_ProcessNode($io, {node_id => 7800, available => JSON::true, attributes => {
+        '0/40/3' => 'New root model', '1/6/0' => JSON::true, '1/6/65529' => [],
+        '2/6/0' => JSON::true}});
+    MATTERDevice_ProcessMessage($root, {result => {'1/6/65529' => [], '1/6/0' => JSON::true}});
+    MATTERDevice_ApplyCapabilityMetadata($root, {'1/6/65529' => []});
+    $reply->($on, error_code => 8, details => 'old failure');
+    $reply->($old_read, result => {'1/6/0' => JSON::true});
+    MATTER_SetNodeStatus($io, 7800, 'removed');
+    is_deeply($ep->{READINGS}, $saved, 'reports, snapshots, mirrors, reads, events and removal preserve disabled readings/timestamps');
+    is_deeply($ep->{helper}{capabilities}, $capabilities, 'disabled capability cache stays unchanged');
+    is(scalar @direct_events, $events, 'disabled button event is suppressed');
+    $reply->($sibling_command, result => undef);
+    is(ReadingsVal($sibling->{NAME}, 'lastError', ''), 'none', 'sibling command completes normally');
+    ok($ep->{MSGCNT} > $received, 'receive internals continue to record server traffic');
+    is(ReadingsVal($sibling->{NAME}, 'state', ''), 'on', 'sibling reports still update');
+    is(ReadingsVal($root->{NAME}, 'state', ''), 'removed', 'root status still updates');
+    ok($defs{$name} eq $ep && $ep->{FUUID} eq $uuid, 'discovery retains original endpoint identity');
+
+    # A restored disabled child with no metadata must not trigger recovery.
+    $ep->{helper}{capabilities} = {}; $ep->{helper}{seen_clusters} = {};
+    ok(!MATTERDevice_NeedsCapabilityRefresh($root), 'disabled child does not require missing-command recovery');
+    $root->{helper}{capability_refresh} = {attempts => 0};
+    MATTER_ProcessNode($io, {node_id => 7800, available => JSON::true});
+    is(scalar @sent, $before, 'known online recovery adds no query solely for disabled metadata');
+    $ep->{helper}{capabilities} = $capabilities;
+
+    # A shared read started during disable must also be excluded on enable.
+    ($metadata_id, $error) = MATTERDevice_RequestCapabilityRefresh($root);
+    is($error, undef, 'shared metadata query can serve siblings while this endpoint is disabled');
+    my $during_disable = MATTER_NextMessageId($io);
+    $io->{helper}{pending_command}{$during_disable} = 'get_nodes';
+    push @snapshot_ids, $during_disable;
+    $before = scalar @sent;
+
+    # Online activation reads once, after the AttrFn commit, even under readOnly.
+    is(CommandAttr(undef, "$name readOnly 1"), undef, 'combine disable with independent readOnly');
+    is(CommandAttr(undef, "$name disable 0"), undef, 'enable endpoint online');
+    is(scalar @sent, $before + 1, 'enable sends exactly one endpoint configuration read');
+    my $fresh_read = $sent[-1];
+    is($fresh_read->{command}, 'read_attribute', 'enable uses the existing read path');
+    ok(!grep({!/^1\//} @{$fresh_read->{args}{attribute_path}}), 'enable read is endpoint-specific');
+    ok(!exists($ep->{helper}{enable_sync}), 'one-shot enable marker consumed before sending');
+    is(CommandAttr(undef, "$name disable 0"), undef, 'repeated enable accepted');
+    is(scalar @sent, $before + 1, 'repeated enable adds no read');
+    like(MATTERDevice_Set($ep, $name, 'off') // '', qr/readOnly=1/, 'enable preserves readOnly control protection');
+    $reply->($fresh_read->{message_id}, result => {'1/6/0' => JSON::false, '1/6/65529' => [0,1,2]});
+    my $enabled = JSON::decode_json(encode_json($ep->{READINGS}));
+    $reply->($on, error_code => 8, details => 'late command error after re-enable');
+    $reply->($old_read, result => {'1/6/0' => JSON::true});
+    is_deeply($ep->{READINGS}, $enabled, 'retired command/read cannot update a re-enabled endpoint');
+
+    # Node-wide reads/snapshots retain their other endpoints after re-enable.
+    # Keep metadata recovery useful for the sibling, otherwise it is correctly skipped.
+    delete $sibling->{helper}{capabilities}{6}{accepted_commands};
+    $reply->($metadata_id, result => {'1/6/65529' => [], '2/6/65529' => [0,1]});
+    ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'old shared read cannot revoke re-enabled commands');
+    ok(MATTERDevice_CommandAccepted($sibling, 6, 1), 'old shared read still updates sibling commands');
+    for my $id (@snapshot_ids) {
+        $reply->($id, result => [{node_id => 7800, available => JSON::true,
+            attributes => {'1/6/0' => JSON::true, '1/6/65529' => [], '2/6/0' => JSON::false}},
+            {node_id => 7801, available => JSON::true, attributes => $values}]);
+        is(ReadingsVal($name, 'state', ''), 'off', 'old discovery response excludes re-enabled endpoint');
+        ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'old discovery preserves re-enabled capabilities');
+        is(ReadingsVal($sibling->{NAME}, 'state', ''), 'off', 'old discovery keeps unrelated sibling values');
+    }
+    for my $target ($defs{MATTER_DisableB_EP1}, $defs{MATTER_DisableOther_EP1}) {
+        my $id = $set->($target, 'on');
+        MATTER_ParseMessage($target->{IODev}, encode_json({message_id => $id, result => undef}));
+    }
+    ok(!$other->{helper}{pending_snapshot_touched}, 'another IO acquires no exclusions');
+
+    # Offline activation is passive; the next ordinary online snapshot restores data.
+    is(CommandAttr(undef, "$name disable 1"), undef, 'disable again');
+    MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {node_id => 7800, available => JSON::false}}));
+    $before = scalar @sent;
+    is(CommandDeleteAttr(undef, "$name disable"), undef, 'delete disable while offline');
+    is(scalar @sent, $before, 'offline enabling sends no query');
+    MATTER_ProcessNode($io, {node_id => 7800, available => JSON::true, attributes => $values});
+    is(ReadingsVal($name, 'state', ''), 'off', 'ordinary online snapshot resumes synchronization');
+    is(CommandDeleteAttr(undef, "$name disable"), undef, 'deleting absent disable is harmless');
+    is(scalar @sent, $before, 'no replay or repeat probe after offline recovery');
+    CommandDeleteAttr(undef, "$name readOnly");
+
+    # Existing exclusion bookkeeping must not hide server-side node removal.
+    my $discovery = MATTER_NextMessageId($io);
+    $io->{helper}{pending_command}{$discovery} = 'get_nodes';
+    CommandAttr(undef, "$name disable 1");
+    $reply->($discovery, result => [{node_id => 7801, available => JSON::true, attributes => $values}]);
+    is(ReadingsVal($root->{NAME}, 'state', ''), 'removed', 'local disable marker does not suppress missing-node detection');
+    is(ReadingsVal($name, 'state', ''), 'off', 'disabled physical state is not replaced by removed/disabled');
+    is_deeply(\@timers, \@timers_before, 'endpoint disable/enable adds no timers');
+
+    # Startup/rereadcfg keeps persisted disable authoritative; rename stays structural.
+    is(CommandRename(undef, "$name DisabledRenamed"), undef, 'disabled endpoint can be renamed');
+    $name = $ep->{NAME};
+    for my $event (qw(INITIALIZED REREADCFG)) {
+        # Config loading calls AttrFn without publishing global ATTR yet.
+        # The endpoint may receive INITIALIZED before the root invalidates availability.
+        $before = scalar @sent;
+        {
+            local $init_done = 0;
+            CommandAttr(undef, "$name disable 0");
+        }
+        MATTERDevice_Notify($ep, {NAME => 'global', CHANGED => [$event]});
+        is(scalar @sent, $before, "$event never probes using pre-restoration availability");
+        ok(!exists($ep->{helper}{enable_sync}), "$event consumes deferred enable marker");
+        CommandAttr(undef, "$name disable 1");
+        $ep->{helper} = {};
+        MATTERDevice_Notify($root, {NAME => 'global', CHANGED => [$event]});
+        MATTERDevice_Notify($ep, {NAME => 'global', CHANGED => [$event]});
+        MATTER_ProcessNode($io, {node_id => 7800, available => JSON::true, attributes => $values});
+        like(MATTERDevice_Set($ep, $name, 'getConfig') // '', qr/disable=1/, "$event retains restored disable");
+        is($ep->{FUUID}, $uuid, "$event preserves identity");
+    }
+    $before = scalar @sent;
+    CommandDeleteAttr(undef, "$name disable");
+    is(scalar @sent, $before + 1, 'deleting disable online synchronizes renamed endpoint once');
+    $reply->($sent[-1]{message_id}, result => {'1/6/65529' => [0,1], '1/6/0' => JSON::true});
+    is(ReadingsVal($name, 'state', ''), 'on', 'renamed endpoint accepts fresh enable response');
+    my $off = $set->($ep, 'off');
+    $reply->($off, result => undef);
+    for my $command ("$name ^disable\$", $name) {
+        CommandAttr(undef, "$name disable 1");
+        $before = scalar @sent;
+        is(CommandDeleteAttr(undef, $command), undef, 'native deleteattr pattern/all-attributes form is accepted');
+        is(scalar @sent, $before + 1, 'native attribute removal also synchronizes once');
+        $reply->($sent[-1]{message_id}, result => {'1/6/65529' => [0,1], '1/6/0' => JSON::true});
+    }
+    my $last_error = ReadingsVal($name, 'lastError', '');
+    $io->{test_send_text} = sub {
+        push @sent, JSON::decode_json($_[0]);
+        CommandAttr(undef, "$name disable 1");
+        return 1;
+    };
+    $before = scalar @sent;
+    like(MATTERDevice_SendRequests($ep, [MATTERDevice_CommandRequest($ep, 6, 'On'),
+        MATTERDevice_CommandRequest($ep, 6, 'Off')], 'lastError', 120) // '',
+        qr/disable=1/, 'synchronous disable blocks remaining compound request');
+    is(scalar @sent, $before + 1, 'only first compound component was sent');
+    ok(!exists($ep->{helper}{latest_request}), 'disable releases compound result group');
+    ok(!grep({ref($_) eq 'HASH' && ($_->{owner} // '') eq $ep}
+        values %{$io->{helper}{pending_command}}), 'compound cancellation leaves no owned request');
+    is(ReadingsVal($name, 'lastError', ''), $last_error, 'canceled compound does not update disabled diagnostics');
+    $before = scalar @sent;
+    MATTER_Close($io);
+    is(CommandDeleteAttr(undef, "$name disable"), undef, 'enable with disconnected IO');
+    is(scalar @sent, $before, 'disconnected activation sends no read or command');
+    close $_ for @peers;
 };
 
 subtest 'Issue 77: readOnly blocks control while reads and reports stay active' => sub {

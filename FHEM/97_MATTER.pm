@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.38 23.11.2026";
+my $MATTER_version = "V0.39 23.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -772,6 +772,7 @@ sub MATTER_SetNodeStatus($$$) {
             for grep { ($_->{endpoint_id} // 0) == 0 } @devices;
     }
     foreach my $device (@devices) {
+        next if MATTERDevice_IsDisabled($device);
         readingsSingleUpdate($device, 'matter_status', $status, 1)
             if ReadingsVal($device->{NAME}, 'matter_status', '') ne $status;
         next unless ($device->{endpoint_id} // 0) == 0;
@@ -994,9 +995,15 @@ sub MATTER_ProcessNodeList($$$;$) {
         if ($updated) {
             my %filtered = %$node;
             delete $filtered{available} if $updated->{available};
-            if ($updated->{attributes} && ref($filtered{attributes}) eq 'HASH') {
+            if (ref($filtered{attributes}) eq 'HASH') {
                 my %attributes = %{$filtered{attributes}};
-                delete @attributes{keys %{$updated->{attributes}}};
+                delete @attributes{keys %{$updated->{attributes} // {}}};
+                if ($updated->{excluded_endpoints}) {
+                    for my $path (keys %attributes) {
+                        my ($ep) = split('/', $path);
+                        delete $attributes{$path} if $updated->{excluded_endpoints}{$ep};
+                    }
+                }
                 $attributes{'0/29/1'} = $updated->{root_server_list}
                     if exists($updated->{root_server_list});
                 $filtered{attributes} = \%attributes;
@@ -1014,7 +1021,9 @@ sub MATTER_ProcessNodeList($$$;$) {
         next if $present{$device->{node_id} // ''};
         # A later event for this same node wins; events on other nodes
         # must not suppress missing-node detection.
-        next if $touched && exists($touched->{$device->{node_id} // ''});
+        my $change = $touched ? $touched->{$device->{node_id} // ''} : undef;
+        # A local endpoint exclusion is not evidence that the node is present.
+        next if $change && (!exists($change->{excluded_endpoints}) || keys(%$change) > 1);
         MATTER_SetNodeStatus($hash, $device->{node_id}, 'removed');
     }
     Log3 $io_name, 3, 'MATTER: Synchronized ' . scalar(keys %present) . " nodes from $source";
@@ -1179,6 +1188,12 @@ sub MATTER_ParseMessage($$) {
                     # A later live report supersedes the matching read path.
                     for my $path (keys %{$pending->{live_values}}) {
                         $fresh{$path} = $pending->{live_values}{$path};
+                    }
+                }
+                if (ref($pending) eq 'HASH' && $pending->{excluded_endpoints}) {
+                    for my $path (keys %fresh) {
+                        my ($ep) = split('/', $path);
+                        delete $fresh{$path} if $pending->{excluded_endpoints}{$ep};
                     }
                 }
                 if (ref($pending) eq 'HASH' && $pending->{capability_only}) {
