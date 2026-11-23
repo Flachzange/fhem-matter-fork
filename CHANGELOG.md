@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-23  MATTER V0.40 review follow-up: Keep active explicit reads cancellable during synchronous publication; reject reentrant duplicates and clean temporary registrations on completion.
+
 - 2026-11-23  MATTER V0.40 review follow-up: Apply reconciled newer ServerLists after automatic recovery metadata; retain sibling metadata and metadata-only scope.
 
 - 2026-11-23  MATTER V0.40 (#85): Remove the unused scalar pending_config representation. Keep one structured request format, realistic owner-aware read fixtures and the independent mixed command registry.

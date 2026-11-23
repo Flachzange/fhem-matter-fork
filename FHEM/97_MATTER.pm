@@ -1103,7 +1103,13 @@ sub MATTER_ParseMessage($$) {
     # C) Antworten auf spezifische Befehle (getConfig / get_nodes)
     if (my $msg_id = $decoded->{message_id}) {
         # Antwort auf read_attribute (getConfig)
-        if (my $pending = delete $hash->{helper}{pending_config}{$msg_id}) {
+        if (my $pending = $hash->{helper}{pending_config}{$msg_id}) {
+            return if $pending->{processing}; # Ignore a reentrant duplicate.
+            delete $hash->{helper}{pending_config}{$msg_id};
+            # Keep this reply cancellable during synchronous reading events.
+            # local restores the absent entry on every exit, including errors.
+            local $hash->{helper}{pending_config}{$msg_id} = $pending;
+            local $pending->{processing} = 1;
             my $node_id = $pending->{node_id};
             my $received = {};
             my $owner = MATTERDevice_LookupRoot($hash, $node_id);

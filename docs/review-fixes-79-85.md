@@ -190,3 +190,24 @@ Reviewed IO reconciliation, metadata application, explicit-read ordering and
 disable exclusions. Regression covers actual offline/online-triggered recovery,
 revocation, useful sibling metadata and rejection of physical reply values.
 All 1,022 top-level tests pass; no live hardware validation.
+
+## Follow-up: cancellation during explicit reply publication
+
+An explicit reply stays temporarily reachable in the existing pending_config
+registry while its attributes publish synchronous FHEM events. A localized
+processing flag rejects reentrant duplicate delivery. Cancellation marks the
+active request itself; the existing per-path owner check then stops its
+remainder even after disable/enable of the same device. Perl local removes
+the temporary registration on every scope exit. There is no endpoint epoch,
+new registry, persistent generation, timer or retry.
+
+Post-fix review traced registry allocation, freshness, duplicate detection,
+owner cancellation, nested enable reads and normal/error early returns in
+both modules. Existing rename/replacement, IO-close and disable tests remain
+green. README and DE/EN commandref already specify this behavior and need no
+new option or compatibility promise. The two review reproductions are now
+tracked regressions, additionally checking sibling metadata, metadata-only
+scope, duplicate delivery, actual callback execution and registry cleanup.
+All 1,023 top-level tests, test-harness syntax, manifest validation/tests and
+diff checks pass. Callback tests are modeled; no live FHEM/configDB/hardware
+validation was performed.

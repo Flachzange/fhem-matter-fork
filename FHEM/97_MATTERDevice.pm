@@ -586,6 +586,7 @@ sub MATTERDevice_CancelRequests {
         next unless $request->{node_id} eq $node;
         if (($request->{owner} // '') eq $hash ||
             ($ep == 0 && ($request->{root_fuuid} // '') eq ($hash->{FUUID} // ''))) {
+            $request->{cancelled} = 1 if $request->{processing};
             delete $io->{helper}{pending_config}{$id};
         } elsif ($ep > 0) {
             $request->{excluded_endpoints}{$ep} = 1;
@@ -1921,6 +1922,7 @@ sub MATTERDevice_SendRequests {
 # Stable ownership shared by command completion and explicit read replies.
 sub MATTERDevice_RequestOwner {
     my ($io, $request) = @_;
+    return undef if $request->{cancelled};
     my $owner = $request->{owner};
     return undef unless $owner && ($defs{$owner->{NAME}} // '') eq $owner &&
         ($owner->{TYPE} // '') eq 'MATTERDevice' &&

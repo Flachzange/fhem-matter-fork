@@ -6055,4 +6055,36 @@ subtest 'Recovery preserves newer structural revocation' => sub {
  is(ReadingsVal($ep{2}{NAME},'state',''),'off','automatic recovery still ignores physical values');
 };
 
+
+subtest 'In-progress read is cancelled across disable and enable' => sub {
+ my @sent;
+ my $io=$defs{auditDisableIO}={NAME=>'auditDisableIO',TYPE=>'MATTER',CD=>1,websocket=>1,ws_status=>'connected',helper=>{},test_send_text=>sub {push @sent,JSON::decode_json($_[0]);1}};
+ MATTER_ProcessNode($io,{node_id=>99201,name=>'AuditDisable',available=>JSON::true,attributes=>{'1/6/0'=>JSON::false}});
+ my $root=MATTERDevice_LookupRoot($io,99201);
+ my ($ep)=MATTERDevice_NodeChildren($root);
+ MATTERDevice_Set($ep,$ep->{NAME},'getConfig'); my $id=$sent[-1]{message_id};
+ my $reentered=0;
+ $reading_event_hook=sub {
+   return unless $_[0] eq $ep && $_[1] eq 'device_type_ids';
+   $reading_event_hook=undef;
+   # Duplicate delivery must not consume the active registration.
+   MATTER_ParseMessage($io,encode_json({message_id=>$id,result=>{'1/6/0'=>JSON::true}}));
+   CommandAttr(undef,"$ep->{NAME} disable 1");
+   CommandAttr(undef,"$ep->{NAME} disable 0");
+   my $new=$sent[-1]{message_id};
+   isnt($new,$id,'enable queues an independent read');
+   MATTER_ParseMessage($io,encode_json({message_id=>$new,result=>{'1/6/0'=>JSON::false}}));
+   ++$reentered;
+ };
+ MATTER_ParseMessage($io,encode_json({message_id=>$id,result=>{'1/29/0'=>[{deviceType=>0x0100}],'1/6/0'=>JSON::true}}));
+ $reading_event_hook=undef;
+ is($reentered,1,'actual publication callback exercised');
+ is(ReadingsVal($ep->{NAME},'state',''),'off','old read cannot overwrite newer enable read');
+ ok(!keys %{$io->{helper}{pending_config}},'nested and cancelled reads leave no registry entries');
+ MATTERDevice_Set($ep,$ep->{NAME},'getConfig');
+ MATTER_ParseMessage($io,encode_json({message_id=>$sent[-1]{message_id},result=>{'1/6/0'=>JSON::true}}));
+ is(ReadingsVal($ep->{NAME},'state',''),'on','ordinary later read still updates values');
+ ok(!keys %{$io->{helper}{pending_config}},'normal completion also retires registration');
+};
+
 done_testing();
