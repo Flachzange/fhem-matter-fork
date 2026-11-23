@@ -536,6 +536,40 @@ sub MATTERDevice_InvalidateAvailability($) {
     delete $root->{helper}{capability_refresh};
 }
 
+# Runtime permissions and outstanding operations belong to IO + Matter IDs,
+# not to a mutable FHEM definition hash. Saved readings and local policy stay.
+sub MATTERDevice_InvalidateIdentity {
+    my ($hash) = @_;
+    MATTERDevice_InvalidateAvailability($hash);
+    delete @{$hash->{helper}}{qw(capabilities seen_clusters firmware_available
+        firmware_update_in_flight latest_request enable_sync)};
+    delete @{$hash}{grep { /^endpoint_\d+$/ } keys %$hash};
+    # These saved metadata values also authorize controls, scaling or device
+    # interpretation. They cannot describe a different Matter identity.
+    readingsDelete($hash, $_) for qw(device_type_ids icd_supported
+        icd_lit_supported software_version);
+    for my $cluster (values %MATTER_CLUSTERS) {
+        for my $attribute (values %{$cluster->{attributes} // {}}) {
+            readingsDelete($hash, $attribute->{name}) if $attribute->{limit_range};
+        }
+    }
+    my $io = $hash->{IODev};
+    return unless $io;
+    for my $id (keys %{$io->{helper}{pending_command} // {}}) {
+        my $request = $io->{helper}{pending_command}{$id};
+        delete $io->{helper}{pending_command}{$id}
+            if ref($request) eq 'HASH' && ($request->{owner} // '') eq $hash;
+    }
+    for my $id (keys %{$io->{helper}{pending_config} // {}}) {
+        my $request = $io->{helper}{pending_config}{$id};
+        next unless ref($request) eq 'HASH' && $request->{node_id} eq $hash->{node_id};
+        delete $io->{helper}{pending_config}{$id}
+            if ($hash->{endpoint_id} // 0) == 0
+                ? ($request->{root_fuuid} // '') eq ($hash->{FUUID} // '')
+                : ($request->{endpoint_id} // -1) == $hash->{endpoint_id};
+    }
+}
+
 # Only query when endpoint metadata used by FHEM controls is missing.
 # A known empty AcceptedCommandList is valid: it must not be interpreted
 # as a failed interview and must not enable old has_* fallbacks.
@@ -757,14 +791,15 @@ sub MATTERDevice_Attr {
     }
     return unless $op eq 'set' && $attr eq 'IODev';
     my $root = $defs{$name};
-    return unless ($root->{endpoint_id} // 0) == 0;
     my $io = $defs{$value};
     return if !$io && !$init_done; # Forward reference during config restoration.
     return "Unknown MATTER IODev $value" unless $io && ($io->{TYPE} // '') eq 'MATTER';
-    my $owner = MATTERDevice_LookupRoot($io, $root->{node_id});
-    return "Node $root->{node_id} on $value already belongs to $owner->{NAME}"
-        if $owner && $owner ne $root;
-    MATTERDevice_InvalidateAvailability($root) if ($root->{IODev} // '') ne $io;
+    if (($root->{endpoint_id} // 0) == 0) {
+        my $owner = MATTERDevice_LookupRoot($io, $root->{node_id});
+        return "Node $root->{node_id} on $value already belongs to $owner->{NAME}"
+            if $owner && $owner ne $root;
+    }
+    MATTERDevice_InvalidateIdentity($root) if ($root->{IODev} // '') ne $io;
     return undef;
 }
 
@@ -845,6 +880,15 @@ sub MATTERDevice_Define($$) {
     my $node_id = $a[2];
     my $endpoint_id = $a[3] // 0;
 
+    my $changed = defined($hash->{node_id}) &&
+        ($hash->{node_id} ne $node_id || ($hash->{endpoint_id} // 0) != $endpoint_id);
+    if ($changed && $endpoint_id == 0) {
+        my $owner = MATTERDevice_LookupRoot($hash->{IODev}, $node_id);
+        return "Node $node_id already belongs to $owner->{NAME}"
+            if $owner && $owner ne $hash;
+    }
+    MATTERDevice_InvalidateIdentity($hash) if $changed;
+
     if ($legacy_def) {
         $hash->{DEF} = "$node_id $endpoint_id";
         Log3 $name, 3, "MATTERDevice: Migrated endpoint DEF to '$hash->{DEF}'; use save to persist";
@@ -866,12 +910,13 @@ sub MATTERDevice_Define($$) {
     # endpoints, to global events rather than the entire FHEM event stream.
     $hash->{NOTIFYDEV} = 'global';
     if ($endpoint_id == 0) {
-        AssignIoPort($hash);
+        AssignIoPort($hash) unless $hash->{IODev};
         my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
         # AssignIoPort may initially choose an IO which already owns this ID.
         $modules{MATTERDevice}{defptr}{"$io_name:$node_id"} = $hash
             unless MATTERDevice_LookupRoot($hash->{IODev}, $node_id);
-        MATTERDevice_SetRootState($hash, 'unknown') if $init_done;
+        MATTERDevice_SetRootState($hash, 'unknown') if $init_done &&
+            ($changed || !defined($hash->{READINGS}{state}));
     }
     Log3 $name, 3, "MATTERDevice: Defined node_id $node_id for $name";
     return undef;
@@ -2975,6 +3020,7 @@ automated tests model reading restoration.</p></li>
       power and cumulative energy clusters, where the server supplies the
       corresponding attributes.</li>
 </ul>
+<p>Changing the actual IO instance or Matter IDs invalidates old capabilities, firmware offers and control-relevant metadata (device types, ICD permissions, software version and limits). Other saved physical readings and local attributes remain. Rename and unchanged DEF confirmation preserve identity; an occupied root target is rejected before modification.</p>
 <h4>Attributes</h4>
 <p>Select an attribute in FHEMWEB to show its description. Active device
 settings are <code>IODev</code>, <code>readOnly</code>, <code>disable</code>, <code>dimRate</code>, <code>diagnostics</code>
@@ -3386,6 +3432,7 @@ Reading-Wiederherstellung.</p></li>
       Kohlenmonoxidkonzentration, elektrische Leistung und kumulierte Energie,
       soweit die Geräte die jeweiligen Attribute liefern.</li>
 </ul>
+<p>Ein Wechsel der IO-Instanz oder Matter-IDs entwertet alte Capabilities, Firmwareangebote und steuerungsrelevante Metadaten (Gerätetypen, ICD-Freigaben, Softwareversion und Grenzen). Andere gespeicherte physische Readings und lokale Attribute bleiben erhalten. Rename und unveränderte DEF-Bestätigung erhalten die Identität; ein belegtes Root-Ziel wird vor der Änderung abgewiesen.</p>
 <h4>Attribute</h4>
 <p>Bei Auswahl eines Attributs in FHEMWEB erscheint dessen Beschreibung.
 Aktive Geräteeinstellungen sind <code>IODev</code>, <code>readOnly</code>, <code>disable</code>, <code>dimRate</code>,

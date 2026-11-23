@@ -5639,4 +5639,84 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     is(ReadingsVal($ep->{NAME}, 'available', ''), 'false', 'changed root availability reaches child');
 }
 
+subtest 'Issue 79: runtime permissions belong to the actual Matter identity' => sub {
+    my (@sent_a, @sent_b);
+    my $a = $defs{identityA} = {NAME => 'identityA', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected', test_send_text => sub {push @sent_a, JSON::decode_json($_[0]); 1}};
+    my $b = $defs{identityB} = {NAME => 'identityB', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected', test_send_text => sub {push @sent_b, JSON::decode_json($_[0]); 1}};
+    for my $io ($a, $b) {
+        MATTER_ParseMessage($io, encode_json({schema_version => 12,
+            sdk_version => 'matter-server/1.0 (matter.js/1.0)'}));
+    }
+    MATTER_ProcessNode($a, {node_id => 99008, name => 'IdentityProbe', available => JSON::true,
+        attributes => {'0/29/1' => [42], '0/3/65529' => [0], '0/40/9' => 1, '0/40/3' => 'saved model',
+                       '1/6/65529' => [0, 1], '1/6/0' => JSON::false}});
+    my $root = $modules{MATTERDevice}{defptr}{'identityA:99008'};
+    my ($ep) = MATTERDevice_NodeChildren($root);
+    is(MATTERDevice_Set($root, $root->{NAME}, 'checkFirmwareUpdate'), undef, 'check on original server');
+    MATTER_ParseMessage($a, encode_json({message_id => $sent_a[-1]{message_id}, result => {software_version => 2}}));
+    is(CommandModify(undef, "$root->{NAME} 99008"), undef, 'confirm unchanged root definition');
+    ok($root->{helper}{available}, 'same identity preserves online authority');
+    is(ReadingsVal($root->{NAME}, 'state', ''), 'online', 'same identity preserves native root status');
+    is($root->{helper}{firmware_available}, 2, 'same identity preserves update offer');
+    is(MATTERDevice_Set($root, $root->{NAME}, 'identify'), undef, 'root command is pending before rebind');
+    my $old_id = $sent_a[-1]{message_id};
+    # Persistent capability/limit readings must not authorize a new identity.
+    $root->{READINGS}{icd_supported}{VAL} = 'true';
+    $ep->{READINGS}{max_brightness}{VAL} = 20;
+    is(CommandAttr(undef, "$root->{NAME} IODev identityB"), undef, 'move root to another server');
+    ok(!defined($root->{helper}{available}), 'new server must establish availability');
+    ok(!exists($root->{helper}{firmware_available}), 'old offer is discarded');
+    ok(!exists($root->{helper}{seen_clusters}{42}), 'old OTA capability is discarded');
+    ok(!exists($root->{READINGS}{icd_supported}), 'old persisted ICD permission is discarded');
+    ok(!exists($root->{READINGS}{software_version}), 'old firmware version cannot reject a new server offer');
+    ok(!exists($a->{helper}{pending_command}{$old_id}), 'old owner operation is cancelled');
+    ok(defined(MATTERDevice_Set($root, $root->{NAME}, 'updateFirmware')), 'new server cannot use old offer');
+    is(scalar @sent_b, 0, 'no unchecked install or implicit read on new server');
+    is($ep->{IODev}, $a, 'child keeps independent IO assignment');
+    is(ReadingsVal($ep->{NAME}, 'state', ''), 'off', 'child physical state is preserved');
+    MATTER_ProcessNode($b, {node_id => 99008, available => JSON::true,
+        attributes => {'0/29/1' => [42]}});
+    is(MATTERDevice_Set($root, $root->{NAME}, 'checkFirmwareUpdate'), undef, 'new server check works');
+    MATTER_ParseMessage($b, encode_json({message_id => $sent_b[-1]{message_id}, result => {software_version => 3}}));
+    is($root->{helper}{firmware_available}, 3, 'only new server offer is accepted');
+    is(CommandRename(undef, 'identityB identityRenamed'), undef, 'rename same IO instance');
+    ok($root->{helper}{available}, 'IO rename retains authority');
+    is($root->{helper}{firmware_available}, 3, 'IO rename retains offer');
+    MATTER_ProcessNode($b, {node_id => 99009, name => 'OccupiedIdentity', available => JSON::true});
+    like(CommandModify(undef, "$root->{NAME} 99009") // '', qr/already belongs/, 'modify cannot occupy another root identity');
+    is($root->{node_id}, 99008, 'failed modify preserves internal identity');
+    is($root->{helper}{firmware_available}, 3, 'failed modify preserves offer');
+    is(CommandModify(undef, "$root->{NAME} 99010"), undef, 'change root node identity');
+    ok(!defined($root->{helper}{available}), 'new node cannot inherit online authority');
+    ok(!exists($root->{helper}{firmware_available}), 'new node cannot inherit offer');
+    MATTER_ParseMessage($b, encode_json({event => 'attribute_updated', data => [99010, '0/40/3', 'unapproved']}));
+    is(ReadingsVal($root->{NAME}, 'model', ''), 'saved model', 'new node attributes need availability');
+    MATTER_ProcessNode($b, {node_id => 99010, available => JSON::true, attributes => {'0/40/3' => 'new model'}});
+    is(ReadingsVal($root->{NAME}, 'model', ''), 'new model', 'own availability resumes normal updates');
+    is(CommandModify(undef, "$ep->{NAME} 99008 1"), undef, 'same endpoint definition');
+    ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'same endpoint retains commands');
+    CommandAttr(undef, "$ep->{NAME} readOnly 1");
+    is(CommandModify(undef, "$ep->{NAME} 99008 2"), undef, 'change endpoint identity');
+    ok(!MATTERDevice_CommandAccepted($ep, 6, 1), 'new endpoint cannot inherit commands');
+    ok(!exists($ep->{READINGS}{max_brightness}), 'old limit cannot scale a new endpoint');
+    is(AttrVal($ep->{NAME}, 'readOnly', 0), 1, 'manual endpoint policy survives identity change');
+    is(ReadingsVal($ep->{NAME}, 'state', ''), 'off', 'identity reset retains saved physical reading');
+    MATTERDevice_ProcessGlobalAttribute($ep, 6, 65529, [0, 1]);
+    is(CommandAttr(undef, "$ep->{NAME} IODev identityRenamed"), undef, 'move endpoint independently');
+    ok(!MATTERDevice_CommandAccepted($ep, 6, 1), 'new IO cannot inherit endpoint commands');
+    MATTER_ParseMessage($a, encode_json({message_id => $old_id, result => {software_version => 9}}));
+    ok(!exists($root->{helper}{firmware_available}), 'old reply cannot restore another identity offer');
+    MATTER_ProcessNode($a, {node_id => 99011, name => 'IdentityReadOwner', available => JSON::true});
+    my $read_owner = MATTERDevice_LookupRoot($a, 99011);
+    MATTERDevice_Set($read_owner, $read_owner->{NAME}, 'getConfig');
+    my $read_id = $sent_a[-1]{message_id};
+    my $preferred = $preferred_io;
+    $preferred_io = 'identityA';
+    MATTER_ProcessNode($b, {node_id => 99011, name => 'IdentityOtherServer', available => JSON::true});
+    $preferred_io = $preferred;
+    ok(exists($a->{helper}{pending_config}{$read_id}), 'temporary auto-assignment cannot cancel another root read');
+};
+
 done_testing();

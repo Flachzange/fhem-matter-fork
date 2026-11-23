@@ -1,1 +1,1 @@
-2026-11-23  MATTER V0.39 (#78): Add local endpoint disable with preserved readings and one-shot online reactivation.
+2026-11-23  MATTER V0.40 (#79): Invalidate old permissions and firmware offers when changing Matter identity.
