@@ -100,3 +100,26 @@ The new six-sensor/limit/unit matrix failed before the fix for both live event
 forms and discovery. After the fix all 1,018 top-level entries pass, including
 pure/no-side-effect checks, valid-newer precedence, unrelated response values
 and invalid diagnostic masking. No live FHEM/hardware validation is claimed.
+
+## #83: nested energy integers
+
+The energy transform validates its named/TLV inner value as a decimal integer
+before arithmetic. It accepts zero and bounds to the EnergyMeasurementStruct
+range 0..2^62 mWh. Decimal length/lexical comparison rejects overflow without
+requiring a new dependency or relying on floating-point boundary rounding.
+The existing division to kWh is retained; this does not add arbitrary-precision
+output or rewrite historical data.
+
+Source inspected 2026-11-23:
+[Matter 1.4 ElectricalEnergyMeasurement](https://github.com/project-chip/connectedhomeip/blob/master/data_model/1.4/clusters/ElectricalEnergyMeasurement.xml),
+content blob `fc56b5171700f8ee0f647f8913186192a4e776a4`, EnergyMeasurementStruct.
+The server's generated ElectricalEnergyMeasurement.py at
+`fc8aa79611aebbe3090a30813e7211f707b2131f` also represents the inner energy
+field as an integer. No installed server revision is inferred.
+
+Post-implementation review traced both field names, numeric boundaries, pure
+conversion, pending-read freshness and offline/endpoint isolation. It replaced
+a weak maximum-boundary assertion with actual write-count/value checks.
+The new negative control failed before the fix; all 1,019 top-level entries
+pass after it, including malformed outer/inner data and warning capture.
+No physical meter, live FHEM or database migration was exercised.

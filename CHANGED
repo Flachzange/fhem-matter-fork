@@ -2,3 +2,4 @@
 2026-11-23  MATTER V0.40 (#80): Preserve metadata on partial reads; revoke clusters only from valid structural lists.
 2026-11-23  MATTER V0.40 (#81): Bind read replies to their requesting device instance and endpoint.
 2026-11-23  MATTER V0.40 (#82): Share value acceptance between freshness tracking and publication.
+2026-11-23  MATTER V0.40 (#83): Reject malformed inner energy values without resetting the stored counter.

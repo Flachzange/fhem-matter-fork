@@ -5904,4 +5904,56 @@ subtest 'Issue 82: only accepted values supersede pending reads and snapshots' =
         'root-only network interpretation leaves unmatched child raw structs intact');
 };
 
+subtest 'Issue 83: energy struct validates its inner protocol integer' => sub {
+    my @sent;
+    my $io = $defs{energyIO} = {NAME => 'energyIO', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected', test_send_text => sub {push @sent, JSON::decode_json($_[0]); 1}};
+    MATTER_ProcessNode($io, {node_id => 99130, name => 'EnergyValue', available => JSON::true,
+        attributes => {'1/145/1' => {energy => 1250000}, '2/145/1' => {'0' => 2500000}}});
+    my $root = MATTERDevice_LookupRoot($io, 99130);
+    my ($ep, $sibling) = MATTERDevice_NodeChildren($root);
+    my $live = sub {MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99130, '1/145/1', $_[0]]}))};
+    my @warnings;
+    {
+        local $SIG{__WARN__} = sub {push @warnings, @_};
+        for my $field ('energy', '0') {
+            for my $bad (undef, 'invalid', 'NaN', 'Inf', -1, '1.5', '1e6', [], {}, JSON::false,
+                         '4611686018427387905', '999999999999999999999999999999') {
+                $live->({$field => 1250000});
+                my $writes = $single_writes{$ep->{NAME}}{energy};
+                $live->({$field => $bad});
+                is(ReadingsVal($ep->{NAME}, 'energy', ''), 1.25, 'invalid inner value preserves energy');
+                is($single_writes{$ep->{NAME}}{energy}, $writes, 'invalid inner value produces no reading write');
+            }
+            $live->({$field => 0});
+            is(ReadingsVal($ep->{NAME}, 'energy', ''), 0, 'numeric zero is a valid energy value');
+            my $before_max = $single_writes{$ep->{NAME}}{energy};
+            $live->({$field => '4611686018427387904'});
+            is($single_writes{$ep->{NAME}}{energy}, $before_max + 1, 'protocol upper boundary is actually written');
+            is(ReadingsVal($ep->{NAME}, 'energy', undef), 4611686018427387904 / 1_000_000,
+                'upper boundary keeps existing kWh conversion');
+            $live->({$field => '0001250000'});
+            is(ReadingsVal($ep->{NAME}, 'energy', ''), 1.25, 'decimal representation is normalized without losing zero');
+        }
+        for my $bad (undef, [], 'invalid', {}) {
+            my $writes = $single_writes{$ep->{NAME}}{energy};
+            $live->($bad);
+            is($single_writes{$ep->{NAME}}{energy}, $writes, 'invalid outer struct does not write energy');
+        }
+    }
+    is_deeply(\@warnings, [], 'invalid energy never causes numeric conversion warnings');
+    my $original = {energy => '0001250000'};
+    MATTERDevice_AttributeValue(145, 1, $original);
+    is_deeply($original, {energy => '0001250000'}, 'pure energy conversion does not mutate supplied struct');
+    MATTERDevice_Set($ep, $ep->{NAME}, 'getConfig');
+    my $id = $sent[-1]{message_id};
+    $live->({energy => 'invalid'});
+    MATTER_ParseMessage($io, encode_json({message_id => $id, result => {'1/145/1' => {energy => 1750000}}}));
+    is(ReadingsVal($ep->{NAME}, 'energy', ''), 1.75, 'invalid live struct cannot mask a valid read');
+    is(ReadingsVal($sibling->{NAME}, 'energy', ''), 2.5, 'sibling energy remains isolated');
+    MATTERDevice_UpdateAvailability($root, JSON::false);
+    $live->({energy => 3000000});
+    is(ReadingsVal($ep->{NAME}, 'energy', ''), 1.75, 'offline energy remains protected');
+};
+
 done_testing();

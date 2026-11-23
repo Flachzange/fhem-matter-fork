@@ -296,7 +296,15 @@ my %MATTER_CLUSTERS = (
                             my ($v) = @_;
                             return undef if !defined($v) || ref($v) ne 'HASH';
                             my $energy_mWh = exists($v->{"0"}) ? $v->{"0"} : $v->{energy};
-                            return defined($energy_mWh) ? $energy_mWh / 1_000_000 : undef;
+                            return undef unless defined($energy_mWh) && !ref($energy_mWh) &&
+                                $energy_mWh =~ /\A[0-9]+\z/;
+                            # EnergyMeasurementStruct constrains Energy to 0..2^62 mWh.
+                            # Compare decimal digits before numeric coercion, including
+                            # on Perl builds whose native number would round the boundary.
+                            $energy_mWh =~ s/^0+(?=\d)//;
+                            return undef if length($energy_mWh) > 19 ||
+                                (length($energy_mWh) == 19 && $energy_mWh gt '4611686018427387904');
+                            return $energy_mWh / 1_000_000;
                         } },
         },
     },
@@ -3143,6 +3151,7 @@ reports preserve the last valid reading; offline protection also
 applies to limits. Restored readings are cached information, not proof of
 current reachability. Device-class hardware status remains
 <strong>untested</strong>.</p>
+<p>The energy reading accepts the inner EnergyMeasurementStruct field (named or TLV tag 0) only as an integer from 0 to 2^62 mWh, converted to kWh. Invalid/null data preserves the last reading; numeric zero remains valid.</p>
 <h4>Hardware validation status</h4>
 <p>The following classes are implemented but have no class-wide hardware validation
 recorded in this repository. <strong>untested</strong> refers to missing documented
@@ -3564,6 +3573,7 @@ Availability-Sperre und Antwortreihenfolge gelten auch für Grenzen. Wiederherge
 Readings sind gespeicherte Informationen und kein Beleg aktueller
 Erreichbarkeit. Hardwarestatus der Geräteklassen weiterhin
 <strong>ungetestet</strong>.</p>
+<p>Das energy-Reading übernimmt das innere EnergyMeasurementStruct-Feld (benannt oder TLV-Tag 0) nur als Ganzzahl von 0 bis 2^62 mWh, umgerechnet in kWh. Ungültige/null Daten erhalten das letzte Reading; die Zahl null bleibt gültig.</p>
 <h4>Hardware-Teststatus</h4>
 <p>Die folgenden Geräteklassen sind implementiert, aber es liegt im Repository
 kein klassenweiter Hardware-Nachweis vor. <strong>ungetestet</strong> bedeutet:

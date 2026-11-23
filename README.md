@@ -427,6 +427,8 @@ engine.
   freshness policy. Rarely reporting attributes may be cached, as on the server.
   See [lifecycle behavior and evidence](docs/offline-lifecycle.md).
 
+The cumulative `energy` reading validates the inner named/TLV struct field as an integer in the specified 0–2^62 mWh range before converting to kWh. Invalid or missing data preserves the last value; numeric zero remains valid.
+
 ## Device-class hardware validation
 
 The German and English commandref in `97_MATTERDevice.pm` explicitly marks device

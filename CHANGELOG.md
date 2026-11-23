@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-23  MATTER V0.40 (#83): Validate the inner EnergyMeasurementStruct integer and its specified 0..2^62 mWh range before conversion. Preserve good readings on malformed data, retain zero and named/TLV fields, and prevent invalid structs from masking valid pending reads.
+
 - 2026-11-23  MATTER V0.40 (#82): Use pure shared attribute conversion for freshness tracking and publication. Rejected sensors, limits, enums, device types and network diagnostics cannot suppress valid pending results. Keep unknown/raw schemas independent and avoid duplicate validation without pending requests.
 
 - 2026-11-23  MATTER V0.40 (#81): Bind explicit reads to the requesting FHEM instance and endpoint scope using the shared request-owner check. Cancel owner reads on Undef/identity change/disable and exclude deleted endpoints from old shared responses. Preserve rename and stop processing after reentrant replacement.
