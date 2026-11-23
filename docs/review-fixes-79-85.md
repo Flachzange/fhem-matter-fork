@@ -123,3 +123,19 @@ a weak maximum-boundary assertion with actual write-count/value checks.
 The new negative control failed before the fix; all 1,019 top-level entries
 pass after it, including malformed outer/inner data and warning capture.
 No physical meter, live FHEM or database migration was exercised.
+
+## #84: single event endpoint lookup
+
+The IO resolves only the root and forwards the decoded event. The device
+path validates the event envelope, resolves the addressed endpoint once and
+records root/endpoint reception before Switch-specific filtering or writes.
+Unmapped events still count; unknown endpoints are not autocreated.
+
+Post-implementation review traced both parser entry points and all early
+returns, disabled endpoints, invalid multi-press payloads, repeated events
+and receive-before-notify ordering. No new persistent cache, index or timer
+was introduced. README/DE-/EN-commandref reception semantics remain applicable;
+there is no new public control or changed event vocabulary to document.
+The new instrumented regression failed before the change; all 1,020 top-level
+entries pass after it. The measured claim is one global lookup instead of two
+per valid event, not a real-world latency or hardware benchmark.

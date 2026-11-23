@@ -5956,4 +5956,57 @@ subtest 'Issue 83: energy struct validates its inner protocol integer' => sub {
     is(ReadingsVal($ep->{NAME}, 'energy', ''), 1.75, 'offline energy remains protected');
 };
 
+subtest 'Issue 84: node events resolve endpoints once before any publication' => sub {
+    my $io = $defs{eventLookupIO} = {NAME => 'eventLookupIO', TYPE => 'MATTER'};
+    MATTER_ProcessNode($io, {node_id => 99140, name => 'EventLookup', available => JSON::true,
+        attributes => {'1/59/0' => 0, '2/59/0' => 0}});
+    my $root = MATTERDevice_LookupRoot($io, 99140);
+    my ($ep, $sibling) = MATTERDevice_NodeChildren($root);
+    my $original = \&MATTERDevice_NodeChildren;
+    my $calls = 0;
+    no warnings 'redefine';
+    local *MATTERDevice_NodeChildren = sub ($) {++$calls; $original->(@_)};
+    my $send = sub {
+        my ($endpoint, $cluster, $event, $data, $direct) = @_;
+        $calls = 0;
+        my $wire = encode_json({event => 'node_event', data => {node_id => 99140,
+            endpoint_id => $endpoint, cluster_id => $cluster, event_id => $event, data => $data // {}}});
+        $direct ? MATTERDevice_Parse($root, $wire) : MATTER_ParseMessage($io, $wire);
+    };
+    my $events = scalar @direct_events;
+    for (1 .. 2) {
+        my ($root_count, $ep_count, $sibling_count) = ($root->{MSGCNT}, $ep->{MSGCNT}, $sibling->{MSGCNT});
+        my $at_publication;
+        $reading_event_hook = sub {
+            $at_publication = [$root->{MSGCNT}, $ep->{MSGCNT}] if $_[0] eq $ep && $_[1] eq 'button';
+        };
+        $send->(1, 59, 1);
+        $reading_event_hook = undef;
+        is($calls, 1, 'one global endpoint lookup per supported event');
+        is_deeply($at_publication, [$root_count + 1, $ep_count + 1], 'receive internals precede button publication');
+        is($sibling->{MSGCNT}, $sibling_count, 'sibling is not stamped');
+    }
+    is(scalar @direct_events, $events + 2, 'identical presses still trigger twice');
+    for my $direct (0, 1) {
+        my ($root_count, $ep_count) = ($root->{MSGCNT}, $ep->{MSGCNT});
+        $send->(1, 1234, 99, {}, $direct);
+        is($calls, 1, 'unmapped event uses one lookup through either parser');
+        is_deeply([$root->{MSGCNT}, $ep->{MSGCNT}], [$root_count + 1, $ep_count + 1], 'unmapped event still counts as reception');
+    }
+    my $devices = count_devices();
+    my $before = $ep->{MSGCNT};
+    $send->(99, 59, 1);
+    is($calls, 1, 'unknown event endpoint has one lookup');
+    is(count_devices(), $devices, 'unknown event endpoint is never created');
+    is($ep->{MSGCNT}, $before, 'unknown endpoint cannot stamp another endpoint');
+    CommandAttr(undef, "$ep->{NAME} disable 1");
+    $send->(1, 59, 1);
+    is($calls, 1, 'disabled endpoint still has only one reception lookup');
+    is(scalar @direct_events, $events + 2, 'disabled endpoint emits no functional event');
+    my $root_count = $root->{MSGCNT};
+    $send->(1, {}, 1);
+    is($calls, 0, 'malformed event does not scan endpoints');
+    is($root->{MSGCNT}, $root_count, 'malformed event is not counted');
+};
+
 done_testing();

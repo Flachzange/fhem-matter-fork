@@ -1056,24 +1056,10 @@ sub MATTER_ParseMessage($$) {
             return;
         }
         if ($event eq 'node_event' && ref($decoded->{data}) eq 'HASH') {
-            my $data = $decoded->{data};
-            my ($node_id, $endpoint, $cluster, $event_id) =
-                @{$data}{qw(node_id endpoint_id cluster_id event_id)};
-            if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/ &&
-                defined($endpoint) && !ref($endpoint) && $endpoint =~ /^\d+$/ &&
-                $endpoint > 0 &&
-                defined($cluster) && !ref($cluster) && $cluster =~ /^\d+$/ &&
-                defined($event_id) && !ref($event_id) && $event_id =~ /^\d+$/) {
+            my $node_id = $decoded->{data}{node_id};
+            if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
                 my $root = MATTERDevice_LookupRoot($hash, $node_id);
-                if ($root) {
-                    my $received = {};
-                    MATTERDevice_RecordReceive($root, $received);
-                    for my $child (MATTERDevice_NodeChildren($root)) {
-                        MATTERDevice_RecordReceive($child, $received)
-                            if $child->{endpoint_id} == $endpoint;
-                    }
-                    MATTERDevice_ProcessMessage($root, $decoded, $received);
-                }
+                MATTERDevice_ProcessMessage($root, $decoded) if $root;
             }
             return;
         }

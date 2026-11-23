@@ -2469,8 +2469,17 @@ sub MATTERDevice_ProcessMessage {
         my ($ep, $cluster, $id) = @{$event}{qw(endpoint_id cluster_id event_id)};
         return unless defined($ep) && !ref($ep) && $ep =~ /^\d+$/ && $ep > 0 &&
                       defined($cluster) && !ref($cluster) && $cluster =~ /^\d+$/ &&
-                      $cluster == 0x003B &&
                       defined($id) && !ref($id) && $id =~ /^\d+$/;
+        MATTERDevice_RecordReceive($hash, $received);
+        # Unknown event endpoints cannot create devices. Discovery and the
+        # Descriptor PartsList own endpoint identity, not transient events.
+        my ($child) = grep {
+            ($_->{endpoint_id} // 0) == $ep
+        } MATTERDevice_NodeChildren($hash);
+        return unless $child;
+        MATTERDevice_RecordReceive($child, $received);
+        return if MATTERDevice_IsDisabled($child);
+        return unless $cluster == 0x003B;
         my %events = (1 => 'pressed', 2 => 'long',
                       3 => 'short', 4 => 'long_release');
         my $value = $events{$id};
@@ -2484,15 +2493,6 @@ sub MATTERDevice_ProcessMessage {
                      $count == 3 ? 'triple' : $count . 'x';
         }
         return unless defined $value;
-        MATTERDevice_RecordReceive($hash, $received);
-        # Unknown event endpoints cannot create devices. Discovery and the
-        # Descriptor PartsList own endpoint identity, not transient events.
-        my ($child) = grep {
-            ($_->{endpoint_id} // 0) == $ep
-        } MATTERDevice_NodeChildren($hash);
-        return unless $child;
-        MATTERDevice_RecordReceive($child, $received);
-        return if MATTERDevice_IsDisabled($child);
         readingsSingleUpdate($child, 'button', $value, 0);
         DoTrigger($child->{NAME}, "button: $value");
         return;
