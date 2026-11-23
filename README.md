@@ -275,7 +275,7 @@ This removes only the ten retired attributes from MATTERDevice devices;
 readings and other attributes remain unchanged. The module does not delete
 user configuration automatically.
 
-CT and frequency controls use valid reported boundaries; when boundaries are
+CT and levelFrequency controls use valid reported boundaries; when boundaries are
 missing, undefined, reversed or excluded by metadata, their supported command
 remains available with a text field instead of a colorpicker/slider. No 153–500
 or 50–60 device range is assumed. Lighting uses the Matter maximum level 254;
@@ -284,10 +284,26 @@ fallback 254. Brightness, percentage and RGB use the same scale. PIN/RFID length
 are informational bytes, not a new credential-management feature. Limits obey
 normal availability and response-ordering rules. Offline/unknown reports
 cannot update limits or derived percentages. Online level, limit and metadata
-updates may recalculate percentage from reported brightness. Readings survive ordinary
+updates may recalculate percentage from the reported native dimmer level. Readings survive ordinary
 statefile/configDB restoration. No new polling or automatic reads are added.
 See the embedded DE/EN commandref for per-reading details and
 [protocol evidence](docs/device-limits.md) for source references and test scope.
+
+## Functional readings (V0.42, #91)
+
+Battery readings are `batteryPercent`, `batteryVoltage` (V) and `batteryState`
+(ok/low). ColorControl uses `ct` (mired), `hue` and `sat` (native 0–254).
+Sensors report `brightness` in lux. Coverings use `pct` (100=open, 0=closed)
+and native `tilt` percent; the pct setter uses the same percent-open direction.
+Locks provide textual `state`. Electrical `frequency` is Hz; LevelControl
+uses `levelFrequency` for its independent native frequency reading and setter.
+
+Ordinary dimmers use `brightness` (0–254) and `pct` (0–100). With illuminance
+on the same endpoint, native dimmer reading/setter uses `level`; with covering,
+dim percent uses `dimmerPct`. The hidden `.matterReadingSources` persists the
+necessary source provenance without authorizing commands or emitting events.
+See [functional names, units, collision policy and evidence](docs/reading-conventions.md).
+No additional reads or polling. Hardware validation: **untested**.
 
 ## Known limitations
 
@@ -342,7 +358,7 @@ devices as a Matter bridge, upload firmware images or run a separate polling
 engine.
 
 - Common sensors use ordinary FHEM readings: `contact`, `water_leak`, `rain`,
-  `motion`, `temperature` (°C), `humidity` (%), `illuminance` (lux),
+  `motion`, `temperature` (°C), `humidity` (%), `brightness` (lux),
   `pressure` (hPa), `co2`, `pm25`, `tvoc` and explicit concentration
   unit readings. Native Switch events create one FHEM event per press,
   including repeated identical presses.

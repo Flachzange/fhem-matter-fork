@@ -17,7 +17,7 @@ The table records modeled module output, not physical-device validation.
 | OccupancySensing | motion and endpoint state | 3/5 -> motion; 2 -> nomotion (bit 0) |
 | TemperatureMeasurement | temperature | 2234 -> 22.34; -550 -> -5.5 |
 | RelativeHumidityMeasurement | humidity | 4350 -> 43.5; 0 -> 0 |
-| IlluminanceMeasurement | illuminance | 30001 -> 1000; 20001 -> 100; 0 -> 0 |
+| IlluminanceMeasurement | brightness (lux) | 30001 -> 1000; 20001 -> 100; 0 -> 0 |
 | Unknown device type / BooleanState | boolean_state | Generic 1/0; no inferred contact reading |
 
 ## Lifecycle acceptance matrix
@@ -64,3 +64,6 @@ No physical contact, leak, rain, occupancy or measurement device was tested.
 Hardware status remains **ungetestet / untested**, as already stated in the
 German/English commandref. This acceptance check needs no further runtime
 logic and makes no new guarantee about the freshness of the server's data.
+
+V0.42 renames the illuminance reading to brightness; mixed dimmer sources use level.
+See [reading-conventions.md](reading-conventions.md) for source provenance and upgrade behavior.

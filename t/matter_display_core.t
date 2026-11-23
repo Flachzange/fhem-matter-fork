@@ -92,7 +92,7 @@ my @cases = (
     [0x0043, {'69/0' => JSON::true}, 'leak'],
     [0x0044, {'69/0' => JSON::false}, 'dry'],
     [0x000A, {'257/0' => 1}, 'locked'],
-    [0x0202, {'258/14' => 6543}, 'lift: 65.43 %'],
+    [0x0202, {'258/14' => 6543}, 'lift: 34.57 %'],
     [0x0301, {'513/28' => 4, '513/0' => 2100, '513/18' => 2200}, 'heat; measured: 21 °C; heat: 22 °C'],
     [0x002B, {'514/0' => 3, '514/3' => 45}, 'high; 45 %'],
     (map { [$_, {'6/0' => JSON::true}, 'on'] } (0x0100,0x0101,0x010C,0x010D,0x010A,0x010B)),
@@ -205,9 +205,9 @@ like(decode_utf8_content($poll_data), qr/15\.5 °C \/ 48 %/, 'actual FHEMWEB lon
 close $poll;
 
 # All defined enum values retain their meanings; invalid values do not replace
-# a valid reading or refresh its timestamp. The existing raw numeric API stays.
+# a valid reading or refresh its timestamp. Lock state is the functional text API.
 for my $row (
-    [0x000A,'257/0','lock_state',[qw(not_fully_locked locked unlocked unlatched)]],
+    [0x000A,'257/0','state',[qw(not_fully_locked locked unlocked unlatched)]],
     [0x0076,'92/0','alarm_expressed_state',[qw(normal smoke_alarm co_alarm battery_alert testing hardware_fault end_of_service interconnect_smoke interconnect_co)]],
     [0x002C,'91/0','air_quality',[qw(unknown good fair moderate poor very_poor extremely_poor)]],
 ) {
@@ -216,7 +216,7 @@ for my $row (
     for my $i (0..$#$values) {
         $report->($type,$path,$i);
         is($state->($name),$values->[$i],"$reading enum $i is presented explicitly");
-        is($device->($name)->{Readings}{$reading}{Value},"$i",'enum reading remains raw');
+        is($device->($name)->{Readings}{$reading}{Value}, $type == 0x000A ? $values->[$i] : "$i", 'functional lock state is text; other enums retain raw values');
     }
     my $before=$device->($name)->{Readings};
     for my $bad (undef,-1,999,'bad',{}) { $report->($type,$path,$bad); }
@@ -225,13 +225,13 @@ for my $row (
 # Coverings: current positions only, including tilt-only and non-position-aware.
 my $cover=$name_for{0x0202};
 $report->(0x0202,'258/11',10000);
-is($state->($cover),'lift: 65.43 %','target position is not displayed as achieved');
-$perl->('readingsDelete($defs{' . $cover . '},q(current_position_lift_percent_100_ths))');
+is($state->($cover),'lift: 34.57 %','target position is not displayed as achieved');
+$perl->('readingsDelete($defs{' . $cover . '},q(pct))');
 $report->(0x0202,'258/15',3000);
 is($state->($cover),'tilt: 30 %','tilt-only display uses the current tilt');
 $report->(0x0202,'258/15',65535);
 is($state->($cover),'tilt: 30 %','null sentinel cannot overwrite the tilt');
-$perl->('readingsDelete($defs{' . $cover . '},q(current_position_tilt_percent_100_ths))');
+$perl->('readingsDelete($defs{' . $cover . '},q(tilt))');
 for my $row ([0,'stopped'],[1,'opening'],[2,'closing']) {
     $report->(0x0202,'258/10',$row->[0]); is($state->($cover),$row->[1],'operational status without a current position');
 }
@@ -307,6 +307,53 @@ is($state->($button),'last: short','button display is explicitly the last event'
 is($perl->('scalar @{$defs{' . $button . '}{test_events} // []}'),'2','two identical presses still create two notify events');
 ok(!exists $device->($button)->{Readings}{state},'button does not acquire a permanent state reading');
 
+# Reading conventions through actual FHEM notification and persistence paths.
+my $mapped = {node_id=>98902,name=>'Mapped',available=>JSON::true,attributes=>{
+    '1/29/0'=>[{deviceType=>0x0106}], '1/8/0'=>127,
+    '2/29/0'=>[{deviceType=>0x0202}], '2/258/14'=>3457,
+    '3/29/0'=>[{deviceType=>0x000A}], '3/257/0'=>1,
+    '4/29/0'=>[{deviceType=>0x0106}],
+}};
+$perl->('MATTER_ProcessNode($defs{io},' . $literal->($mapped) . ')');
+my ($mixed,$blind,$lock)=map {"MATTER_Mapped_EP$_"} (1..3);
+my $mapped_report=sub {
+    my ($endpoint,$cluster,$attr,$value)=@_;
+    my $event={event=>'attribute_updated',data=>[98902,"$endpoint/$cluster/$attr",$value]};
+    $perl->('MATTER_ParseMessage($defs{io},JSON::encode_json(' . $literal->($event) . '))');
+};
+$perl->('setReadingsVal($defs{' . $mixed . '},q(brightness),127,q(2026-01-01 01:02:03))');
+$cmd->("define namedEvents notify $mixed:.* { push \@{\$defs{$mixed}{named_events}}, [\$EVENT,ReadingsVal(q($mixed),q(brightness),q(?)),ReadingsVal(q($mixed),q(level),q(?))] }");
+$mapped_report->(1,1024,0,30001);
+is($state->($mixed),'1000 lx','lux display uses the renamed reading, not dim level');
+my $mixed_readings=$device->($mixed)->{Readings};
+is($mixed_readings->{brightness}{Value},1000,'actual core publishes brightness in lux');
+is($mixed_readings->{level}{Value},127,'actual core preserves displaced native level');
+is($mixed_readings->{level}{Time},'2026-01-01 01:02:03','source relocation preserves measurement timestamp through core API');
+my $named_events=decode_json($perl->('JSON->new->ascii->encode($defs{' . $mixed . '}{named_events})'));
+is_deeply([map {$_->[0]} @$named_events],['level: 127','brightness: 1000'],
+    'only functional reading events are emitted; source metadata stays silent');
+is_deeply([map {[@$_[1,2]]} @$named_events],[[1000,127],[1000,127]],
+    'all notifications see the completed coherent quantities');
+$mapped_report->(1,8,0,254);
+is($state->($mixed),'1000 lx','later level report cannot replace lux in overview');
+is($device->($mixed)->{Readings}{pct}{Value},100,'dimming percent reads level, not lux');
+is($state->($blind),'lift: 65.43 %','cover default uses FHEM open percent');
+$mapped_report->(2,258,8,99);
+is($state->($blind),'lift: 65.43 %','later coarse position does not degrade fine data');
+$cmd->("define lockEvents notify $lock:.* { push \@{\$defs{$lock}{lock_events}}, \$EVENT }");
+$mapped_report->(3,257,0,2);
+is($device->($lock)->{Readings}{state}{Value},'unlocked','lock has a real textual state reading');
+is_deeply(decode_json($perl->('JSON->new->ascii->encode($defs{' . $lock . '}{lock_events})')),
+    ['unlocked'],'FHEM state event uses native state-event syntax');
+$cmd->("attr $lock stateFormat { 'lock=' . ReadingsVal(\$name,q(state),q(?)) }");
+$mapped_report->(3,257,0,1);
+is($state->($lock),'lock=locked','user format can consume the new lock state');
+$cmd->("deleteattr $lock stateFormat");
+$mapped_report->(1,47,14,2); $mapped_report->(1,92,3,0);
+is($device->($mixed)->{Readings}{batteryState}{Value},'low','aggregate battery warning survives normal alarm report');
+my $mapped_saved=$device->($mixed)->{Readings};
+my $mapped_sources=$perl->('ReadingsVal(q(' . $mixed . '),q(.matterReadingSources),q())');
+
 # Retention policy through actual global events, actual save/statefile loader,
 # IO loss and disable. There is no real Matter transport connection here.
 my $saved=$device->($temp)->{Readings};
@@ -350,6 +397,23 @@ my $restored=$device->($temp)->{Readings};
 is_deeply({map { $_=>$restored->{$_} } qw(temperature humidity device_type_ids)},
           {map { $_=>$saved->{$_} } qw(temperature humidity device_type_ids)},
           'actual loader preserves source values and timestamps');
+
+is($state->($mixed),'1000 lx','mixed lux display restores without fresh server data');
+is_deeply({map {$_=>$device->($mixed)->{Readings}{$_}} qw(brightness level pct batteryState)},
+          {map {$_=>$mapped_saved->{$_}} qw(brightness level pct batteryState)},
+          'real statefile loader preserves new readings and measurement timestamps');
+is($perl->('ReadingsVal(q(' . $mixed . '),q(.matterReadingSources),q())'),$mapped_sources,
+    'hidden source provenance is persisted by actual core save/rereadcfg');
+$mapped_report->(1,8,0,0);
+is($device->($mixed)->{Readings}{level}{Value},254,'unknown root availability still blocks restored mapping updates');
+$perl->('MATTERDevice_UpdateAvailability($defs{MATTER_Mapped},1)');
+$mapped_report->(1,92,3,0);
+is($device->($mixed)->{Readings}{batteryState}{Value},'low','restored warning source cannot be cleared by unrelated normal report');
+$mapped_report->(1,8,0,127);
+is_deeply([map {$device->($mixed)->{Readings}{$_}{Value}} qw(brightness level pct)],
+    [1000,127,50],'restored provenance keeps report quantities distinct');
+$mapped_report->(2,258,8,99);
+is($state->($blind),'lift: 65.43 %','fine position priority survives restore');
 
 sub decode_utf8_content { return Encode::decode('UTF-8', $_[0]); }
 done_testing();

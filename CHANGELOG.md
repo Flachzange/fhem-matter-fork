@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-23  MATTER V0.42 (#91): Adopt batteryPercent/batteryVoltage/batteryState, ct/hue/sat, sensor brightness in lux, covering pct/tilt and functional text lock state. Invert lift pct consistently to percent open; separate electrical frequency in Hz from native levelFrequency controls. Keep mixed dimmer/illumination/covering sources separate through level/dimmerPct and silent persistent provenance. No extra reads/timers. Add callback and real FHEM notification/statefile regressions; document functional names and units. Hardware untested.
+
 - 2026-11-23  MATTER V0.41 (#89): Add type-dependent endpoint STATE defaults for all currently named types, preserving explicit stateFormat, existing state readings/events and offline/disable data. Present measured values, lock/covering/HVAC/alarm/air/electrical data and last button events without redundant readings, attributes, polling or new requests; validate newly displayed enums/current positions. Add real FHEM/FHEMWEB/statefile tests in both encoding modes and require a default display for future functional types in AGENTS-MATTER.md. Hardware untested.
 
 - 2026-11-23  MATTER V0.40 review follow-up: Keep active explicit reads cancellable during synchronous publication; reject reentrant duplicates and clean temporary registrations on completion.

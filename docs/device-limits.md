@@ -47,7 +47,7 @@ There is no module-side loading alias, copying or automatic deletion.
 The module accepts integer report values within its declared parameter ranges
 and retains last valid readings on malformed/null reports. A usable scale
 requires a positive maximum. CT requires a positive minimum and ordered bounds;
-frequency requires positive ordered bounds. Missing bounds retain advertised
+levelFrequency requires positive ordered bounds. Missing bounds retain advertised
 commands with text input rather than inventing device-specific slider ranges.
 Valid stored readings may be used before runtime AttributeList restoration;
 a subsequently advertised AttributeList and feature metadata take precedence.
@@ -55,7 +55,7 @@ Neither cached readings nor server snapshots prove fresh physical contact.
 Since V0.23, unknown/offline availability blocks reports and protects local
 values. A valid online report resumes ordinary snapshots and explicit reads.
 Accepted online level, limit and metadata updates may recalculate percentage
-from the reported brightness; there is no persistent snapshot quarantine.
+from the reported native dimmer level; there is no persistent snapshot quarantine.
 
 ## Verification scope
 
@@ -66,3 +66,9 @@ endpoint isolation, offline protection and online snapshot/live recovery.
 Reading persistence is modeled by retaining READINGS while rebuilding helper
 metadata; no actual FHEM restart, configDB, browser or device hardware test is
 claimed. The change adds no polling, recovery timer or automatic physical read.
+
+Since V0.42, the controlled frequency reading/setter is `levelFrequency` in native
+units. `frequency` is reserved for the electrical measurement in Hz. Dimmer
+percent uses `level` on mixed illuminance endpoints and `brightness` otherwise;
+`dimmerPct` separates dim percent from covering percent. See
+[reading-conventions.md](reading-conventions.md) for the complete interface transition.

@@ -1074,7 +1074,7 @@ MATTERDevice_Parse($root, encode_json({
         '1/145/1' => { energy => 1_250_000 }, # ElectricalEnergyMeasurement mWh
     },
 }));
-is(ReadingsVal('MATTER_Hall_Light_EP1', 'battery_percent', ''), 77,
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'batteryPercent', ''), 77,
    'PowerSource percentage is converted from half-units');
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'smoke_state', ''), 2,
    'SmokeCO cluster is mapped to a reading');
@@ -1123,7 +1123,7 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
         '1/6/65529' => [0, 1, 2], # A complete getConfig also reads command metadata.
     },
 }));
-is(ReadingsVal('MATTER_Hall_Light_EP1', 'battery_percent', ''), 55,
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'batteryPercent', ''), 55,
    'read_attribute response is routed to the original endpoint');
 
 # A connected IO whose send callback rejects a frame must not return success
@@ -1436,7 +1436,7 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 is(ReadingsVal($child->{NAME}, 'state', ''), 'off',
    'new live on/off takes precedence over old read');
-is(ReadingsVal($child->{NAME}, 'battery_percent', ''), 66,
+is(ReadingsVal($child->{NAME}, 'batteryPercent', ''), 66,
    'independent battery attribute from late read still updates');
 ok(MATTERDevice_CommandAccepted($child, 8, 4),
    'new live capability metadata survives rebuilding the read cache');
@@ -2171,7 +2171,7 @@ is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'false',
    'partial live availability overrides only matching snapshot field');
 is(ReadingsVal($child->{NAME}, 'state', ''), 'on',
    'partial node data does not import cached OnOff while the node is offline');
-is(ReadingsVal($child->{NAME}, 'battery_percent', ''), 66,
+is(ReadingsVal($child->{NAME}, 'batteryPercent', ''), 66,
    'unrelated battery data is retained from earlier live reports');
 is(ReadingsVal($snapshot_other_root->{NAME}, 'matter_status', ''), 'removed',
    'event for first node does not suppress removal of unrelated missing node');
@@ -2245,7 +2245,7 @@ is(ReadingsVal('MATTER_SensorProbe_EP2', 'temperature', ''), 22.34,
    'temperature centidegrees become Celsius');
 is(ReadingsVal('MATTER_SensorProbe_EP3', 'humidity', ''), 43.5,
    'humidity centipercent converts to percent');
-is(ReadingsVal('MATTER_SensorProbe_EP4', 'illuminance', ''), 1000,
+is(ReadingsVal('MATTER_SensorProbe_EP4', 'brightness', ''), 1000,
    'logarithmic Matter illuminance becomes lux');
 is(ReadingsVal('MATTER_SensorProbe_EP5', 'motion', ''), 'motion',
    'occupancy bitmask sets motion');
@@ -2270,7 +2270,7 @@ is(ReadingsVal('MATTER_SensorProbe_EP2', 'temperature', ''), 22.34,
    'temperature invalid sentinel leaves old value');
 is(ReadingsVal('MATTER_SensorProbe_EP3', 'humidity', ''), 43.5,
    'humidity invalid sentinel leaves old value');
-is(ReadingsVal('MATTER_SensorProbe_EP4', 'illuminance', ''), 1000,
+is(ReadingsVal('MATTER_SensorProbe_EP4', 'brightness', ''), 1000,
    'illuminance invalid sentinel leaves old value');
 
 
@@ -2496,7 +2496,7 @@ is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'on',
    'pre-outage state is known online');
 MATTER_ProcessNode($defs{ioA}, { node_id => 2700, available => JSON::false });
 readingsSingleUpdate($offline_child, 'state', 'off', 1);
-readingsSingleUpdate($offline_child, 'battery_percent', 10, 1);
+readingsSingleUpdate($offline_child, 'batteryPercent', 10, 1);
 my $old_type = ReadingsVal($offline_child->{NAME}, 'device_type_ids', '');
 MATTER_ProcessNode($defs{ioA}, {
     node_id => 2700, available => JSON::false,
@@ -2509,7 +2509,7 @@ MATTER_ProcessNode($defs{ioA}, {
 });
 is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
    'cached offline OnOff does not overwrite manual correction');
-is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 10,
+is(ReadingsVal($offline_child->{NAME}, 'batteryPercent', ''), 10,
    'cached offline power source does not overwrite manual correction');
 is(ReadingsVal($offline_child->{NAME}, 'device_type_ids', ''), $old_type,
    'cached offline device types are not adopted');
@@ -2540,7 +2540,7 @@ ok(!grep(/^on:noArg$/, MATTERDevice_GetSetList($offline_child)),
    'setter is not fabricated before command metadata is received');
 is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'on',
    'valid online snapshot restores the reported state without another live event');
-is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 95,
+is(ReadingsVal($offline_child->{NAME}, 'batteryPercent', ''), 95,
    'valid online snapshot restores the reported battery value');
 MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $recovery_requests[0]{message_id},
@@ -2558,7 +2558,7 @@ ok(grep(/^on:noArg$/, MATTERDevice_GetSetList($offline_child)),
    'recovery restores On setter from an advertised AcceptedCommandList');
 is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'on',
    'automatic metadata recovery leaves the accepted state unchanged');
-is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 95,
+is(ReadingsVal($offline_child->{NAME}, 'batteryPercent', ''), 95,
    'automatic metadata recovery cannot inject unrequested sensor values');
 
 @sent_requests = ();
@@ -2576,7 +2576,7 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
    'explicit getConfig accepts reported OnOff while online');
-is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 90,
+is(ReadingsVal($offline_child->{NAME}, 'batteryPercent', ''), 90,
    'explicit getConfig accepts reported battery while online');
 ok(MATTERDevice_CommandAccepted($offline_child, 6, 1),
    'explicit getConfig preserves advertised command metadata');
@@ -2611,7 +2611,7 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'on',
    'new live report releases state for its specific attribute');
-is(ReadingsVal($offline_child->{NAME}, 'battery_percent', ''), 90,
+is(ReadingsVal($offline_child->{NAME}, 'batteryPercent', ''), 90,
    'unreported battery retains its last accepted read value');
 is(ReadingsVal($offline_root->{NAME}, 'state', ''), 'online',
    'root availability remains independent from endpoint state');
@@ -3743,7 +3743,7 @@ for my $old (@obsolete_limits) {
 }
 ok(grep(/^ct:textField$/, MATTERDevice_GetSetList($limit_ep)),
    'CT command remains usable without fabricated colorpicker limits');
-ok(grep(/^frequency:textField$/, MATTERDevice_GetSetList($limit_ep)),
+ok(grep(/^levelFrequency:textField$/, MATTERDevice_GetSetList($limit_ep)),
    'Frequency command remains usable without fabricated 50/60 boundaries');
 is(MATTERDevice_MaxBrightness($limit_ep), 254,
    'protocol fallback applies while device data is missing');
@@ -3773,7 +3773,7 @@ for my $r (@limit_reports) {
 }
 ok(grep(/^ct:colorpicker,CT,200,1,454$/, MATTERDevice_GetSetList($limit_ep)),
    'colorpicker uses actual device limits');
-ok(grep(/^frequency:slider,1000,1,4000$/, MATTERDevice_GetSetList($limit_ep)),
+ok(grep(/^levelFrequency:slider,1000,1,4000$/, MATTERDevice_GetSetList($limit_ep)),
    'frequency slider uses actual device limits');
 $limit_report->(2, 8, 3, 100);
 is(MATTERDevice_MaxBrightness($limit_ep2), 100,
@@ -3820,10 +3820,10 @@ ok(!defined(MATTERDevice_Percentage($limit_ep)),
    'zero maximum never divides by zero or invents a percentage');
 $limit_report->(1, 8, 3, 180);
 $limit_report->(1, 8, 5, 0);
-ok(grep(/^frequency:textField$/, MATTERDevice_GetSetList($limit_ep)),
+ok(grep(/^levelFrequency:textField$/, MATTERDevice_GetSetList($limit_ep)),
    'zero means undefined frequency limit, not slider boundary');
 $limit_report->(1, 8, 5, 5000);
-ok(grep(/^frequency:textField$/, MATTERDevice_GetSetList($limit_ep)),
+ok(grep(/^levelFrequency:textField$/, MATTERDevice_GetSetList($limit_ep)),
    'reversed frequency range does not create misleading slider');
 $limit_report->(1, 8, 5, 1000);
 $limit_report->(1, 768, 16395, 500);
@@ -3928,11 +3928,11 @@ subtest 'Issue 27: unknown/offline blocks, valid online synchronizes' => sub {
     my $other_ep = $defs{MATTER_LifecycleOther_EP1};
     is(ReadingsVal($ep->{NAME}, 'state', ''), 'on', 'confirmed new online node accepts its initial snapshot');
     readingsSingleUpdate($ep, 'state', 'off', 1);
-    readingsSingleUpdate($ep, 'battery_percent', 10, 1);
+    readingsSingleUpdate($ep, 'batteryPercent', 10, 1);
     readingsSingleUpdate($ep, 'model', 'Manual model', 1);
     readingsSingleUpdate($bep, 'state', 'off', 1);
     my $state_writes = $single_writes{$ep->{NAME}}{state};
-    my $battery_writes = $single_writes{$ep->{NAME}}{battery_percent};
+    my $battery_writes = $single_writes{$ep->{NAME}}{batteryPercent};
     my $type_writes = $single_writes{$ep->{NAME}}{device_type_ids};
     my $epoch = $a->{helper}{availability_epoch};
     my $reentered = 0;
@@ -3964,7 +3964,7 @@ subtest 'Issue 27: unknown/offline blocks, valid online synchronizes' => sub {
     ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'unknown availability cannot apply unsolicited recovery metadata');
     is(scalar(@requests), $before_reads, 'unknown availability triggers no automatic or manual read');
     is($single_writes{$ep->{NAME}}{state}, $state_writes, 'blocked snapshots do not churn physical state events');
-    is($single_writes{$ep->{NAME}}{battery_percent}, $battery_writes, 'blocked snapshots preserve manual sensor value and timestamp');
+    is($single_writes{$ep->{NAME}}{batteryPercent}, $battery_writes, 'blocked snapshots preserve manual sensor value and timestamp');
     is($single_writes{$ep->{NAME}}{device_type_ids}, $type_writes, 'blocked snapshots preserve device types and metadata');
     MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {
         node_id => 6100, available => JSON::true, attributes => $values}}));
@@ -3975,7 +3975,7 @@ subtest 'Issue 27: unknown/offline blocks, valid online synchronizes' => sub {
     is(ReadingsVal($ep->{NAME}, 'model', ''), 'Fresh model', 'accepted live model report updates children normally');
     MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [6100, '1/6/0', JSON::true]}));
     is(ReadingsVal($ep->{NAME}, 'state', ''), 'on', 'fresh individual report restores physical state after recovery');
-    is(ReadingsVal($ep->{NAME}, 'battery_percent', ''), 80, 'online snapshot restores its reported battery value');
+    is(ReadingsVal($ep->{NAME}, 'batteryPercent', ''), 80, 'online snapshot restores its reported battery value');
 
     # Model normal statefile/configDB restoration: preserve public readings,
     # rebuild only transient helper metadata, then deliver the real lifecycle callback.
@@ -4196,7 +4196,7 @@ subtest 'Issue 30: persisted sensors follow the shared availability lifecycle' =
         [1, 0x0015, 69, 'contact', JSON::true, 'closed', 'open', JSON::true, 'closed', JSON::false, 'open', 'unknown'],
         [2, 0x0302, 1026, 'temperature', 2234, 22.34, 18.5, 2145, 21.45, -550, -5.5, -32768],
         [3, 0x0307, 1029, 'humidity', 4350, 43.5, 40, 5150, 51.5, 0, 0, 65535],
-        [4, 0x0106, 1024, 'illuminance', 30001, 1000, 10, 20001, 100, 0, 0, 65535],
+        [4, 0x0106, 1024, 'brightness', 30001, 1000, 10, 20001, 100, 0, 0, 65535],
         [5, 0x0107, 1030, 'motion', 3, 'motion', 'nomotion', 5, 'motion', 2, 'nomotion', 256],
         [6, 0x0043, 69, 'water_leak', JSON::true, 'leak', 'dry', JSON::true, 'leak', JSON::false, 'dry', 7],
         [7, 0x0044, 69, 'rain', JSON::false, 'dry', 'rain', JSON::false, 'dry', JSON::true, 'rain', -1],
@@ -5141,7 +5141,7 @@ subtest 'Issue 77: readOnly blocks control while reads and reports stay active' 
     for my $case (
         [1,'on'], [1,'off'], [1,'toggle'], [1,'off_with_effect','DelayedAllOff,NoFade'],
         [1,'on_with_recall_global_scene'], [1,'on_with_timed_off','0,10,0'],
-        [1,'brightness',120], [1,'pct',0], [1,'rgb','800000'], [1,'ct',300], [1,'frequency',100],
+        [1,'brightness',120], [1,'pct',0], [1,'rgb','800000'], [1,'ct',300], [1,'levelFrequency',100],
         [1,'dim_up'], [1,'dim_down'], [1,'dim_step_up'], [1,'dim_step_down'], [1,'dim_stop'],
         [2,'on'], [2,'off'], [2,'pct',50], [2,'tilt',25], [2,'stop'],
         [3,'lock'], [3,'unlock'], [4,'desired-temp',22], [4,'desired-temp-cool',25],
@@ -5304,7 +5304,7 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     for my $case (
         [1,'on'], [1,'off'], [1,'toggle'], [1,'off_with_effect','DelayedAllOff,NoFade'],
         [1,'on_with_recall_global_scene'], [1,'on_with_timed_off','0,10,0'],
-        [1,'brightness',120], [1,'pct',50], [1,'rgb','800000'], [1,'ct',300], [1,'frequency',100],
+        [1,'brightness',120], [1,'pct',50], [1,'rgb','800000'], [1,'ct',300], [1,'levelFrequency',100],
         [1,'dim_up'], [1,'dim_down'], [1,'dim_step_up'], [1,'dim_step_down'], [1,'dim_stop'],
         [2,'on'], [2,'off'], [2,'pct',50], [2,'tilt',25], [2,'stop'],
         [3,'lock'], [3,'unlock'], [4,'desired-temp',22], [4,'desired-temp-cool',25],
@@ -5769,7 +5769,7 @@ subtest 'Issue 80: partial reads preserve metadata and structural lists revoke i
     my $id = $read->();
     ok(grep($_ eq '1/29/1', @{$sent[-1]{args}{attribute_path}}), 'endpoint read requests authoritative ServerList');
     $reply->($id, {'1/47/12' => 102});
-    is(ReadingsVal($ep->{NAME}, 'battery_percent', ''), 51, 'partial read retains useful data');
+    is(ReadingsVal($ep->{NAME}, 'batteryPercent', ''), 51, 'partial read retains useful data');
     ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'omitted command list is retained');
     unlike($list->(), qr/\bon:/, 'omitted OffOnly FeatureMap still restricts commands');
     like($list->(), qr/fan_mode:off,low,high/, 'omitted HVAC metadata and sequence are retained');
@@ -5910,7 +5910,7 @@ subtest 'Issue 82: only accepted values supersede pending reads and snapshots' =
     MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99120, '1/1026/0', 2400]}));
     MATTER_ParseMessage($io, encode_json({message_id => $id, result => {'1/1026/0' => 2100, '1/47/12' => 100}}));
     is(ReadingsVal($ep{1}{NAME}, 'temperature', ''), 24, 'valid newer value still wins');
-    is(ReadingsVal($ep{1}{NAME}, 'battery_percent', ''), 50, 'unrelated response data is preserved');
+    is(ReadingsVal($ep{1}{NAME}, 'batteryPercent', ''), 50, 'unrelated response data is preserved');
     CommandAttr(undef, "$root->{NAME} diagnostics 1");
     MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99120, '0/54/4', -70]}));
     MATTER_Set($io, $io->{NAME}, 'discover');
@@ -6088,6 +6088,156 @@ subtest 'In-progress read is cancelled across disable and enable' => sub {
  MATTER_ParseMessage($io,encode_json({message_id=>$sent[-1]{message_id},result=>{'1/6/0'=>JSON::true}}));
  is(ReadingsVal($ep->{NAME},'state',''),'on','ordinary later read still updates values');
  ok(!keys %{$io->{helper}{pending_config}},'normal completion also retires registration');
+};
+
+subtest 'Issue 91: functional readings and independent sources' => sub {
+    my @sent;
+    my $io = $defs{readingIO} = {NAME => 'readingIO', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected', helper => {},
+        test_send_text => sub { push @sent, JSON::decode_json($_[0]); 1 }};
+    my $timers = scalar @timers;
+    MATTER_ProcessNode($io, {node_id => 99300, name => 'ReadingProbe', available => JSON::true,
+        attributes => {
+            '1/29/0' => [{deviceType => 0x0106}],
+            '1/8/65529' => [0, 8], '1/8/65532' => 4,
+            '1/768/65529' => [10], '1/768/65532' => 17,
+            '2/29/0' => [{deviceType => 0x0202}], '2/258/65529' => [5, 8],
+            '2/258/65532' => 3,
+            '3/29/0' => [{deviceType => 0x000A}],
+            '4/29/0' => [{deviceType => 0x0106}],
+        }});
+    my $root = MATTERDevice_LookupRoot($io, 99300);
+    my %ep = map { $_->{endpoint_id} => $_ } MATTERDevice_NodeChildren($root);
+    my $live = sub {
+        my ($ep, $cluster, $attr, $value) = @_;
+        MATTER_ParseMessage($io, encode_json({event => 'attribute_updated',
+            data => [99300, "$ep/$cluster/$attr", $value]}));
+    };
+    my $val = sub { ReadingsVal($ep{$_[0]}{NAME}, $_[1], '') };
+    $live->(1, 47, 12, 101);
+    $live->(1, 47, 11, 2987);
+    is($val->(1, 'batteryPercent'), 51, 'half-percent is explicitly rounded to integer FHEM percent');
+    is($val->(1, 'batteryVoltage'), 2.987, 'battery millivolts become volts');
+    is($val->(1, 'batteryState'), '', 'percentage/voltage do not invent battery health');
+    $live->(1, 92, 3, 2);
+    $live->(1, 47, 14, 0);
+    $live->(1, 47, 15, JSON::false);
+    is($val->(1, 'batteryState'), 'low', 'normal PowerSource cannot conceal critical SmokeCoAlarm');
+    $live->(1, 92, 3, 0);
+    is($val->(1, 'batteryState'), 'ok', 'all reported sources normal clears warning');
+    $live->(1, 47, 15, JSON::true);
+    $live->(1, 92, 3, 0);
+    is($val->(1, 'batteryState'), 'low', 'replacement-needed survives another normal source');
+    for my $bad (undef, 2, 'false', {}, []) { $live->(1, 47, 15, $bad); }
+    is($val->(1, 'batteryState'), 'low', 'invalid/null replacement values do not clear health');
+    $live->(1, 47, 15, JSON::false);
+    $live->(1, 47, 14, 1);
+    is($val->(1, 'batteryState'), 'low', 'warning charge level is low');
+    $live->(1, 47, 14, 2);
+    is($val->(1, 'batteryState'), 'low', 'critical charge level is also low');
+    $live->(4, 92, 3, 0);
+    is($val->(4, 'batteryState'), 'ok', 'alarm-only endpoint works independently');
+    for my $row ([47,12,'batteryPercent',201], [47,11,'batteryVoltage',4294967296],
+                 [47,14,'battery_charge_level',3], [92,3,'alarm_battery',3]) {
+        my ($cluster,$attr,$reading,$bad) = @$row;
+        my $before = $val->(1,$reading);
+        $live->(1,$cluster,$attr,$bad);
+        is($val->(1,$reading),$before,"$reading rejects out-of-range protocol value");
+    }
+    $live->(1,768,7,300);
+    $live->(1,768,0,254);
+    $live->(1,768,1,127);
+    is_deeply([$val->(1,'ct'),$val->(1,'hue'),$val->(1,'sat')],[300,254,127],
+        'CT in mired and native hue/sat ranges use FHEM names');
+    for my $row ([7,0,'ct'],[7,65280,'ct'],[0,255,'hue'],[1,-1,'sat']) {
+        my ($attr,$bad,$reading) = @$row;
+        my $before = $val->(1,$reading); $live->(1,768,$attr,$bad);
+        is($val->(1,$reading),$before,"$reading rejects reserved values");
+    }
+    $live->(1,144,14,50000);
+    $live->(1,8,4,1234);
+    is_deeply([$val->(1,'frequency'),$val->(1,'levelFrequency')],[50,1234],
+        'electrical hertz and native controlled frequency remain independent');
+    is(MATTERDevice_Set($ep{1},$ep{1}{NAME},'levelFrequency',2500),undef,'renamed frequency setter works');
+    is($sent[-1]{args}{payload}{frequency},2500,'frequency control sends the unscaled LevelControl value');
+    like(MATTERDevice_Set($ep{1},$ep{1}{NAME},'frequency',50)//'',qr/Unknown argument/,
+        'measured mains frequency cannot accidentally control LevelControl');
+    # Level report first: lux must not be used to recompute dimming percent.
+    $live->(1,8,0,127);
+    is_deeply([$val->(1,'brightness'),$val->(1,'pct')],[127,50],'ordinary dimmer names are preserved');
+    $live->(1,1024,0,30001);
+    is_deeply([$val->(1,'brightness'),$val->(1,'level'),$val->(1,'pct')],[1000,127,50],
+        'new lux source relocates proven level without losing dim percent');
+    ok(grep(/^level:slider/,MATTERDevice_GetSetList($ep{1})),'mixed endpoint has separate level setter/widget');
+    ok(!grep(/^brightness:/,MATTERDevice_GetSetList($ep{1})),'lux brightness is never the mixed dimmer widget');
+    $live->(1,1024,0,40001);
+    is($val->(1,'pct'),50,'more lux does not change dim percent');
+    $live->(1,8,0,254);
+    is_deeply([$val->(1,'brightness'),$val->(1,'level'),$val->(1,'pct')],[10000,254,100],
+        'level cannot overwrite lux in reverse report order');
+    # Reverse source discovery on another endpoint, then exercise getConfig/snapshot shapes.
+    $live->(4,1024,0,20001);
+    $live->(4,8,0,127);
+    is_deeply([$val->(4,'brightness'),$val->(4,'level'),$val->(4,'pct')],[100,127,50],
+        'lux-first endpoint chooses the same separate names');
+    $live->(1,258,65529,[5]); $live->(1,258,65532,1);
+    is($val->(1,'dimmerPct'),100,'cover capability relocates only proven dim percentage');
+    $live->(1,258,14,3457);
+    is_deeply([$val->(1,'pct'),$val->(1,'dimmerPct')],[65.43,100],
+        'same-endpoint cover and dim percentages remain distinct');
+    is(MATTERDevice_Set($ep{1},$ep{1}{NAME},'dimmerPct',25),undef,'separate dim percent setter works');
+    is($sent[-1]{args}{payload}{level},64,'mixed dim percentage sends LevelControl');
+    is(MATTERDevice_Set($ep{1},$ep{1}{NAME},'pct',25),undef,'cover percent setter works');
+    is($sent[-1]{args}{payload}{liftPercent100thsValue},7500,'FHEM open percent is inverted for Matter');
+    is($val->(1,'pct'),65.43,'setter acknowledgements never change measured cover position');
+    $live->(2,258,8,20); $live->(2,258,14,2345); $live->(2,258,8,99);
+    is($val->(2,'pct'),76.55,'fine lift position wins over a later coarse report');
+    $live->(2,258,15,1234); $live->(2,258,9,80);
+    is($val->(2,'tilt'),12.34,'fine tilt remains fractional without lift inversion');
+    $live->(2,258,14,0); is($val->(2,'pct'),100,'native zero is fully open');
+    $live->(2,258,14,10000); is($val->(2,'pct'),0,'native 10000 is fully closed');
+    $live->(2,258,14,65535); is($val->(2,'pct'),0,'invalid position does not manufacture open');
+    for my $i (0..3) {
+        $live->(3,257,0,$i);
+        is($val->(3,'state'),(qw(not_fully_locked locked unlocked unlatched))[$i],
+            "lock enum $i is a functional textual reading");
+    }
+    is(ReadingsVal($root->{NAME},'state',''),'online','lock reports cannot change root reachability');
+    $live->(3,257,0,255); is($val->(3,'state'),'unlatched','invalid lock state is not locked');
+    # All incoming shapes use the same named/converted values.
+    MATTERDevice_Parse($root,encode_json({result=>{'4/1024/0'=>10001,'4/8/0'=>254,'4/144/14'=>60000}}));
+    is_deeply([$val->(4,'brightness'),$val->(4,'level'),$val->(4,'pct'),$val->(4,'frequency')],
+        [10,254,100,60],'getConfig shape retains quantities and units');
+    MATTER_ProcessNode($io,{node_id=>99300,available=>JSON::true,
+        attributes=>{'4/1024/0'=>20001,'4/8/0'=>127}});
+    is_deeply([$val->(4,'brightness'),$val->(4,'level'),$val->(4,'pct')],[100,127,50],
+        'snapshot uses the same collision policy');
+    for my $old (qw(battery_percent battery_voltage_mV color_temperature_mireds current_hue current_saturation illuminance lock_state)) {
+        ok(!exists($ep{1}{READINGS}{$old}) && !exists($ep{3}{READINGS}{$old}),"no legacy $old alias is generated");
+    }
+    CommandAttr(undef,"$ep{1}{NAME} readOnly 1");
+    my $sent_before = scalar @sent;
+    for my $command (qw(level dimmerPct levelFrequency)) {
+        like(MATTERDevice_Set($ep{1},$ep{1}{NAME},$command,20)//'',qr/read-only/,"readOnly blocks renamed $command control");
+    }
+    is(scalar(@sent),$sent_before,'blocked renamed controls send nothing');
+    $live->(1,8,0,64);
+    is($val->(1,'level'),64,'readOnly continues to accept mixed native level telemetry');
+    CommandDeleteAttr(undef,"$ep{1}{NAME} readOnly");
+    my $saved;
+    MATTER_ParseMessage($io,encode_json({event=>'node_updated',data=>{node_id=>99300,available=>JSON::false}}));
+    $saved = encode_json($ep{1}{READINGS});
+    $live->(1,8,0,0); $live->(1,1024,0,0); $live->(1,47,14,0);
+    is_deeply($ep{1}{READINGS},JSON::decode_json($saved),'offline guards keep all functional readings and provenance');
+    MATTER_ParseMessage($io,encode_json({event=>'node_updated',data=>{node_id=>99300,available=>JSON::true}}));
+    CommandAttr(undef,"$ep{1}{NAME} disable 1");
+    $saved=encode_json($ep{1}{READINGS}); $live->(1,47,15,JSON::false); $live->(1,8,0,0);
+    is_deeply($ep{1}{READINGS},JSON::decode_json($saved),'disable also blocks new aggregate/source metadata');
+    is(scalar(@timers),$timers,'functional mapping adds no periodic timers');
+    # Recorded origins are tied to the FHEM/Matter identity, not numeric ranges.
+    MATTERDevice_InvalidateIdentity($ep{4});
+    ok(!exists($ep{4}{READINGS}{'.matterReadingSources'}),'identity change drops source provenance');
+    is(MATTERDevice_Percentage($ep{4}),undef,'ambiguous old brightness cannot scale a new identity');
 };
 
 done_testing();

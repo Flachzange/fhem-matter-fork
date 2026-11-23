@@ -1,8 +1,9 @@
-# Endpoint display defaults (#89, V0.41)
+# Endpoint display defaults (#89; reading update #91, V0.42)
 
 `STATE` is the presentation of an endpoint's existing readings. This change
-adds no physical `state` reading, no stateFormat attribute, no polling and no
-Matter requests. Existing on/off and binary-sensor `state` readings/events
+adds no redundant physical readings, no stateFormat attribute, no polling and no
+Matter requests. V0.42 replaces numeric lock_state with functional text state;
+this is a reading-interface change, not another display-derived state copy. Existing on/off and binary-sensor `state` readings/events
 remain unchanged. The user can override the entire presentation with the
 normal FHEM `stateFormat` attribute; deleting it restores the default.
 
@@ -31,8 +32,8 @@ source readings are absent. Invalid/null reports retain last-valid readings.
 | Smoke CO Alarm 0x0076 | alarm_expressed_state: normal, smoke_alarm, co_alarm, battery_alert, testing, hardware_fault, end_of_service, interconnect_smoke, interconnect_co. No locally synthesized alarm priority. |
 | Water leak 0x0043 | Existing state: leak/dry. |
 | Rain 0x0044 | Existing state: rain/dry. |
-| Door lock 0x000A | lock_state: not_fully_locked/locked/unlocked/unlatched. Door contact is a separate value. |
-| Window covering 0x0202 | Current lift/tilt percentages, preferring the percent100ths readings over integer percentages. Both axes appear if supplied. If only absolute positions exist they are explicitly labelled raw; otherwise wc_operational_status supplies stopped/opening/closing. No target-position echo. Percent direction is Matter's 0=open, 100=closed, not a FHEM pct conversion. |
+| Door lock 0x000A | state: not_fully_locked/locked/unlocked/unlatched. Door contact is a separate value. |
+| Window covering 0x0202 | Reported lift pct (100=open, 0=closed) and tilt (native 0..100), preferring fine reports over integer percentages. Both axes appear if supplied. If only absolute positions exist they are explicitly labelled raw; otherwise wc_operational_status supplies stopped/opening/closing. No target-position echo. The same inverted lift convention is used by the pct setter; targets are never echoed. |
 | Thermostat 0x0301 | mode; measured: measured-temp °C; heat/cool: applicable desired-temp / desired-temp-cool °C. Auto shows both setpoints, off shows no setpoint. Missing components are unknown. |
 | Fan 0x002B | fan_mode; actual fan_pct %, if supplied. fan_pct_setting is never substituted for the actual percentage. |
 | Lights 0x0100, 0x0101, 0x010C, 0x010D | Existing on/off state. |
@@ -47,7 +48,7 @@ source readings are absent. Invalid/null reports retain last-valid readings.
 | Temperature 0x0302 | temperature °C. With 0x0307: temperature °C / humidity %, with unknown for a missing component. |
 | Humidity 0x0307 | humidity %. |
 | Pressure 0x0305 | pressure hPa. |
-| Illuminance 0x0106 | illuminance lx. |
+| Illuminance 0x0106 | brightness lx, with recorded source provenance. |
 | Flow 0x0306 | unknown: currently only a label, no FlowMeasurement parser. |
 | Structural 0x000E, 0x0011, 0x0012, 0x0013, 0x0014, 0x0016 | Ignore as companions to functional types; if no known functional type is present, retain an existing own state or show unknown. Root behavior depends on endpoint ID 0, not a type label. |
 | Unknown/vendor types | Existing own state, otherwise unknown; no arbitrary reading/name-based guessing. |
@@ -102,7 +103,9 @@ Matter primary-source definitions inspected on 2026-11-23:
 | [WindowCoveringCluster.h](https://github.com/project-chip/connectedhomeip/blob/master/src/app/clusters/window-covering-server/WindowCoveringCluster.h) | OperationalState 0=stopped, 1=opening, 2=closing, 3=reserved | fea09bcbd169eed8717a8452f0d907ee7143bc66 |
 | [WindowCoveringCluster.cpp](https://github.com/project-chip/connectedhomeip/blob/master/src/app/clusters/window-covering-server/WindowCoveringCluster.cpp) | Increasing current-to-target percentage means closing | 0bd9f978489d5f9db1f45ca822a0e663f965b76b |
 
-Measurement scaling/units already implemented by this module remain unchanged;
+V0.42 functional reading names, battery/frequency conversion and lift orientation
+are documented in [reading-conventions.md](reading-conventions.md); other
+measurement scaling/units remain unchanged;
 see also [environment-measurements.md](environment-measurements.md) and
 [sensor-lifecycle.md](sensor-lifecycle.md). Source blobs identify the inspected
 content; links to master may later change.
@@ -138,7 +141,7 @@ No physical Matter device, external Matter server, configDB or complete OS /
 FHEM process restart is tested. Existing statefile/configuration loading is
 actually executed through rereadcfg, not simulated by copying device hashes.
 
-## Completion review
+## V0.41 completion review (historical)
 
 A separate consistency review covered the complete new presentation policy,
 the existing IO/device dispatch and attribute/read-response paths, root and
