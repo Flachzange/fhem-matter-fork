@@ -1542,9 +1542,11 @@ sub MATTERDevice_Set($$@) {
         # whether the module supports that endpoint's functional clusters.
         push @paths, "$endpoint_id/29/0";
 
-        # Root-Descriptor: vollständige ServerList und PartsList mitlesen.
+        # ServerList is authoritative for cluster removal, unlike omitted
+        # paths in a partially successful attribute read.
+        push @paths, "$endpoint_id/29/1";
+        # Root-Descriptor: PartsList mitlesen.
         if ($endpoint_id == 0) {
-            push @paths, "0/29/1";
             push @paths, "0/29/3";
         }
 
@@ -2090,6 +2092,16 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
     my $cluster = $MATTER_CLUSTERS{$cluster_id};
 
+    if ($cluster_id == 29 && $attr_id == 1) {
+        my $servers = MATTERDevice_IdSet($value);
+        if (defined $servers) {
+            delete @{$hash->{helper}{capabilities}}{
+                grep { !$servers->{$_} } keys %{$hash->{helper}{capabilities} // {}}
+            };
+            $hash->{helper}{seen_clusters} = { %$servers };
+        }
+    }
+
     # Remember cluster presence for conservative fallback labels in FHEMWEB,
     # including measurement clusters this module does not yet expose as readings.
     $hash->{helper}{seen_clusters}{$cluster_id} = 1 if defined($value);
@@ -2387,36 +2399,11 @@ sub MATTERDevice_ProcessMessage {
             }
             return;
         }
-        # getConfig synchronisiert die Capability-Metadaten der in der Antwort
-        # enthaltenen Endpoints vollständig. Alte Cluster-/Command-Daten dürfen
-        # nicht erhalten bleiben, wenn sie im aktuellen Datenmodell verschwunden sind.
-        my %reported_lists;
-        foreach my $path (keys %{$decoded->{result}}) {
-            next unless $path =~ m{^(\d+)/(\d+)/(\d+)$};
-            my ($ep, $cluster, $attr) = ($1, $2, $3);
-            my $lists = ($reported_lists{$ep} //= []);
-            push @$lists, [$cluster, $MATTER_GLOBAL_ATTRIBUTES{$attr}]
-                if $attr >= 0xFFF8 && $attr <= 0xFFFB;
-        }
-        foreach my $ep (keys %reported_lists) {
-            my $target = $ep == $my_endpoint ? $hash : MATTERDevice_GetOrCreateChild($hash, $ep);
-            next unless $target;
-            next if MATTERDevice_IsDisabled($target);
-            my $previous = delete $target->{helper}{capabilities};
-            # Seed only list paths present in the reply. A valid report replaces
-            # its seed (including []), a malformed one leaves it intact.
-            for my $list (@{$reported_lists{$ep}}) {
-                my ($cluster, $key) = @$list;
-                my $old = $previous->{$cluster}{$key};
-                next unless defined $old;
-                my $cap = ($target->{helper}{capabilities}{$cluster} //= {present => 1});
-                $cap->{$key} = $old;
-            }
-        }
-
+        # Missing paths can be individual read failures. Valid reports replace
+        # metadata per path; only an explicit ServerList proves cluster removal.
         for my $path (sort {
-            ($a eq '0/29/1' ? 2 : $a =~ m{/29/0$} ? 0 : 1) <=>
-            ($b eq '0/29/1' ? 2 : $b =~ m{/29/0$} ? 0 : 1)
+            ($a =~ m{/29/1$} ? 2 : $a =~ m{/29/0$} ? 0 : 1) <=>
+            ($b =~ m{/29/1$} ? 2 : $b =~ m{/29/0$} ? 0 : 1)
         } keys %{$decoded->{result}}) {
             my $value = $decoded->{result}->{$path};
             if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
@@ -2507,8 +2494,8 @@ sub MATTERDevice_ProcessMessage {
 
         if ($attributes && ref($attributes) eq 'HASH') {
             for my $path (sort {
-                ($a eq '0/29/1' ? 2 : $a =~ m{/29/0$} ? 0 : 1) <=>
-                ($b eq '0/29/1' ? 2 : $b =~ m{/29/0$} ? 0 : 1)
+                ($a =~ m{/29/1$} ? 2 : $a =~ m{/29/0$} ? 0 : 1) <=>
+                ($b =~ m{/29/1$} ? 2 : $b =~ m{/29/0$} ? 0 : 1)
             } keys %{$attributes}) {
                 my $value = $attributes->{$path};
                 if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
@@ -3012,7 +2999,7 @@ automated tests model reading restoration.</p></li>
   <li><b>Capabilities:</b> Set commands require a matching endpoint
       <code>AcceptedCommandList</code> entry and applicable
       <code>FeatureMap</code> constraints. The module records the reported <code>ClusterRevision</code> as metadata.
-      A malformed ID list preserves its last valid entries. An explicit empty list clears them.
+      A malformed ID list preserves its last valid entries. An explicit empty list clears them. Missing paths in a partial getConfig reply retain metadata; a valid endpoint Descriptor.ServerList revokes absent clusters and is included in getConfig.
       Until command metadata arrives, controls are not inferred from values,
       cluster presence or retired <code>has_*</code> settings. A saved
       <code>has_*=0</code> no longer disables a reported command.</li>
@@ -3424,7 +3411,7 @@ Reading-Wiederherstellung.</p></li>
       der <code>AcceptedCommandList</code> des jeweiligen Endpunkts sowie
       gegebenenfalls die in der <code>FeatureMap</code> geforderten Features.
       Das Modul erfasst die gemeldete <code>ClusterRevision</code> als Metadatum. Bei einer fehlerhaften ID-Liste bleiben die
-      letzten gültigen Einträge erhalten. Eine ausdrücklich leere Liste löscht sie. Solange die Metadaten fehlen,
+      letzten gültigen Einträge erhalten. Eine ausdrücklich leere Liste löscht sie. Fehlende Pfade einer getConfig-Teilantwort erhalten Metadaten; eine gültige Descriptor.ServerList des Endpunkts widerruft fehlende Cluster und wird mit getConfig gelesen. Solange die Metadaten fehlen,
       werden keine Befehle aus Einzelwerten oder alten <code>has_*</code>-
       Einstellungen abgeleitet. Gespeicherte <code>has_*=0</code>-Werte
       sperren keine gemeldeten Befehle mehr.</li>

@@ -5169,6 +5169,10 @@ subtest 'Issue 77: readOnly blocks control while reads and reports stay active' 
     $reply->($sent[-1]{message_id}, result => {'1/6/0' => JSON::true, '1/6/65529' => [0]});
     is(ReadingsVal($name, 'state', ''), 'on', 'getConfig still updates physical values');
     ok(!MATTERDevice_CommandAccepted($device, 6, 1), 'getConfig still revokes removed commands');
+    # Recovery only applies while metadata is actually missing, not after a
+    # complete list has been refreshed successfully by this explicit read.
+    delete $device->{helper}{capabilities}{6}{accepted_commands};
+    ok(MATTERDevice_NeedsCapabilityRefresh($root), 'fixture has missing metadata before automatic recovery');
     my ($metadata_id, $metadata_error) = MATTERDevice_RequestCapabilityRefresh($root);
     is($metadata_error, undef, 'automatic metadata read remains permitted');
     $reply->($metadata_id, result => {'1/6/65529' => [0,1,2]});
@@ -5512,7 +5516,7 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     is(ReadingsVal($ep->{NAME}, 'state', ''), 'on', 'valid sibling path survives invalid list');
     $read->();
     $reply->({'1/6/0' => JSON::true});
-    is_deeply($switches->(), [], 'omitted list is cleared on complete read');
+    is_deeply($switches->(), [qw(off:noArg on:noArg)], 'omitted list in a read is not a revocation');
     my %lists = (65528 => 'generated_commands', 65529 => 'accepted_commands',
                  65530 => 'event_list', 65531 => 'attribute_list');
     $read->();
@@ -5650,7 +5654,7 @@ subtest 'Issue 79: runtime permissions belong to the actual Matter identity' => 
             sdk_version => 'matter-server/1.0 (matter.js/1.0)'}));
     }
     MATTER_ProcessNode($a, {node_id => 99008, name => 'IdentityProbe', available => JSON::true,
-        attributes => {'0/29/1' => [42], '0/3/65529' => [0], '0/40/9' => 1, '0/40/3' => 'saved model',
+        attributes => {'0/29/1' => [3, 29, 40, 42], '0/3/65529' => [0], '0/40/9' => 1, '0/40/3' => 'saved model',
                        '1/6/65529' => [0, 1], '1/6/0' => JSON::false}});
     my $root = $modules{MATTERDevice}{defptr}{'identityA:99008'};
     my ($ep) = MATTERDevice_NodeChildren($root);
@@ -5717,6 +5721,58 @@ subtest 'Issue 79: runtime permissions belong to the actual Matter identity' => 
     MATTER_ProcessNode($b, {node_id => 99011, name => 'IdentityOtherServer', available => JSON::true});
     $preferred_io = $preferred;
     ok(exists($a->{helper}{pending_config}{$read_id}), 'temporary auto-assignment cannot cancel another root read');
+};
+
+subtest 'Issue 80: partial reads preserve metadata and structural lists revoke it' => sub {
+    my @sent;
+    my $io = $defs{partialIO} = {NAME => 'partialIO', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected', test_send_text => sub {push @sent, JSON::decode_json($_[0]); 1}};
+    MATTER_ProcessNode($io, {node_id => 99100, name => 'PartialMetadata', available => JSON::true,
+        attributes => {'1/6/65529' => [0, 1, 2], '1/6/65532' => 4,
+            '1/47/12' => 100, '1/514/65531' => [0, 1, 2, 3],
+            '1/514/65532' => 0, '1/514/1' => 1}});
+    my $root = MATTERDevice_LookupRoot($io, 99100);
+    my ($ep) = MATTERDevice_NodeChildren($root);
+    my $list = sub {join ' ', MATTERDevice_GetSetList($ep)};
+    my $read = sub {MATTERDevice_Set($ep, $ep->{NAME}, 'getConfig'); $sent[-1]{message_id}};
+    my $reply = sub {MATTER_ParseMessage($io, encode_json({message_id => $_[0], result => $_[1]}))};
+    my $id = $read->();
+    ok(grep($_ eq '1/29/1', @{$sent[-1]{args}{attribute_path}}), 'endpoint read requests authoritative ServerList');
+    $reply->($id, {'1/47/12' => 102});
+    is(ReadingsVal($ep->{NAME}, 'battery_percent', ''), 51, 'partial read retains useful data');
+    ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'omitted command list is retained');
+    unlike($list->(), qr/\bon:/, 'omitted OffOnly FeatureMap still restricts commands');
+    like($list->(), qr/fan_mode:off,low,high/, 'omitted HVAC metadata and sequence are retained');
+    $reply->($read->(), {'1/6/65532' => {}, '1/6/65529' => [0, {}]});
+    ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'malformed list retains previous entries');
+    unlike($list->(), qr/\bon:/, 'malformed FeatureMap retains restrictions');
+    $reply->($read->(), {'1/6/65529' => []});
+    ok(!MATTERDevice_CommandAccepted($ep, 6, 0), 'valid empty list revokes commands');
+    $reply->($read->(), {'1/6/65529' => [0, 1], '1/6/65532' => 0});
+    like($list->(), qr/\bon:noArg/, 'valid replacement restores eligible commands');
+    my $old = $read->();
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99100, '1/29/1', [29, 47]]}));
+    $reply->($old, {'1/6/65529' => [0, 1], '1/29/1' => [6, 29, 47]});
+    ok(!MATTERDevice_CommandAccepted($ep, 6, 1), 'newer ServerList prevents old read reviving removed cluster');
+    MATTER_Set($io, $io->{NAME}, 'discover');
+    my $snapshot = $sent[-1]{message_id};
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99100, '1/29/1', [29, 47]]}));
+    MATTER_ParseMessage($io, encode_json({message_id => $snapshot, result => [{node_id => 99100,
+        attributes => {'1/6/65529' => [0, 1], '1/29/1' => [6, 29, 47]}}]}));
+    ok(!MATTERDevice_CommandAccepted($ep, 6, 1), 'newer ServerList also wins over old discovery');
+    $reply->($read->(), {'1/6/65529' => [0, 1], '1/29/1' => [6, 29, 47]});
+    ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'valid new structure can restore cluster');
+    $reply->($read->(), {'1/29/1' => [29, {}]});
+    ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'malformed structural list cannot revoke cluster');
+    MATTER_Set($io, $io->{NAME}, 'discover');
+    my $before_disable = $sent[-1]{message_id};
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99100, '1/29/1', [29, 47]]}));
+    CommandAttr(undef, "$ep->{NAME} disable 1");
+    CommandAttr(undef, "$ep->{NAME} disable 0");
+    $reply->($sent[-1]{message_id}, {'1/6/65529' => [0, 1], '1/29/1' => [6, 29, 47]});
+    MATTER_ParseMessage($io, encode_json({message_id => $before_disable,
+        result => [{node_id => 99100, attributes => {'1/29/1' => [29, 47]}}]}));
+    ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'local endpoint exclusion also blocks reconciled ServerList replay');
 };
 
 done_testing();

@@ -967,8 +967,8 @@ sub MATTER_RecordSnapshotEvent {
                 $changed->{attributes}{$path} = 1;
                 # Reapply the newer structural list after older cluster data,
                 # so an obsolete ICD FeatureMap cannot revive removed support.
-                $changed->{root_server_list} = $data->{attributes}{$path}
-                    if $path eq '0/29/1';
+                $changed->{server_lists}{$path} = $data->{attributes}{$path}
+                    if $path =~ m{/29/1$};
             }
         }
     }
@@ -998,14 +998,14 @@ sub MATTER_ProcessNodeList($$$;$) {
             if (ref($filtered{attributes}) eq 'HASH') {
                 my %attributes = %{$filtered{attributes}};
                 delete @attributes{keys %{$updated->{attributes} // {}}};
+                @attributes{keys %{$updated->{server_lists} // {}}} =
+                    values %{$updated->{server_lists} // {}};
                 if ($updated->{excluded_endpoints}) {
                     for my $path (keys %attributes) {
                         my ($ep) = split('/', $path);
                         delete $attributes{$path} if $updated->{excluded_endpoints}{$ep};
                     }
                 }
-                $attributes{'0/29/1'} = $updated->{root_server_list}
-                    if exists($updated->{root_server_list});
                 $filtered{attributes} = \%attributes;
             }
             $to_apply = \%filtered;

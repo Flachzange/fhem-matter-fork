@@ -1,1 +1,2 @@
 2026-11-23  MATTER V0.40 (#79): Invalidate old permissions and firmware offers when changing Matter identity.
+2026-11-23  MATTER V0.40 (#80): Preserve metadata on partial reads; revoke clusters only from valid structural lists.
