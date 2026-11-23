@@ -8,6 +8,24 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-23  MATTER V0.40 review follow-up: Keep active explicit reads cancellable during synchronous publication; reject reentrant duplicates and clean temporary registrations on completion.
+
+- 2026-11-23  MATTER V0.40 review follow-up: Apply reconciled newer ServerLists after automatic recovery metadata; retain sibling metadata and metadata-only scope.
+
+- 2026-11-23  MATTER V0.40 (#85): Remove the unused scalar pending_config representation. Keep one structured request format, realistic owner-aware read fixtures and the independent mixed command registry.
+
+- 2026-11-23  MATTER V0.40 (#84): Resolve a node_event endpoint once in the common device path. Retain generic reception accounting for unmapped/disabled endpoints and repeated button events; no new cache or index.
+
+- 2026-11-23  MATTER V0.40 (#83): Validate the inner EnergyMeasurementStruct integer and its specified 0..2^62 mWh range before conversion. Preserve good readings on malformed data, retain zero and named/TLV fields, and prevent invalid structs from masking valid pending reads.
+
+- 2026-11-23  MATTER V0.40 (#82): Use pure shared attribute conversion for freshness tracking and publication. Rejected sensors, limits, enums, device types and network diagnostics cannot suppress valid pending results. Keep unknown/raw schemas independent and avoid duplicate validation without pending requests.
+
+- 2026-11-23  MATTER V0.40 (#81): Bind explicit reads to the requesting FHEM instance and endpoint scope using the shared request-owner check. Cancel owner reads on Undef/identity change/disable and exclude deleted endpoints from old shared responses. Preserve rename and stop processing after reentrant replacement.
+
+- 2026-11-23  MATTER V0.40 (#80): Merge partial getConfig metadata per path instead of resetting endpoint capabilities. Preserve omitted/invalid values; valid empty lists and endpoint Descriptor.ServerList revoke support. Read ServerList for endpoints and preserve newer lists across delayed reads/discovery and disable exclusions.
+
+- 2026-11-23  MATTER V0.40 (#79): Invalidate permissions, offers and control-relevant reported metadata on actual IO/node/endpoint identity changes. Retain physical readings and local policy; preserve renames and unchanged definitions. Reject occupied root identities before modify and cancel the old owner's operations.
+
 - 2026-11-23  MATTER V0.39 (#78): Add endpoint-only disable: pause controls, reads, functional updates and events while preserving identity and readings. Reuse existing request registries to discard endpoint requests and exclude stale shared replies on both transitions; synchronize once on online activation without polling or replay. Keep root/siblings and readOnly independent. Add regression coverage and DE/EN help; hardware untested.
 
 - 2026-11-23  MATTER V0.38 (#77): Add endpoint-only readOnly control protection with central command/write enforcement, dynamic set lists and preserved reads, reports, events and in-flight completions. Block unsent compound components if protection is enabled during a synchronous callback. Add focused regression coverage and DE/EN attribute help; hardware untested.

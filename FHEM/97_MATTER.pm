@@ -13,7 +13,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.39 23.11.2026";
+my $MATTER_version = "V0.40 23.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -901,30 +901,8 @@ sub MATTER_ProcessNode($$;$) {
 sub MATTER_ValidLiveAttribute {
     my ($path, $value) = @_;
     return 0 unless defined($path) && !ref($path) &&
-        $path =~ m{^\d+/(\d+)/(\d+)$} && defined($value);
-    my ($cluster, $attribute) = ($1, $2);
-    return defined(MATTERDevice_NormalizeBoolean($value))
-        if $cluster == 6 && $attribute == 0;
-    return !ref($value) && $value =~ /^\d+$/ && $value <= 254
-        if $cluster == 8 && $attribute == 0;
-    return defined(MATTERDevice_NetworkType($value))
-        if $cluster == 51 && $attribute == 0;
-    return !ref($value) && $value =~ /\A\d+\z/ && $value <= 5
-        if ($cluster == 513 && $attribute == 27) ||
-           ($cluster == 514 && $attribute == 1);
-    if ($cluster == 29 && $attribute == 1) {
-        return 0 unless ref($value) eq 'ARRAY';
-        for my $entry (@$value) {
-            my $id = MATTERDevice_NormalizeMatterId($entry);
-            return 0 unless defined($id) && $id <= 0xFFFFFFFF;
-        }
-        return 1;
-    }
-    return defined(MATTERDevice_IdSet($value))
-        if $attribute >= 0xFFF8 && $attribute <= 0xFFFB;
-    return !ref($value) && $value =~ /^\d+$/
-        if $attribute == 0xFFFC || $attribute == 0xFFFD;
-    return 1;
+        $path =~ m{^(\d+)/(\d+)/(\d+)$} && defined($value);
+    return defined MATTERDevice_AttributeValue($2, $3, $value, $1);
 }
 
 # Keep newer reports with the reads whose endpoints they cover.
@@ -932,7 +910,7 @@ sub MATTER_RecordPendingReadValues {
     my ($hash, $node_id, $attributes) = @_;
     return unless ref($attributes) eq 'HASH';
     foreach my $pending (values %{$hash->{helper}{pending_config} // {}}) {
-        next unless ref($pending) eq 'HASH' && $pending->{node_id} eq $node_id;
+        next unless $pending->{node_id} eq $node_id;
         foreach my $path (keys %$attributes) {
             next unless MATTER_ValidLiveAttribute($path, $attributes->{$path});
             my ($endpoint) = split('/', $path);
@@ -967,8 +945,8 @@ sub MATTER_RecordSnapshotEvent {
                 $changed->{attributes}{$path} = 1;
                 # Reapply the newer structural list after older cluster data,
                 # so an obsolete ICD FeatureMap cannot revive removed support.
-                $changed->{root_server_list} = $data->{attributes}{$path}
-                    if $path eq '0/29/1';
+                $changed->{server_lists}{$path} = $data->{attributes}{$path}
+                    if $path =~ m{/29/1$};
             }
         }
     }
@@ -998,14 +976,14 @@ sub MATTER_ProcessNodeList($$$;$) {
             if (ref($filtered{attributes}) eq 'HASH') {
                 my %attributes = %{$filtered{attributes}};
                 delete @attributes{keys %{$updated->{attributes} // {}}};
+                @attributes{keys %{$updated->{server_lists} // {}}} =
+                    values %{$updated->{server_lists} // {}};
                 if ($updated->{excluded_endpoints}) {
                     for my $path (keys %attributes) {
                         my ($ep) = split('/', $path);
                         delete $attributes{$path} if $updated->{excluded_endpoints}{$ep};
                     }
                 }
-                $attributes{'0/29/1'} = $updated->{root_server_list}
-                    if exists($updated->{root_server_list});
                 $filtered{attributes} = \%attributes;
             }
             $to_apply = \%filtered;
@@ -1078,24 +1056,10 @@ sub MATTER_ParseMessage($$) {
             return;
         }
         if ($event eq 'node_event' && ref($decoded->{data}) eq 'HASH') {
-            my $data = $decoded->{data};
-            my ($node_id, $endpoint, $cluster, $event_id) =
-                @{$data}{qw(node_id endpoint_id cluster_id event_id)};
-            if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/ &&
-                defined($endpoint) && !ref($endpoint) && $endpoint =~ /^\d+$/ &&
-                $endpoint > 0 &&
-                defined($cluster) && !ref($cluster) && $cluster =~ /^\d+$/ &&
-                defined($event_id) && !ref($event_id) && $event_id =~ /^\d+$/) {
+            my $node_id = $decoded->{data}{node_id};
+            if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
                 my $root = MATTERDevice_LookupRoot($hash, $node_id);
-                if ($root) {
-                    my $received = {};
-                    MATTERDevice_RecordReceive($root, $received);
-                    for my $child (MATTERDevice_NodeChildren($root)) {
-                        MATTERDevice_RecordReceive($child, $received)
-                            if $child->{endpoint_id} == $endpoint;
-                    }
-                    MATTERDevice_ProcessMessage($root, $decoded, $received);
-                }
+                MATTERDevice_ProcessMessage($root, $decoded) if $root;
             }
             return;
         }
@@ -1117,7 +1081,7 @@ sub MATTER_ParseMessage($$) {
         my ($node_id, undef, undef) = @{$decoded->{data}};
         if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
             my $path = $decoded->{data}[1];
-            if (MATTER_ValidLiveAttribute($path, $decoded->{data}[2])) {
+            if (defined($path) && !ref($path) && $path =~ m{^\d+/\d+/\d+$}) {
                 my $attributes = { $path => $decoded->{data}[2] };
                 MATTER_RecordSnapshotEvent($hash, $node_id, $decoded->{event},
                     { attributes => $attributes });
@@ -1139,24 +1103,32 @@ sub MATTER_ParseMessage($$) {
     # C) Antworten auf spezifische Befehle (getConfig / get_nodes)
     if (my $msg_id = $decoded->{message_id}) {
         # Antwort auf read_attribute (getConfig)
-        if (my $pending = delete $hash->{helper}{pending_config}{$msg_id}) {
-            my $node_id = ref($pending) eq 'HASH' ? $pending->{node_id} : $pending;
+        if (my $pending = $hash->{helper}{pending_config}{$msg_id}) {
+            return if $pending->{processing}; # Ignore a reentrant duplicate.
+            delete $hash->{helper}{pending_config}{$msg_id};
+            # Keep this reply cancellable during synchronous reading events.
+            # local restores the absent entry on every exit, including errors.
+            local $hash->{helper}{pending_config}{$msg_id} = $pending;
+            local $pending->{processing} = 1;
+            my $node_id = $pending->{node_id};
             my $received = {};
             my $owner = MATTERDevice_LookupRoot($hash, $node_id);
+            my $target = exists($pending->{owner})
+                ? MATTERDevice_RequestOwner($hash, $pending) : undef;
             # Correlated replies (including errors/empty results) are received
             # messages even when their device values are blocked or stale.
             # A replacement device must never inherit an old request's traffic.
-            if ($owner && (ref($pending) ne 'HASH' ||
-                !defined($pending->{root_fuuid}) ||
+            if ($owner && (!defined($pending->{root_fuuid}) ||
                 ($owner->{FUUID} // '') eq $pending->{root_fuuid})) {
                 MATTERDevice_RecordReceive($owner, $received);
+                return if exists($pending->{owner}) && !$target;
                 my %endpoints;
                 $endpoints{$pending->{endpoint_id}} = 1
-                    if ref($pending) eq 'HASH' &&
-                       defined($pending->{endpoint_id}) && $pending->{endpoint_id} > 0;
+                    if defined($pending->{endpoint_id}) && $pending->{endpoint_id} > 0;
                 if (ref($decoded->{result}) eq 'HASH') {
                     for my $path (keys %{$decoded->{result}}) {
-                        $endpoints{0 + $1} = 1 if $path =~ m{^(\d+)/\d+/\d+$};
+                        next unless $path =~ m{^(\d+)/\d+/\d+$};
+                        $endpoints{0 + $1} = 1 if !$target || $1 == $pending->{endpoint_id};
                     }
                 }
                 # Later freshness reconciliation can inject previous live
@@ -1170,33 +1142,37 @@ sub MATTER_ParseMessage($$) {
             if ($owner && ref($decoded->{result}) eq 'HASH') {
                 # Replies from another availability generation or a
                 # replaced root cannot revive obsolete metadata.
-                if (ref($pending) eq 'HASH') {
-                    return if defined($pending->{root_fuuid}) &&
-                        ($owner->{FUUID} // '') ne $pending->{root_fuuid};
-                    return if defined($pending->{availability_epoch}) &&
-                        ($owner->{helper}{availability_epoch} // 0) !=
-                        $pending->{availability_epoch};
-                }
+                return if defined($pending->{root_fuuid}) &&
+                    ($owner->{FUUID} // '') ne $pending->{root_fuuid};
+                return if defined($pending->{availability_epoch}) &&
+                    ($owner->{helper}{availability_epoch} // 0) !=
+                    $pending->{availability_epoch};
                 # A newer manual read or live report can complete command
                 # discovery while this automatic read is still pending.
                 # Never let its older reply replace already usable metadata.
-                return if ref($pending) eq 'HASH' &&
-                    $pending->{capability_only} &&
+                return if $pending->{capability_only} &&
                     !MATTERDevice_NeedsCapabilityRefresh($owner);
                 my %fresh = %{$decoded->{result}};
-                if (ref($pending) eq 'HASH' && $pending->{live_values}) {
+                if ($pending->{live_values}) {
                     # A later live report supersedes the matching read path.
                     for my $path (keys %{$pending->{live_values}}) {
                         $fresh{$path} = $pending->{live_values}{$path};
                     }
                 }
-                if (ref($pending) eq 'HASH' && $pending->{excluded_endpoints}) {
+                if ($pending->{excluded_endpoints}) {
                     for my $path (keys %fresh) {
                         my ($ep) = split('/', $path);
                         delete $fresh{$path} if $pending->{excluded_endpoints}{$ep};
                     }
                 }
-                if (ref($pending) eq 'HASH' && $pending->{capability_only}) {
+                if ($target) {
+                    for my $path (keys %fresh) {
+                        my ($ep) = split('/', $path);
+                        delete $fresh{$path} if $ep ne $pending->{endpoint_id};
+                    }
+                    $received->{request} = [$hash, $pending];
+                }
+                if ($pending->{capability_only}) {
                     # Automatic recovery requested global metadata only.
                     MATTERDevice_ApplyCapabilityMetadata(
                         $owner, \%fresh,
@@ -1204,7 +1180,7 @@ sub MATTER_ParseMessage($$) {
                             $pending->{endpoint_id}
                     ) if keys %fresh;
                 } else {
-                    MATTERDevice_ProcessMessage($owner, {
+                    MATTERDevice_ProcessMessage($target // $owner, {
                         message_id => $msg_id, result => \%fresh
                     }, $received) if keys %fresh;
                 }

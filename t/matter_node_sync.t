@@ -1637,9 +1637,11 @@ is($bulk_writes{$metadata_ep1->{NAME}}{model} // 0, $model_writes + 1,
    'a changed model produces exactly one endpoint update');
 
 # getConfig read_attribute results use the same propagation path.
-$defs{ioA}{helper}{pending_config}{95001} = 95;
+is(MATTERDevice_Set($metadata_root, $metadata_root->{NAME}, 'getConfig'), undef,
+   'root metadata read uses the actual getConfig sender');
+my $metadata_read_id = $sent_requests[-1]{message_id};
 MATTER_ParseMessage($defs{ioA}, encode_json({
-    message_id => 95001,
+    message_id => $metadata_read_id,
     result => {'0/40/3' => 'Synthetic Model C'},
 }));
 is(ReadingsVal($metadata_ep2->{NAME}, 'model', ''), 'Synthetic Model C',
@@ -3397,7 +3399,9 @@ is($r1->{MSGCNT}, 4, 'Switch event counts for target endpoint');
 # Matched reads, including the capability-only bypass and errors, are counted
 # independently of whether values may be imported. Unknown replies are ignored.
 $defs{ioReceive}{helper}{pending_config}{70002} = {
-    node_id => 4100, endpoint_id => 1, root_fuuid => $rr->{FUUID}
+    node_id => 4100, endpoint_id => 1, root_fuuid => $rr->{FUUID},
+    owner => $r1, fuuid => $r1->{FUUID}, created_at => $mock_time,
+    availability_epoch => $rr->{helper}{availability_epoch} // 0,
 };
 MATTER_ParseMessage($defs{ioReceive}, encode_json({
     message_id => 70002, result => {'1/6/65529' => [0, 1], '1/6/65532' => 0}
@@ -3405,7 +3409,9 @@ MATTER_ParseMessage($defs{ioReceive}, encode_json({
 is($rr->{MSGCNT}, 6, 'blocked correlated read counts for root');
 is($r1->{MSGCNT}, 5, 'blocked read counts once for requested endpoint');
 $defs{ioReceive}{helper}{pending_config}{70003} = {
-    node_id => 4100, endpoint_id => 1, root_fuuid => $rr->{FUUID}
+    node_id => 4100, endpoint_id => 1, root_fuuid => $rr->{FUUID},
+    owner => $r1, fuuid => $r1->{FUUID}, created_at => $mock_time,
+    availability_epoch => $rr->{helper}{availability_epoch} // 0,
 };
 MATTER_ParseMessage($defs{ioReceive}, encode_json({message_id => 70003, error_code => 1}));
 is($rr->{MSGCNT}, 7, 'correlated server error is a received node message');
@@ -3418,7 +3424,9 @@ MATTER_ParseMessage($defs{ioReceive}, '{broken');
 MATTERDevice_Parse($rr, encode_json({node_id => 4101, attributes => {'1/6/0' => JSON::true}}));
 is($rr->{MSGCNT}, 7, 'unmatched replies, malformed input and foreign nodes do not count');
 $defs{ioReceive}{helper}{pending_config}{70004} = {
-    node_id => 4100, endpoint_id => 1, root_fuuid => 'replaced-owner'
+    node_id => 4100, endpoint_id => 1, root_fuuid => 'replaced-owner',
+    owner => $r1, fuuid => $r1->{FUUID}, created_at => $mock_time,
+    availability_epoch => $rr->{helper}{availability_epoch} // 0,
 };
 MATTER_ParseMessage($defs{ioReceive}, encode_json({message_id => 70004, result => {}}));
 is($rr->{MSGCNT}, 7, 'a replaced request owner does not inherit receipt');
@@ -3429,7 +3437,9 @@ MATTER_ParseMessage($defs{ioReceive}, encode_json({
     event => 'node_updated', data => {node_id => 4100, available => JSON::true}
 }));
 $defs{ioReceive}{helper}{pending_config}{70005} = {
-    node_id => 4100, all_endpoints => 1, root_fuuid => $rr->{FUUID},
+    node_id => 4100, endpoint_id => 1, root_fuuid => $rr->{FUUID},
+    owner => $r1, fuuid => $r1->{FUUID}, created_at => $mock_time,
+    availability_epoch => $rr->{helper}{availability_epoch} // 0,
     live_values => {'2/6/0' => JSON::false}
 };
 MATTER_ParseMessage($defs{ioReceive}, encode_json({
@@ -3497,7 +3507,9 @@ is($defs{MATTER_ReceiveMinimal}{MSGCNT}, 1, 'node announcement without attribute
 my $before_empty = $rr->{MSGCNT};
 my $endpoint_before_empty = $r1->{MSGCNT};
 $defs{ioReceiveRenamed}{helper}{pending_config}{70007} = {
-    node_id => 4100, all_endpoints => 1, root_fuuid => $rr->{FUUID}
+    node_id => 4100, endpoint_id => -1, all_endpoints => 1, capability_only => 1,
+    root_fuuid => $rr->{FUUID}, created_at => $mock_time,
+    availability_epoch => $rr->{helper}{availability_epoch} // 0,
 };
 MATTER_ParseMessage($defs{ioReceiveRenamed}, encode_json({message_id => 70007, result => {}}));
 is($rr->{MSGCNT}, $before_empty + 1, 'empty correlated wildcard reply counts for root');
@@ -3637,13 +3649,21 @@ subtest 'Matter node network type through existing server routing' => sub {
     }]}));
     is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'ethernet',
        'invalid attribute_updated event cannot suppress valid discovery data');
-    $io->{helper}{pending_config}{8103} = {node_id => 5100, all_endpoints => 1};
+    $io->{helper}{pending_config}{8103} = {
+        node_id => 5100, endpoint_id => 0, owner => $nr, fuuid => $nr->{FUUID},
+        root_fuuid => $nr->{FUUID}, created_at => $mock_time,
+        availability_epoch => $nr->{helper}{availability_epoch} // 0,
+    };
     $report->($thread);
     MATTER_ParseMessage($io, encode_json({message_id => 8103,
         result => {'0/51/0' => $ethernet}}));
     is(ReadingsVal($nr->{NAME}, 'networkType', ''), 'thread',
        'late correlated getConfig cannot overwrite a newer live interface list');
-    $io->{helper}{pending_config}{8104} = {node_id => 5100, all_endpoints => 1};
+    $io->{helper}{pending_config}{8104} = {
+        node_id => 5100, endpoint_id => 0, owner => $nr, fuuid => $nr->{FUUID},
+        root_fuuid => $nr->{FUUID}, created_at => $mock_time,
+        availability_epoch => $nr->{helper}{availability_epoch} // 0,
+    };
     $report->([{isOperational => 'false', type => 1}]);
     MATTER_ParseMessage($io, encode_json({message_id => 8104,
         result => {'0/51/0' => $ethernet}}));
@@ -5169,6 +5189,10 @@ subtest 'Issue 77: readOnly blocks control while reads and reports stay active' 
     $reply->($sent[-1]{message_id}, result => {'1/6/0' => JSON::true, '1/6/65529' => [0]});
     is(ReadingsVal($name, 'state', ''), 'on', 'getConfig still updates physical values');
     ok(!MATTERDevice_CommandAccepted($device, 6, 1), 'getConfig still revokes removed commands');
+    # Recovery only applies while metadata is actually missing, not after a
+    # complete list has been refreshed successfully by this explicit read.
+    delete $device->{helper}{capabilities}{6}{accepted_commands};
+    ok(MATTERDevice_NeedsCapabilityRefresh($root), 'fixture has missing metadata before automatic recovery');
     my ($metadata_id, $metadata_error) = MATTERDevice_RequestCapabilityRefresh($root);
     is($metadata_error, undef, 'automatic metadata read remains permitted');
     $reply->($metadata_id, result => {'1/6/65529' => [0,1,2]});
@@ -5512,7 +5536,7 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     is(ReadingsVal($ep->{NAME}, 'state', ''), 'on', 'valid sibling path survives invalid list');
     $read->();
     $reply->({'1/6/0' => JSON::true});
-    is_deeply($switches->(), [], 'omitted list is cleared on complete read');
+    is_deeply($switches->(), [qw(off:noArg on:noArg)], 'omitted list in a read is not a revocation');
     my %lists = (65528 => 'generated_commands', 65529 => 'accepted_commands',
                  65530 => 'event_list', 65531 => 'attribute_list');
     $read->();
@@ -5638,5 +5662,429 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     $report->({event => 'node_updated', data => {node_id => 9806, available => JSON::false}});
     is(ReadingsVal($ep->{NAME}, 'available', ''), 'false', 'changed root availability reaches child');
 }
+
+subtest 'Issue 79: runtime permissions belong to the actual Matter identity' => sub {
+    my (@sent_a, @sent_b);
+    my $a = $defs{identityA} = {NAME => 'identityA', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected', test_send_text => sub {push @sent_a, JSON::decode_json($_[0]); 1}};
+    my $b = $defs{identityB} = {NAME => 'identityB', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected', test_send_text => sub {push @sent_b, JSON::decode_json($_[0]); 1}};
+    for my $io ($a, $b) {
+        MATTER_ParseMessage($io, encode_json({schema_version => 12,
+            sdk_version => 'matter-server/1.0 (matter.js/1.0)'}));
+    }
+    MATTER_ProcessNode($a, {node_id => 99008, name => 'IdentityProbe', available => JSON::true,
+        attributes => {'0/29/1' => [3, 29, 40, 42], '0/3/65529' => [0], '0/40/9' => 1, '0/40/3' => 'saved model',
+                       '1/6/65529' => [0, 1], '1/6/0' => JSON::false}});
+    my $root = $modules{MATTERDevice}{defptr}{'identityA:99008'};
+    my ($ep) = MATTERDevice_NodeChildren($root);
+    is(MATTERDevice_Set($root, $root->{NAME}, 'checkFirmwareUpdate'), undef, 'check on original server');
+    MATTER_ParseMessage($a, encode_json({message_id => $sent_a[-1]{message_id}, result => {software_version => 2}}));
+    is(CommandModify(undef, "$root->{NAME} 99008"), undef, 'confirm unchanged root definition');
+    ok($root->{helper}{available}, 'same identity preserves online authority');
+    is(ReadingsVal($root->{NAME}, 'state', ''), 'online', 'same identity preserves native root status');
+    is($root->{helper}{firmware_available}, 2, 'same identity preserves update offer');
+    is(MATTERDevice_Set($root, $root->{NAME}, 'identify'), undef, 'root command is pending before rebind');
+    my $old_id = $sent_a[-1]{message_id};
+    # Persistent capability/limit readings must not authorize a new identity.
+    $root->{READINGS}{icd_supported}{VAL} = 'true';
+    $root->{READINGS}{specification_version}{VAL} = 0x01040000;
+    $ep->{READINGS}{max_brightness}{VAL} = 20;
+    is(CommandAttr(undef, "$root->{NAME} IODev identityB"), undef, 'move root to another server');
+    ok(!defined($root->{helper}{available}), 'new server must establish availability');
+    ok(!exists($root->{helper}{firmware_available}), 'old offer is discarded');
+    ok(!exists($root->{helper}{seen_clusters}{42}), 'old OTA capability is discarded');
+    ok(!exists($root->{READINGS}{icd_supported}), 'old persisted ICD permission is discarded');
+    ok(!exists($root->{READINGS}{software_version}), 'old firmware version cannot reject a new server offer');
+    ok(!exists($a->{helper}{pending_command}{$old_id}), 'old owner operation is cancelled');
+    ok(defined(MATTERDevice_Set($root, $root->{NAME}, 'updateFirmware')), 'new server cannot use old offer');
+    is(scalar @sent_b, 0, 'no unchecked install or implicit read on new server');
+    is($ep->{IODev}, $a, 'child keeps independent IO assignment');
+    is(ReadingsVal($ep->{NAME}, 'state', ''), 'off', 'child physical state is preserved');
+    MATTER_ProcessNode($b, {node_id => 99008, available => JSON::true,
+        attributes => {'0/70/65532' => 4}});
+    ok(!exists($root->{READINGS}{icd_lit_supported}), 'new features cannot combine with the old identity specification version');
+    MATTER_ParseMessage($b, encode_json({event => 'attribute_updated',
+        data => [99008, '0/40/21', 0x01040000]}));
+    is(ReadingsVal($root->{NAME}, 'icd_lit_supported', ''), 'true', 'own specification version permits normal LIT derivation');
+    MATTER_ProcessNode($b, {node_id => 99008, available => JSON::true,
+        attributes => {'0/29/1' => [42]}});
+    is(MATTERDevice_Set($root, $root->{NAME}, 'checkFirmwareUpdate'), undef, 'new server check works');
+    MATTER_ParseMessage($b, encode_json({message_id => $sent_b[-1]{message_id}, result => {software_version => 3}}));
+    is($root->{helper}{firmware_available}, 3, 'only new server offer is accepted');
+    is(CommandRename(undef, 'identityB identityRenamed'), undef, 'rename same IO instance');
+    ok($root->{helper}{available}, 'IO rename retains authority');
+    is($root->{helper}{firmware_available}, 3, 'IO rename retains offer');
+    MATTER_ProcessNode($b, {node_id => 99009, name => 'OccupiedIdentity', available => JSON::true});
+    like(CommandModify(undef, "$root->{NAME} 99009") // '', qr/already belongs/, 'modify cannot occupy another root identity');
+    is($root->{node_id}, 99008, 'failed modify preserves internal identity');
+    is($root->{helper}{firmware_available}, 3, 'failed modify preserves offer');
+    is(CommandModify(undef, "$root->{NAME} 99010"), undef, 'change root node identity');
+    ok(!defined($root->{helper}{available}), 'new node cannot inherit online authority');
+    ok(!exists($root->{helper}{firmware_available}), 'new node cannot inherit offer');
+    MATTER_ParseMessage($b, encode_json({event => 'attribute_updated', data => [99010, '0/40/3', 'unapproved']}));
+    is(ReadingsVal($root->{NAME}, 'model', ''), 'saved model', 'new node attributes need availability');
+    MATTER_ProcessNode($b, {node_id => 99010, available => JSON::true, attributes => {'0/40/3' => 'new model'}});
+    is(ReadingsVal($root->{NAME}, 'model', ''), 'new model', 'own availability resumes normal updates');
+    is(CommandModify(undef, "$ep->{NAME} 99008 1"), undef, 'same endpoint definition');
+    ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'same endpoint retains commands');
+    CommandAttr(undef, "$ep->{NAME} readOnly 1");
+    is(CommandModify(undef, "$ep->{NAME} 99008 2"), undef, 'change endpoint identity');
+    ok(!MATTERDevice_CommandAccepted($ep, 6, 1), 'new endpoint cannot inherit commands');
+    ok(!exists($ep->{READINGS}{max_brightness}), 'old limit cannot scale a new endpoint');
+    is(AttrVal($ep->{NAME}, 'readOnly', 0), 1, 'manual endpoint policy survives identity change');
+    is(ReadingsVal($ep->{NAME}, 'state', ''), 'off', 'identity reset retains saved physical reading');
+    MATTERDevice_ProcessGlobalAttribute($ep, 6, 65529, [0, 1]);
+    is(CommandAttr(undef, "$ep->{NAME} IODev identityRenamed"), undef, 'move endpoint independently');
+    ok(!MATTERDevice_CommandAccepted($ep, 6, 1), 'new IO cannot inherit endpoint commands');
+    MATTER_ParseMessage($a, encode_json({message_id => $old_id, result => {software_version => 9}}));
+    ok(!exists($root->{helper}{firmware_available}), 'old reply cannot restore another identity offer');
+    MATTER_ProcessNode($a, {node_id => 99011, name => 'IdentityReadOwner', available => JSON::true});
+    my $read_owner = MATTERDevice_LookupRoot($a, 99011);
+    MATTERDevice_Set($read_owner, $read_owner->{NAME}, 'getConfig');
+    my $read_id = $sent_a[-1]{message_id};
+    my $preferred = $preferred_io;
+    $preferred_io = 'identityA';
+    MATTER_ProcessNode($b, {node_id => 99011, name => 'IdentityOtherServer', available => JSON::true});
+    $preferred_io = $preferred;
+    ok(exists($a->{helper}{pending_config}{$read_id}), 'temporary auto-assignment cannot cancel another root read');
+};
+
+subtest 'Issue 80: partial reads preserve metadata and structural lists revoke it' => sub {
+    my @sent;
+    my $io = $defs{partialIO} = {NAME => 'partialIO', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected', test_send_text => sub {push @sent, JSON::decode_json($_[0]); 1}};
+    MATTER_ProcessNode($io, {node_id => 99100, name => 'PartialMetadata', available => JSON::true,
+        attributes => {'1/6/65529' => [0, 1, 2], '1/6/65532' => 4,
+            '1/47/12' => 100, '1/514/65531' => [0, 1, 2, 3],
+            '1/514/65532' => 0, '1/514/1' => 1}});
+    my $root = MATTERDevice_LookupRoot($io, 99100);
+    my ($ep) = MATTERDevice_NodeChildren($root);
+    my $list = sub {join ' ', MATTERDevice_GetSetList($ep)};
+    my $read = sub {MATTERDevice_Set($ep, $ep->{NAME}, 'getConfig'); $sent[-1]{message_id}};
+    my $reply = sub {MATTER_ParseMessage($io, encode_json({message_id => $_[0], result => $_[1]}))};
+    my $id = $read->();
+    ok(grep($_ eq '1/29/1', @{$sent[-1]{args}{attribute_path}}), 'endpoint read requests authoritative ServerList');
+    $reply->($id, {'1/47/12' => 102});
+    is(ReadingsVal($ep->{NAME}, 'battery_percent', ''), 51, 'partial read retains useful data');
+    ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'omitted command list is retained');
+    unlike($list->(), qr/\bon:/, 'omitted OffOnly FeatureMap still restricts commands');
+    like($list->(), qr/fan_mode:off,low,high/, 'omitted HVAC metadata and sequence are retained');
+    $reply->($read->(), {'1/6/65532' => {}, '1/6/65529' => [0, {}]});
+    ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'malformed list retains previous entries');
+    unlike($list->(), qr/\bon:/, 'malformed FeatureMap retains restrictions');
+    $reply->($read->(), {'1/6/65529' => []});
+    ok(!MATTERDevice_CommandAccepted($ep, 6, 0), 'valid empty list revokes commands');
+    $reply->($read->(), {'1/6/65529' => [0, 1], '1/6/65532' => 0});
+    like($list->(), qr/\bon:noArg/, 'valid replacement restores eligible commands');
+    my $old = $read->();
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99100, '1/29/1', [29, 47]]}));
+    $reply->($old, {'1/6/65529' => [0, 1], '1/29/1' => [6, 29, 47]});
+    ok(!MATTERDevice_CommandAccepted($ep, 6, 1), 'newer ServerList prevents old read reviving removed cluster');
+    MATTER_Set($io, $io->{NAME}, 'discover');
+    my $snapshot = $sent[-1]{message_id};
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99100, '1/29/1', [29, 47]]}));
+    MATTER_ParseMessage($io, encode_json({message_id => $snapshot, result => [{node_id => 99100,
+        attributes => {'1/6/65529' => [0, 1], '1/29/1' => [6, 29, 47]}}]}));
+    ok(!MATTERDevice_CommandAccepted($ep, 6, 1), 'newer ServerList also wins over old discovery');
+    $reply->($read->(), {'1/6/65529' => [0, 1], '1/29/1' => [6, 29, 47]});
+    ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'valid new structure can restore cluster');
+    $reply->($read->(), {'1/29/1' => [29, {}]});
+    ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'malformed structural list cannot revoke cluster');
+    MATTER_Set($io, $io->{NAME}, 'discover');
+    my $before_disable = $sent[-1]{message_id};
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99100, '1/29/1', [29, 47]]}));
+    CommandAttr(undef, "$ep->{NAME} disable 1");
+    CommandAttr(undef, "$ep->{NAME} disable 0");
+    $reply->($sent[-1]{message_id}, {'1/6/65529' => [0, 1], '1/29/1' => [6, 29, 47]});
+    MATTER_ParseMessage($io, encode_json({message_id => $before_disable,
+        result => [{node_id => 99100, attributes => {'1/29/1' => [29, 47]}}]}));
+    ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'local endpoint exclusion also blocks reconciled ServerList replay');
+};
+
+subtest 'Issue 81: explicit reads belong to the requesting endpoint instance' => sub {
+    my @sent;
+    my $io = $defs{readOwnerIO} = {NAME => 'readOwnerIO', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected', test_send_text => sub {push @sent, JSON::decode_json($_[0]); 1}};
+    MATTER_ProcessNode($io, {node_id => 99110, name => 'ReadOwner', available => JSON::true,
+        attributes => {'1/6/0' => JSON::false, '2/6/0' => JSON::false}});
+    my $root = MATTERDevice_LookupRoot($io, 99110);
+    my ($ep, $sibling) = MATTERDevice_NodeChildren($root);
+    my $read = sub {is(MATTERDevice_Set($_[0], $_[0]{NAME}, 'getConfig'), undef, 'queue owner read'); $sent[-1]{message_id}};
+    my $reply = sub {MATTER_ParseMessage($io, encode_json({message_id => $_[0], result => $_[1]}))};
+    my $old = $read->($ep);
+    my $stale_entry = $io->{helper}{pending_config}{$old};
+    my $name = $ep->{NAME};
+    CommandDelete(undef, $name);
+    ok(!exists($io->{helper}{pending_config}{$old}), 'Undef cancels the endpoint request');
+    CommandDefine(undef, "$name MATTERDevice 99110 1");
+    CommandAttr(undef, "$name IODev readOwnerIO");
+    my $replacement = $defs{$name};
+    $replacement->{FUUID} = 'uuid-read-owner-replacement';
+    readingsSingleUpdate($replacement, 'state', 'off', 0);
+    my $count = $replacement->{MSGCNT} // 0;
+    # Independently exercise the reply guard even if cancellation is bypassed.
+    $io->{helper}{pending_config}{$old} = $stale_entry;
+    $reply->($old, {'1/6/0' => JSON::true});
+    is(ReadingsVal($name, 'state', ''), 'off', 'old read cannot update replacement');
+    is($replacement->{MSGCNT} // 0, $count, 'replacement inherits no old request reception');
+    my $current = $read->($replacement);
+    CommandRename(undef, "$name RenamedReadOwner");
+    $reply->($current, {'1/6/0' => JSON::true, '2/6/0' => JSON::true});
+    is(ReadingsVal('RenamedReadOwner', 'state', ''), 'on', 'same instance accepts reply after rename');
+    is(ReadingsVal($sibling->{NAME}, 'state', ''), 'off', 'endpoint read cannot update sibling paths');
+    my $deleted = $read->($replacement);
+    CommandDelete(undef, $replacement->{NAME});
+    my $devices = count_devices();
+    $reply->($deleted, {'1/6/0' => JSON::false});
+    is(count_devices(), $devices, 'deleted endpoint is not recreated by its old explicit read');
+    my $shared = (MATTERDevice_RequestCapabilityRefresh($root))[0];
+    CommandDelete(undef, $sibling->{NAME});
+    CommandDefine(undef, 'SharedReadReplacement MATTERDevice 99110 2');
+    CommandAttr(undef, 'SharedReadReplacement IODev readOwnerIO');
+    $reply->($shared, {'2/6/65529' => [0, 1]});
+    ok(!MATTERDevice_CommandAccepted($defs{SharedReadReplacement}, 6, 1), 'old shared metadata cannot update a replacement');
+    my $r = $defs{SharedReadReplacement};
+    my $reentrant = $read->($r);
+    $reading_event_hook = sub {
+        return unless $_[0] eq $r && $_[1] eq 'device_type_ids';
+        CommandDelete(undef, $r->{NAME});
+        CommandDefine(undef, 'DuringReadReplacement MATTERDevice 99110 2');
+        CommandAttr(undef, 'DuringReadReplacement IODev readOwnerIO');
+        $reading_event_hook = undef;
+    };
+    $reply->($reentrant, {'2/29/0' => [{deviceType => 0x0100}], '2/6/0' => JSON::true, '2/8/0' => 55});
+    $reading_event_hook = undef;
+    ok(!exists($defs{DuringReadReplacement}{READINGS}{brightness}), 'reentrant replacement cannot receive remaining reply paths');
+    ok(!exists($r->{READINGS}{brightness}), 'remaining reply does not update the deleted owner hash either');
+    my $root_id = $read->($root);
+    $reply->($root_id, {'0/40/3' => 'current root', '2/6/0' => JSON::true});
+    is(ReadingsVal($root->{NAME}, 'model', ''), 'current root', 'root read remains supported');
+    ok(!exists($defs{DuringReadReplacement}{READINGS}{state}), 'root read remains scoped to endpoint zero');
+};
+
+subtest 'Issue 82: only accepted values supersede pending reads and snapshots' => sub {
+    my @sent;
+    my $io = $defs{valueIO} = {NAME => 'valueIO', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected', test_send_text => sub {push @sent, JSON::decode_json($_[0]); 1}};
+    my @cases = (
+        [1, 1026, 0, 2000, -32768, 2200, 'temperature', 22],
+        [2, 1029, 0, 4000, 65535, 5000, 'humidity', 50],
+        [3, 1030, 0, 1, -1, 0, 'motion', 'nomotion'],
+        [4, 69, 0, JSON::true, 'false', JSON::false, 'boolean_state', 0],
+        [5, 768, 16395, 153, 0, 200, 'color_temp_min', 200],
+        [6, 1037, 8, 0, 255, 1, 'co2_unit', 'ppb'],
+    );
+    MATTER_ProcessNode($io, {node_id => 99120, name => 'ValueProbe', available => JSON::true,
+        attributes => {map {("$_->[0]/$_->[1]/$_->[2]" => $_->[3])} @cases}});
+    my $root = MATTERDevice_LookupRoot($io, 99120);
+    my %ep = map {$_->{endpoint_id} => $_} MATTERDevice_NodeChildren($root);
+    for my $row (@cases) {
+        my ($endpoint, $cluster, $attribute, $initial, $invalid, $fresh, $reading, $expected) = @$row;
+        my $path = "$endpoint/$cluster/$attribute";
+        for my $event (qw(attribute_updated node_updated)) {
+            MATTER_ProcessNode($io, {node_id => 99120, attributes => {$path => $initial}});
+            MATTERDevice_Set($ep{$endpoint}, $ep{$endpoint}{NAME}, 'getConfig');
+            my $id = $sent[-1]{message_id};
+            my $writes = $single_writes{$ep{$endpoint}{NAME}}{$reading} // 0;
+            MATTER_ParseMessage($io, encode_json($event eq 'attribute_updated'
+                ? {event => $event, data => [99120, $path, $invalid]}
+                : {event => $event, data => {node_id => 99120, attributes => {$path => $invalid}}}));
+            is($single_writes{$ep{$endpoint}{NAME}}{$reading} // 0, $writes, "$event rejects invalid $reading without a write");
+            MATTER_ParseMessage($io, encode_json({message_id => $id, result => {$path => $fresh}}));
+            is(ReadingsVal($ep{$endpoint}{NAME}, $reading, ''), $expected, "invalid $event cannot suppress valid read of $reading");
+        }
+        MATTER_ProcessNode($io, {node_id => 99120, attributes => {$path => $initial}});
+        MATTER_Set($io, $io->{NAME}, 'discover');
+        my $id = $sent[-1]{message_id};
+        MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {node_id => 99120, attributes => {$path => $invalid}}}));
+        MATTER_ParseMessage($io, encode_json({message_id => $id, result => [{node_id => 99120,
+            available => JSON::true, attributes => {$path => $fresh}}]}));
+        is(ReadingsVal($ep{$endpoint}{NAME}, $reading, ''), $expected, "invalid sensor report cannot mask discovery of $reading");
+    }
+    MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'getConfig');
+    my $id = $sent[-1]{message_id};
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99120, '1/1026/0', 2400]}));
+    MATTER_ParseMessage($io, encode_json({message_id => $id, result => {'1/1026/0' => 2100, '1/47/12' => 100}}));
+    is(ReadingsVal($ep{1}{NAME}, 'temperature', ''), 24, 'valid newer value still wins');
+    is(ReadingsVal($ep{1}{NAME}, 'battery_percent', ''), 50, 'unrelated response data is preserved');
+    CommandAttr(undef, "$root->{NAME} diagnostics 1");
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99120, '0/54/4', -70]}));
+    MATTER_Set($io, $io->{NAME}, 'discover');
+    my $diag_id = $sent[-1]{message_id};
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99120, '0/54/4', 'invalid']}));
+    MATTER_ParseMessage($io, encode_json({message_id => $diag_id, result => [{node_id => 99120,
+        available => JSON::true, attributes => {'0/54/4' => -60}}]}));
+    is(ReadingsVal($root->{NAME}, 'wifi_rssi', ''), -60, 'diagnostics use the same acceptance rule before snapshot masking');
+    my $writes = $single_writes{$ep{1}{NAME}}{temperature};
+    my $timers = scalar @timers;
+    is(MATTERDevice_AttributeValue(1026, 0, 2500), 25, 'shared conversion returns the publishable value');
+    ok(!defined(MATTERDevice_AttributeValue(1026, 0, -32768)), 'shared conversion rejects invalid sentinel');
+    is($single_writes{$ep{1}{NAME}}{temperature}, $writes, 'pure validation does not publish readings');
+    is(scalar @timers, $timers, 'pure validation creates no timers');
+    ok(!defined(MATTERDevice_AttributeValue(70, 8, 99)), 'ICD mode validity is shared with freshness');
+    ok(!defined(MATTERDevice_AttributeValue(42, 2, 99)), 'invalid OTA state cannot supersede a valid response');
+    CommandAttr(undef, "$ep{1}{NAME} rawReadings 1");
+    my $interfaces = [{isOperational => JSON::true, type => 1}];
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99120, '1/51/0', $interfaces]}));
+    is_deeply(JSON::decode_json(ReadingsVal($ep{1}{NAME}, 'raw_1_51_0', 'null')), $interfaces,
+        'root-only network interpretation leaves unmatched child raw structs intact');
+};
+
+subtest 'Issue 83: energy struct validates its inner protocol integer' => sub {
+    my @sent;
+    my $io = $defs{energyIO} = {NAME => 'energyIO', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected', test_send_text => sub {push @sent, JSON::decode_json($_[0]); 1}};
+    MATTER_ProcessNode($io, {node_id => 99130, name => 'EnergyValue', available => JSON::true,
+        attributes => {'1/145/1' => {energy => 1250000}, '2/145/1' => {'0' => 2500000}}});
+    my $root = MATTERDevice_LookupRoot($io, 99130);
+    my ($ep, $sibling) = MATTERDevice_NodeChildren($root);
+    my $live = sub {MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99130, '1/145/1', $_[0]]}))};
+    my @warnings;
+    {
+        local $SIG{__WARN__} = sub {push @warnings, @_};
+        for my $field ('energy', '0') {
+            for my $bad (undef, 'invalid', 'NaN', 'Inf', -1, '1.5', '1e6', [], {}, JSON::false,
+                         '4611686018427387905', '999999999999999999999999999999') {
+                $live->({$field => 1250000});
+                my $writes = $single_writes{$ep->{NAME}}{energy};
+                $live->({$field => $bad});
+                is(ReadingsVal($ep->{NAME}, 'energy', ''), 1.25, 'invalid inner value preserves energy');
+                is($single_writes{$ep->{NAME}}{energy}, $writes, 'invalid inner value produces no reading write');
+            }
+            $live->({$field => 0});
+            is(ReadingsVal($ep->{NAME}, 'energy', ''), 0, 'numeric zero is a valid energy value');
+            my $before_max = $single_writes{$ep->{NAME}}{energy};
+            $live->({$field => '4611686018427387904'});
+            is($single_writes{$ep->{NAME}}{energy}, $before_max + 1, 'protocol upper boundary is actually written');
+            is(ReadingsVal($ep->{NAME}, 'energy', undef), 4611686018427387904 / 1_000_000,
+                'upper boundary keeps existing kWh conversion');
+            $live->({$field => '0001250000'});
+            is(ReadingsVal($ep->{NAME}, 'energy', ''), 1.25, 'decimal representation is normalized without losing zero');
+        }
+        for my $bad (undef, [], 'invalid', {}) {
+            my $writes = $single_writes{$ep->{NAME}}{energy};
+            $live->($bad);
+            is($single_writes{$ep->{NAME}}{energy}, $writes, 'invalid outer struct does not write energy');
+        }
+    }
+    is_deeply(\@warnings, [], 'invalid energy never causes numeric conversion warnings');
+    my $original = {energy => '0001250000'};
+    MATTERDevice_AttributeValue(145, 1, $original);
+    is_deeply($original, {energy => '0001250000'}, 'pure energy conversion does not mutate supplied struct');
+    MATTERDevice_Set($ep, $ep->{NAME}, 'getConfig');
+    my $id = $sent[-1]{message_id};
+    $live->({energy => 'invalid'});
+    MATTER_ParseMessage($io, encode_json({message_id => $id, result => {'1/145/1' => {energy => 1750000}}}));
+    is(ReadingsVal($ep->{NAME}, 'energy', ''), 1.75, 'invalid live struct cannot mask a valid read');
+    is(ReadingsVal($sibling->{NAME}, 'energy', ''), 2.5, 'sibling energy remains isolated');
+    MATTERDevice_UpdateAvailability($root, JSON::false);
+    $live->({energy => 3000000});
+    is(ReadingsVal($ep->{NAME}, 'energy', ''), 1.75, 'offline energy remains protected');
+};
+
+subtest 'Issue 84: node events resolve endpoints once before any publication' => sub {
+    my $io = $defs{eventLookupIO} = {NAME => 'eventLookupIO', TYPE => 'MATTER'};
+    MATTER_ProcessNode($io, {node_id => 99140, name => 'EventLookup', available => JSON::true,
+        attributes => {'1/59/0' => 0, '2/59/0' => 0}});
+    my $root = MATTERDevice_LookupRoot($io, 99140);
+    my ($ep, $sibling) = MATTERDevice_NodeChildren($root);
+    my $original = \&MATTERDevice_NodeChildren;
+    my $calls = 0;
+    no warnings 'redefine';
+    local *MATTERDevice_NodeChildren = sub ($) {++$calls; $original->(@_)};
+    my $send = sub {
+        my ($endpoint, $cluster, $event, $data, $direct) = @_;
+        $calls = 0;
+        my $wire = encode_json({event => 'node_event', data => {node_id => 99140,
+            endpoint_id => $endpoint, cluster_id => $cluster, event_id => $event, data => $data // {}}});
+        $direct ? MATTERDevice_Parse($root, $wire) : MATTER_ParseMessage($io, $wire);
+    };
+    my $events = scalar @direct_events;
+    for (1 .. 2) {
+        my ($root_count, $ep_count, $sibling_count) = ($root->{MSGCNT}, $ep->{MSGCNT}, $sibling->{MSGCNT});
+        my $at_publication;
+        $reading_event_hook = sub {
+            $at_publication = [$root->{MSGCNT}, $ep->{MSGCNT}] if $_[0] eq $ep && $_[1] eq 'button';
+        };
+        $send->(1, 59, 1);
+        $reading_event_hook = undef;
+        is($calls, 1, 'one global endpoint lookup per supported event');
+        is_deeply($at_publication, [$root_count + 1, $ep_count + 1], 'receive internals precede button publication');
+        is($sibling->{MSGCNT}, $sibling_count, 'sibling is not stamped');
+    }
+    is(scalar @direct_events, $events + 2, 'identical presses still trigger twice');
+    for my $direct (0, 1) {
+        my ($root_count, $ep_count) = ($root->{MSGCNT}, $ep->{MSGCNT});
+        $send->(1, 1234, 99, {}, $direct);
+        is($calls, 1, 'unmapped event uses one lookup through either parser');
+        is_deeply([$root->{MSGCNT}, $ep->{MSGCNT}], [$root_count + 1, $ep_count + 1], 'unmapped event still counts as reception');
+    }
+    my $devices = count_devices();
+    my $before = $ep->{MSGCNT};
+    $send->(99, 59, 1);
+    is($calls, 1, 'unknown event endpoint has one lookup');
+    is(count_devices(), $devices, 'unknown event endpoint is never created');
+    is($ep->{MSGCNT}, $before, 'unknown endpoint cannot stamp another endpoint');
+    CommandAttr(undef, "$ep->{NAME} disable 1");
+    $send->(1, 59, 1);
+    is($calls, 1, 'disabled endpoint still has only one reception lookup');
+    is(scalar @direct_events, $events + 2, 'disabled endpoint emits no functional event');
+    my $root_count = $root->{MSGCNT};
+    $send->(1, {}, 1);
+    is($calls, 0, 'malformed event does not scan endpoints');
+    is($root->{MSGCNT}, $root_count, 'malformed event is not counted');
+};
+
+
+subtest 'Recovery preserves newer structural revocation' => sub {
+ my @sent;
+ my $io=$defs{auditIO}={NAME=>'auditIO',TYPE=>'MATTER',CD=>1,websocket=>1,ws_status=>'connected',helper=>{},test_send_text=>sub {push @sent,JSON::decode_json($_[0]);1}};
+ MATTER_ProcessNode($io,{node_id=>99200,name=>'Audit',available=>JSON::true,attributes=>{'1/6/65529'=>[0,1],'1/6/0'=>JSON::false,'2/6/0'=>JSON::false}});
+ my $root=MATTERDevice_LookupRoot($io,99200);
+ my %ep=map {$_->{endpoint_id}=>$_} MATTERDevice_NodeChildren($root);
+ MATTER_ParseMessage($io,encode_json({event=>'node_updated',data=>{node_id=>99200,available=>JSON::false}}));
+ MATTER_ParseMessage($io,encode_json({event=>'node_updated',data=>{node_id=>99200,available=>JSON::true}}));
+ my $id=$sent[-1]{message_id};
+ is($sent[-1]{command},'read_attribute','online recovery starts real metadata read');
+ MATTER_ParseMessage($io,encode_json({event=>'attribute_updated',data=>[99200,'1/29/1',[29,47]]}));
+ ok(!MATTERDevice_CommandAccepted($ep{1},6,1),'new list revokes On');
+ MATTER_ParseMessage($io,encode_json({message_id=>$id,result=>{'1/6/65529'=>[0,1],'2/6/65529'=>[0,1],'2/6/0'=>JSON::true}}));
+ ok(!MATTERDevice_CommandAccepted($ep{1},6,1),'old automatic reply cannot restore On');
+ ok(MATTERDevice_CommandAccepted($ep{2},6,1),'unrelated endpoint metadata is retained');
+ is(ReadingsVal($ep{2}{NAME},'state',''),'off','automatic recovery still ignores physical values');
+};
+
+
+subtest 'In-progress read is cancelled across disable and enable' => sub {
+ my @sent;
+ my $io=$defs{auditDisableIO}={NAME=>'auditDisableIO',TYPE=>'MATTER',CD=>1,websocket=>1,ws_status=>'connected',helper=>{},test_send_text=>sub {push @sent,JSON::decode_json($_[0]);1}};
+ MATTER_ProcessNode($io,{node_id=>99201,name=>'AuditDisable',available=>JSON::true,attributes=>{'1/6/0'=>JSON::false}});
+ my $root=MATTERDevice_LookupRoot($io,99201);
+ my ($ep)=MATTERDevice_NodeChildren($root);
+ MATTERDevice_Set($ep,$ep->{NAME},'getConfig'); my $id=$sent[-1]{message_id};
+ my $reentered=0;
+ $reading_event_hook=sub {
+   return unless $_[0] eq $ep && $_[1] eq 'device_type_ids';
+   $reading_event_hook=undef;
+   # Duplicate delivery must not consume the active registration.
+   MATTER_ParseMessage($io,encode_json({message_id=>$id,result=>{'1/6/0'=>JSON::true}}));
+   CommandAttr(undef,"$ep->{NAME} disable 1");
+   CommandAttr(undef,"$ep->{NAME} disable 0");
+   my $new=$sent[-1]{message_id};
+   isnt($new,$id,'enable queues an independent read');
+   MATTER_ParseMessage($io,encode_json({message_id=>$new,result=>{'1/6/0'=>JSON::false}}));
+   ++$reentered;
+ };
+ MATTER_ParseMessage($io,encode_json({message_id=>$id,result=>{'1/29/0'=>[{deviceType=>0x0100}],'1/6/0'=>JSON::true}}));
+ $reading_event_hook=undef;
+ is($reentered,1,'actual publication callback exercised');
+ is(ReadingsVal($ep->{NAME},'state',''),'off','old read cannot overwrite newer enable read');
+ ok(!keys %{$io->{helper}{pending_config}},'nested and cancelled reads leave no registry entries');
+ MATTERDevice_Set($ep,$ep->{NAME},'getConfig');
+ MATTER_ParseMessage($io,encode_json({message_id=>$sent[-1]{message_id},result=>{'1/6/0'=>JSON::true}}));
+ is(ReadingsVal($ep->{NAME},'state',''),'on','ordinary later read still updates values');
+ ok(!keys %{$io->{helper}{pending_config}},'normal completion also retires registration');
+};
 
 done_testing();

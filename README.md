@@ -150,7 +150,7 @@ Define an IO device with your Matter server's IPv4 address and its WebSocket por
 define matterServer MATTER 192.0.2.10 5580
 ```
 
-The initial connection is **scheduled immediately for FHEM's event loop**, rather than opened during the loading of `fhem.cfg`. This prevents the 10-second TCP/WebSocket handshake deadline from expiring while FHEM is still initializing. A manual `set matterServer connect` still reconnects immediately; otherwise recovery is automatic and failed attempts are retried after 30 seconds. `attr matterServer disable 1` closes the connection and cancels its timers; removing the attribute or setting it to `0` enables reconnection. Repeated `modify` operations replace the pending startup timer without leaving duplicate connections. Prefer a numeric IPv4 address because DNS lookup may block during connection establishment. The server connection state is displayed through `state` and `ws_status`. WebSocket HTTP upgrade headers and the server's accept key are verified; fragmented text frames and interleaved control frames are handled. An inactive connection rejects FHEM device commands instead of silently discarding them. IO renaming updates the existing clients' `IODev` attributes, root routing and socket registration without creating duplicate Matter devices. Moving a root to another IO resets its reachability until the new owner reports it. An occupied target node ID is rejected. Endpoint IO assignments are independent. Live attribute and structural node events take precedence over older outstanding read and discovery responses.
+The initial connection is **scheduled immediately for FHEM's event loop**, rather than opened during the loading of `fhem.cfg`. This prevents the 10-second TCP/WebSocket handshake deadline from expiring while FHEM is still initializing. A manual `set matterServer connect` still reconnects immediately; otherwise recovery is automatic and failed attempts are retried after 30 seconds. `attr matterServer disable 1` closes the connection and cancels its timers; removing the attribute or setting it to `0` enables reconnection. Repeated `modify` operations replace the pending startup timer without leaving duplicate connections. Prefer a numeric IPv4 address because DNS lookup may block during connection establishment. The server connection state is displayed through `state` and `ws_status`. WebSocket HTTP upgrade headers and the server's accept key are verified; fragmented text frames and interleaved control frames are handled. An inactive connection rejects FHEM device commands instead of silently discarding them. IO renaming updates the existing clients' `IODev` attributes, root routing and socket registration without creating duplicate Matter devices. Moving a root to another IO resets its reachability until the new owner reports it. An occupied target node ID is rejected. Endpoint IO assignments are independent. Live attribute and structural node events take precedence over older outstanding read and discovery responses. Explicit reads are bound to the requesting FHEM instance and endpoint; replacing or deleting it cannot redirect its reply. Renaming that same instance remains supported.
 
 ### Commission devices
 
@@ -186,6 +186,8 @@ Matter `Descriptor.DeviceTypeList` is stored per endpoint in the **`device_type_
 
 `matter_status=present` / `removed` indicates membership in the server's node list, **not** physical availability. `available=true` / `false` indicates reachability only if reported by the server. Node-wide `model` and `available` values are mirrored from the root to endpoints when known. No recurring availability poll is introduced.
 
+Changing the actual IO instance, node ID or endpoint ID discards the old runtime permissions and firmware offers. Control-relevant saved metadata (device types, ICD permissions, software/specification versions and reported limits) must be reported for the new identity; other saved physical readings and local policy remain. Renaming the same instance or confirming an unchanged DEF preserves its permissions. An occupied root target is rejected before a modify changes internal state.
+
 ### Device commands and attributes
 
 The available commands depend on the endpoint's reported clusters and commands. Examples include `on`, `off`, `toggle`, `brightness` (device level), `pct` (percentage where supported), `ct` (mired), `rgb` (hexadecimal), `stop`, `tilt`, `lock` and `unlock`. A command appearing in the list does not guarantee it will succeed on every device.
@@ -194,7 +196,9 @@ The available commands depend on the endpoint's reported clusters and commands. 
 
 Supported MATTER IO attributes include `disable:0,1`, `autocreate:0,1` (default `1`) and `commissionMode:network,auto` (default `network`). Setting `autocreate` to `0` prevents newly discovered FHEM root/endpoint devices from being created; it does not delete Matter-server nodes or stop updates to existing FHEM devices. `commissionMode` affects subsequent `commissionCode` requests without an explicit mode.
 
-A malformed capability list preserves the previous valid list for that endpoint and cluster. An explicit empty list clears its entries.
+Only values accepted by the shared attribute conversion can supersede an outstanding read/discovery path; rejected sensor sentinels, limits or diagnostic data leave useful response values eligible.
+
+A malformed capability list preserves the previous valid list for that endpoint and cluster. An explicit empty list clears its entries. Omitted paths in a partially successful getConfig reply retain prior metadata; a valid Descriptor.ServerList explicitly removes clusters absent from that list. Endpoint getConfig reads ServerList as well as DeviceTypeList. Newer structural lists take precedence over delayed read/discovery data.
 
 MATTERDevice attributes include `IODev`, `readOnly:0,1` / `disable:0,1`, optional `diagnostics` / `rawReadings`, `dimRate`; device limits are readings rather than attributes. Commands are offered only when the endpoint advertises them in its Matter `AcceptedCommandList` and satisfies the relevant `FeatureMap` constraints. The module records the reported `ClusterRevision` as metadata. Set commands advertised as `noArg` reject additional arguments before sending. Old `has_*` settings no longer enable or disable commands; they are not automatically created or deleted. After restart, control commands may be temporarily absent until the Matter server reports command metadata. **Upgrade note:** review and remove saved `has_*` attributes **before restarting into V0.18**. FHEM no longer recognizes them in the module `AttrList` and may reject those lines when restoring `fhem.cfg` or configDB. No automatic migration deletes old user settings. After the manual cleanup, save the configuration as usual.
 
@@ -422,6 +426,8 @@ engine.
   FHEM uses the server's reported online data model, without a second per-value
   freshness policy. Rarely reporting attributes may be cached, as on the server.
   See [lifecycle behavior and evidence](docs/offline-lifecycle.md).
+
+The cumulative `energy` reading validates the inner named/TLV struct field as an integer in the specified 0–2^62 mWh range before converting to kWh. Invalid or missing data preserves the last value; numeric zero remains valid.
 
 ## Device-class hardware validation
 

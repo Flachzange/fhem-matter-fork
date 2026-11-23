@@ -160,15 +160,15 @@ my %MATTER_CLUSTERS = (
     0x002A => {
         name       => "OtaSoftwareUpdateRequestor",
         attributes => {
-            0x0002 => { name => "ota_update_state", is_reading => 0 },
-            0x0003 => { name => "ota_update_progress", is_reading => 1 },
+            0x0002 => { name => "ota_update_state", is_reading => 0, value_range => [0, 8] },
+            0x0003 => { name => "ota_update_progress", is_reading => 1, value_range => [0, 100] },
         },
     },
     0x0046 => {
         name       => "IcdManagement",
         attributes => {
-            0x0000 => { name => "icd_idle_mode_duration", is_reading => 1 },
-            0x0008 => { name => "icd_operating_mode", is_reading => 0 },
+            0x0000 => { name => "icd_idle_mode_duration", is_reading => 1, value_range => [0, 4294967295] },
+            0x0008 => { name => "icd_operating_mode", is_reading => 0, value_range => [0, 1] },
         },
     },
     0x0045 => {
@@ -296,7 +296,15 @@ my %MATTER_CLUSTERS = (
                             my ($v) = @_;
                             return undef if !defined($v) || ref($v) ne 'HASH';
                             my $energy_mWh = exists($v->{"0"}) ? $v->{"0"} : $v->{energy};
-                            return defined($energy_mWh) ? $energy_mWh / 1_000_000 : undef;
+                            return undef unless defined($energy_mWh) && !ref($energy_mWh) &&
+                                $energy_mWh =~ /\A[0-9]+\z/;
+                            # EnergyMeasurementStruct constrains Energy to 0..2^62 mWh.
+                            # Compare decimal digits before numeric coercion, including
+                            # on Perl builds whose native number would round the boundary.
+                            $energy_mWh =~ s/^0+(?=\d)//;
+                            return undef if length($energy_mWh) > 19 ||
+                                (length($energy_mWh) == 19 && $energy_mWh gt '4611686018427387904');
+                            return $energy_mWh / 1_000_000;
                         } },
         },
     },
@@ -536,6 +544,56 @@ sub MATTERDevice_InvalidateAvailability($) {
     delete $root->{helper}{capability_refresh};
 }
 
+# Runtime permissions and outstanding operations belong to IO + Matter IDs,
+# not to a mutable FHEM definition hash. Physical readings and local policy stay.
+sub MATTERDevice_InvalidateIdentity {
+    my ($hash) = @_;
+    MATTERDevice_InvalidateAvailability($hash);
+    delete @{$hash->{helper}}{qw(capabilities seen_clusters firmware_available
+        firmware_update_in_flight latest_request enable_sync)};
+    delete @{$hash}{grep { /^endpoint_\d+$/ } keys %$hash};
+    # These saved metadata values also authorize controls, scaling or device
+    # interpretation. They cannot describe a different Matter identity.
+    readingsDelete($hash, $_) for qw(device_type_ids icd_supported
+        icd_lit_supported software_version specification_version);
+    for my $cluster (values %MATTER_CLUSTERS) {
+        for my $attribute (values %{$cluster->{attributes} // {}}) {
+            readingsDelete($hash, $attribute->{name}) if $attribute->{limit_range};
+        }
+    }
+    MATTERDevice_CancelRequests($hash);
+}
+
+# Cancel owner requests and exclude an endpoint from older shared responses.
+# Used for disable transitions, identity changes and Undef; no new generation.
+sub MATTERDevice_CancelRequests {
+    my ($hash) = @_;
+    delete $hash->{helper}{latest_request};
+    my $io = $hash->{IODev};
+    return unless $io;
+    my ($node, $ep) = @{$hash}{qw(node_id endpoint_id)};
+    for my $id (keys %{$io->{helper}{pending_command} // {}}) {
+        my $request = $io->{helper}{pending_command}{$id};
+        if (ref($request) eq 'HASH') {
+            delete $io->{helper}{pending_command}{$id}
+                if ($request->{owner} // '') eq $hash;
+        } elsif ($ep > 0 && ($request eq 'get_nodes' || $request eq 'start_listening')) {
+            $io->{helper}{pending_snapshot_touched}{$id}{$node}{excluded_endpoints}{$ep} = 1;
+        }
+    }
+    for my $id (keys %{$io->{helper}{pending_config} // {}}) {
+        my $request = $io->{helper}{pending_config}{$id};
+        next unless $request->{node_id} eq $node;
+        if (($request->{owner} // '') eq $hash ||
+            ($ep == 0 && ($request->{root_fuuid} // '') eq ($hash->{FUUID} // ''))) {
+            $request->{cancelled} = 1 if $request->{processing};
+            delete $io->{helper}{pending_config}{$id};
+        } elsif ($ep > 0) {
+            $request->{excluded_endpoints}{$ep} = 1;
+        }
+    }
+}
+
 # Only query when endpoint metadata used by FHEM controls is missing.
 # A known empty AcceptedCommandList is valid: it must not be interpreted
 # as a failed interview and must not enable old has_* fallbacks.
@@ -731,40 +789,20 @@ sub MATTERDevice_Attr {
         }
         # Cancel on both edges: shared reads may also have started while the
         # endpoint was disabled. No persistent request generation is needed.
-        delete $hash->{helper}{latest_request};
-        my $io = $hash->{IODev};
-        return undef unless $io;
-        my ($node, $ep) = @{$hash}{qw(node_id endpoint_id)};
-        for my $id (keys %{$io->{helper}{pending_command} // {}}) {
-            my $request = $io->{helper}{pending_command}{$id};
-            if (ref($request) eq 'HASH') {
-                delete $io->{helper}{pending_command}{$id}
-                    if ($request->{owner} // '') eq $hash;
-            } elsif ($request eq 'get_nodes' || $request eq 'start_listening') {
-                $io->{helper}{pending_snapshot_touched}{$id}{$node}{excluded_endpoints}{$ep} = 1;
-            }
-        }
-        for my $id (keys %{$io->{helper}{pending_config} // {}}) {
-            my $request = $io->{helper}{pending_config}{$id};
-            next unless ref($request) eq 'HASH' && $request->{node_id} eq $node;
-            if (($request->{endpoint_id} // -1) == $ep) {
-                delete $io->{helper}{pending_config}{$id};
-            } else {
-                $request->{excluded_endpoints}{$ep} = 1;
-            }
-        }
+        MATTERDevice_CancelRequests($hash);
         return undef;
     }
     return unless $op eq 'set' && $attr eq 'IODev';
     my $root = $defs{$name};
-    return unless ($root->{endpoint_id} // 0) == 0;
     my $io = $defs{$value};
     return if !$io && !$init_done; # Forward reference during config restoration.
     return "Unknown MATTER IODev $value" unless $io && ($io->{TYPE} // '') eq 'MATTER';
-    my $owner = MATTERDevice_LookupRoot($io, $root->{node_id});
-    return "Node $root->{node_id} on $value already belongs to $owner->{NAME}"
-        if $owner && $owner ne $root;
-    MATTERDevice_InvalidateAvailability($root) if ($root->{IODev} // '') ne $io;
+    if (($root->{endpoint_id} // 0) == 0) {
+        my $owner = MATTERDevice_LookupRoot($io, $root->{node_id});
+        return "Node $root->{node_id} on $value already belongs to $owner->{NAME}"
+            if $owner && $owner ne $root;
+    }
+    MATTERDevice_InvalidateIdentity($root) if ($root->{IODev} // '') ne $io;
     return undef;
 }
 
@@ -845,6 +883,15 @@ sub MATTERDevice_Define($$) {
     my $node_id = $a[2];
     my $endpoint_id = $a[3] // 0;
 
+    my $changed = defined($hash->{node_id}) &&
+        ($hash->{node_id} ne $node_id || ($hash->{endpoint_id} // 0) != $endpoint_id);
+    if ($changed && $endpoint_id == 0) {
+        my $owner = MATTERDevice_LookupRoot($hash->{IODev}, $node_id);
+        return "Node $node_id already belongs to $owner->{NAME}"
+            if $owner && $owner ne $hash;
+    }
+    MATTERDevice_InvalidateIdentity($hash) if $changed;
+
     if ($legacy_def) {
         $hash->{DEF} = "$node_id $endpoint_id";
         Log3 $name, 3, "MATTERDevice: Migrated endpoint DEF to '$hash->{DEF}'; use save to persist";
@@ -866,12 +913,13 @@ sub MATTERDevice_Define($$) {
     # endpoints, to global events rather than the entire FHEM event stream.
     $hash->{NOTIFYDEV} = 'global';
     if ($endpoint_id == 0) {
-        AssignIoPort($hash);
+        AssignIoPort($hash) unless $hash->{IODev};
         my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
         # AssignIoPort may initially choose an IO which already owns this ID.
         $modules{MATTERDevice}{defptr}{"$io_name:$node_id"} = $hash
             unless MATTERDevice_LookupRoot($hash->{IODev}, $node_id);
-        MATTERDevice_SetRootState($hash, 'unknown') if $init_done;
+        MATTERDevice_SetRootState($hash, 'unknown') if $init_done &&
+            ($changed || !defined($hash->{READINGS}{state}));
     }
     Log3 $name, 3, "MATTERDevice: Defined node_id $node_id for $name";
     return undef;
@@ -879,6 +927,7 @@ sub MATTERDevice_Define($$) {
 
 sub MATTERDevice_Undef($$) {
 my ($hash, $arg) = @_;
+    MATTERDevice_CancelRequests($hash);
     if (($hash->{node_id}) && ($hash->{endpoint_id} == 0)) {
         my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
         my $key = "$io_name:$hash->{node_id}";
@@ -921,17 +970,67 @@ sub MATTERDevice_IdSet {
     return \%ids;
 }
 
+# Pure conversion shared by freshness tracking and attribute publication.
+# undef means rejected; valid zero and empty ID sets remain valid values.
+sub MATTERDevice_AttributeValue {
+    my ($cluster, $attribute, $value, $endpoint) = @_;
+    $endpoint //= 0;
+    return undef unless defined $value;
+    if (exists $MATTER_GLOBAL_ATTRIBUTES{$attribute}) {
+        return $attribute <= 0xFFFB ? MATTERDevice_IdSet($value)
+                                    : MATTERDevice_NormalizeMatterId($value);
+    }
+    return MATTERDevice_IdSet($value) if $cluster == 29 && $attribute == 1;
+    if ($cluster == 29 && $attribute == 0) {
+        return undef unless ref($value) eq 'ARRAY';
+        my %types;
+        for my $entry (@$value) {
+            next unless ref($entry) eq 'HASH';
+            my $id = MATTERDevice_NormalizeMatterId(
+                $entry->{deviceType} // $entry->{device_type} // $entry->{'0'});
+            $types{$id} = 1 if defined($id) && $id <= 0xFFFFFFFF;
+        }
+        return keys(%types) ? join(',', map { sprintf('0x%04X', $_) }
+            sort {$a <=> $b} keys %types) : undef;
+    }
+    return MATTERDevice_NetworkType($value) if $endpoint == 0 && $cluster == 51 && $attribute == 0;
+    return MATTERDevice_NetworkDiagnosticValues($cluster, $attribute, $value)
+        if $endpoint == 0 && ($cluster == 53 || $cluster == 54);
+    if (($cluster == 513 && $attribute == 27) || ($cluster == 514 && $attribute == 1)) {
+        return !ref($value) && $value =~ /\A\d+\z/ && $value <= 5 ? 0 + $value : undef;
+    }
+    my $model = $MATTER_CLUSTERS{$cluster};
+    my $info = $model && $model->{attributes} ? $model->{attributes}{$attribute} : undef;
+    return $value unless $info; # Unmapped/raw values have no guessed schema.
+    if (my $range = $info->{limit_range} // $info->{value_range}) {
+        return undef unless !ref($value) && $value =~ /\A[0-9]+\z/ &&
+            $value >= $range->[0] && $value <= $range->[1];
+    }
+    my $boolean = MATTERDevice_NormalizeBoolean($value);
+    $value = $boolean if blessed($value) && defined($boolean);
+    if (my $transform = $info->{transform}) {
+        return undef if $cluster != 0x0091 &&
+            (ref($value) || $value !~ /\A-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?\z/);
+        $value = $transform->($value);
+    }
+    return undef if !defined($value) || ref($value);
+    return MATTERDevice_NormalizeBoolean($value)
+        if ($cluster == 6 || $cluster == 69) && $attribute == 0;
+    return undef if $cluster == 8 && $attribute == 0 &&
+        ($value !~ /\A\d+\z/ || $value > 254);
+    return $value;
+}
+
 # Verarbeitet die globalen Matter-Attribute clusterunabhängig und speichert sie
-# pro Endpoint-Device und Cluster. Rückgabe 1 bedeutet: globales Attribut wurde behandelt.
+# pro Endpoint/Cluster. Rückgabe ist der übernommene Wert, undef bei Ablehnung.
 sub MATTERDevice_ProcessGlobalAttribute($$$$) {
     my ($hash, $cluster_id, $attr_id, $value) = @_;
-    return 0 if (!exists($MATTER_GLOBAL_ATTRIBUTES{$attr_id}));
-    return 1 if MATTERDevice_IsDisabled($hash);
+    return undef if !exists($MATTER_GLOBAL_ATTRIBUTES{$attr_id}) || MATTERDevice_IsDisabled($hash);
 
     my $key = $MATTER_GLOBAL_ATTRIBUTES{$attr_id};
-    my $parsed = $attr_id <= 0xFFFB ? MATTERDevice_IdSet($value)
-                                     : MATTERDevice_NormalizeMatterId($value);
-    return 1 unless defined $parsed;
+    my $parsed = MATTERDevice_AttributeValue($cluster_id, $attr_id, $value);
+    return undef unless defined $parsed;
+    $hash->{helper}{seen_clusters}{$cluster_id} = 1;
     my $cap = ($hash->{helper}{capabilities}{$cluster_id} //= {});
     $cap->{present} = 1;
     $cap->{$key} = $parsed;
@@ -944,7 +1043,7 @@ sub MATTERDevice_ProcessGlobalAttribute($$$$) {
             if defined($pct) && ReadingsVal($hash->{NAME}, 'pct', '') ne "$pct";
     }
 
-    return 1;
+    return $parsed;
 }
 
 # Automatic command recovery applies structural metadata only. Explicit
@@ -959,12 +1058,20 @@ sub MATTERDevice_ApplyCapabilityMetadata($$;$) {
     foreach my $child (MATTERDevice_NodeChildren($root)) {
         $targets{$child->{endpoint_id}} = $child;
     }
-    for my $path (sort keys %$values) {
+    for my $path (sort {
+        ($a =~ m{/29/1$} ? 1 : 0) <=> ($b =~ m{/29/1$} ? 1 : 0)
+    } keys %$values) {
         next unless $path =~ m{^(\d+)/(\d+)/(\d+)$};
         my ($ep, $cluster, $attr_id) = (0 + $1, 0 + $2, 0 + $3);
         next if defined($endpoint_only) && $ep != $endpoint_only;
-        next unless $targets{$ep} && exists $MATTER_GLOBAL_ATTRIBUTES{$attr_id};
-        MATTERDevice_ProcessGlobalAttribute($targets{$ep}, $cluster, $attr_id, $values->{$path});
+        next unless $targets{$ep};
+        # A newer live ServerList may have been reconciled into this reply.
+        # Apply it last so older global metadata cannot revive removed clusters.
+        if ($cluster == 29 && $attr_id == 1) {
+            MATTERDevice_ProcessAttributeValue($targets{$ep}, $cluster, $attr_id, $values->{$path});
+        } elsif (exists $MATTER_GLOBAL_ATTRIBUTES{$attr_id}) {
+            MATTERDevice_ProcessGlobalAttribute($targets{$ep}, $cluster, $attr_id, $values->{$path});
+        }
     }
 }
 
@@ -1497,9 +1604,11 @@ sub MATTERDevice_Set($$@) {
         # whether the module supports that endpoint's functional clusters.
         push @paths, "$endpoint_id/29/0";
 
-        # Root-Descriptor: vollständige ServerList und PartsList mitlesen.
+        # ServerList is authoritative for cluster removal, unlike omitted
+        # paths in a partially successful attribute read.
+        push @paths, "$endpoint_id/29/1";
+        # Root-Descriptor: PartsList mitlesen.
         if ($endpoint_id == 0) {
-            push @paths, "0/29/1";
             push @paths, "0/29/3";
         }
 
@@ -1508,16 +1617,14 @@ sub MATTERDevice_Set($$@) {
             my $pending_reads = ($ioHash->{helper}{pending_config} //= {});
             foreach my $id (keys %$pending_reads) {
                 my $entry = $pending_reads->{$id};
-                if (ref($entry) eq 'HASH' &&
-                    gettimeofday() - ($entry->{created_at} // 0) > 120) {
+                if (gettimeofday() - ($entry->{created_at} // 0) > 120) {
                     delete $pending_reads->{$id};
                     next;
                 }
                 # Do not allow a second request for this endpoint to return
                 # an older configuration after a newer response was applied.
                 return "MATTER: getConfig already in progress for $name"
-                    if ref($entry) eq 'HASH' &&
-                       $entry->{node_id} eq $node_id &&
+                    if $entry->{node_id} eq $node_id &&
                        $entry->{endpoint_id} == $endpoint_id;
             }
             return "MATTER: Too many pending read requests"
@@ -1527,6 +1634,7 @@ sub MATTERDevice_Set($$@) {
             $pending_reads->{$msg_id} = {
                 node_id => $node_id,
                 endpoint_id => int($endpoint_id),
+                owner => $hash, fuuid => $hash->{FUUID},
                 root_fuuid => $root ? $root->{FUUID} : undef,
                 availability_epoch => $root ?
                     ($root->{helper}{availability_epoch} // 0) : 0,
@@ -1614,10 +1722,8 @@ sub MATTERDevice_NetworkType {
 }
 
 # Opt-in passive diagnostics: no additional server reads or polling.
-sub MATTERDevice_UpdateNetworkDiagnostics {
-    my ($hash, $cluster, $attr, $value) = @_;
-    return unless ($hash->{endpoint_id} // 0) == 0 &&
-                  AttrVal($hash->{NAME}, 'diagnostics', 0);
+sub MATTERDevice_NetworkDiagnosticValues {
+    my ($cluster, $attr, $value) = @_;
     my %readings;
     if ($cluster == 53) {
         if ($attr == 0 && defined($value) && !ref($value) &&
@@ -1669,7 +1775,14 @@ sub MATTERDevice_UpdateNetworkDiagnostics {
              $value >= -128 && $value <= 0) {
         $readings{wifi_rssi} = $value;
     }
-    while (my ($reading, $val) = each %readings) {
+    return keys(%readings) ? \%readings : undef;
+}
+
+sub MATTERDevice_UpdateNetworkDiagnostics {
+    my ($hash, $readings) = @_;
+    return unless ($hash->{endpoint_id} // 0) == 0 &&
+                  AttrVal($hash->{NAME}, 'diagnostics', 0);
+    while (my ($reading, $val) = each %$readings) {
         readingsSingleUpdate($hash, $reading, $val, 1)
             if ReadingsVal($hash->{NAME}, $reading, '') ne "$val";
     }
@@ -1711,14 +1824,8 @@ sub MATTERDevice_RootCapabilityReport {
     if ($cluster == 29 && $attr == 1) {
         # ServerList is a complete list even in a partial node report.
         # An omitted list or any malformed entry cannot revoke support.
-        return unless ref($value) eq 'ARRAY';
-        my ($supported, $ota) = (0, 0);
-        for my $entry (@$value) {
-            my $id = MATTERDevice_NormalizeMatterId($entry);
-            return unless defined($id) && $id <= 0xFFFFFFFF;
-            $supported = 1 if $id == 70;
-            $ota = 1 if $id == 42;
-        }
+        return unless ref($value) eq 'HASH';
+        my ($supported, $ota) = ($value->{70}, $value->{42});
         if ($ota) {
             $hash->{helper}{seen_clusters}{42} = 1;
         } else {
@@ -1812,17 +1919,26 @@ sub MATTERDevice_SendRequests {
     return undef;
 }
 
-# One completion path for replies, timeout and disconnect. Every request is
-# retired independently; only the latest setter may update its status reading.
-sub MATTERDevice_CompleteRequest {
-    my ($io, $request, $reply, $failure) = @_;
+# Stable ownership shared by command completion and explicit read replies.
+sub MATTERDevice_RequestOwner {
+    my ($io, $request) = @_;
+    return undef if $request->{cancelled};
     my $owner = $request->{owner};
-    return unless $owner && ($defs{$owner->{NAME}} // '') eq $owner &&
+    return undef unless $owner && ($defs{$owner->{NAME}} // '') eq $owner &&
         ($owner->{TYPE} // '') eq 'MATTERDevice' &&
         ($owner->{FUUID} // '') eq ($request->{fuuid} // '') &&
         ($owner->{node_id} // '') eq ($request->{node_id} // '') &&
         ($owner->{endpoint_id} // 0) == $request->{endpoint_id} &&
         $owner->{IODev} && $owner->{IODev} eq $io;
+    return $owner;
+}
+
+# One completion path for replies, timeout and disconnect. Every request is
+# retired independently; only the latest setter may update its status reading.
+sub MATTERDevice_CompleteRequest {
+    my ($io, $request, $reply, $failure) = @_;
+    my $owner = MATTERDevice_RequestOwner($io, $request);
+    return unless $owner;
     if (defined $reply) {
         my $received = {};
         MATTERDevice_RecordReceive(MATTERDevice_LookupRoot($io, $request->{node_id}), $received);
@@ -2045,6 +2161,25 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
     my $cluster = $MATTER_CLUSTERS{$cluster_id};
 
+    if (exists $MATTER_GLOBAL_ATTRIBUTES{$attr_id}) {
+        my $parsed = MATTERDevice_ProcessGlobalAttribute($hash, $cluster_id, $attr_id, $value);
+        MATTERDevice_RootCapabilityReport($hash, $cluster_id, $attr_id, $parsed)
+            if defined($parsed) && $cluster_id == 70;
+        return;
+    }
+    $value = MATTERDevice_AttributeValue($cluster_id, $attr_id, $value, $hash->{endpoint_id} // 0);
+    return unless defined $value;
+
+    if ($cluster_id == 29 && $attr_id == 1) {
+        my $servers = $value;
+        if (defined $servers) {
+            delete @{$hash->{helper}{capabilities}}{
+                grep { !$servers->{$_} } keys %{$hash->{helper}{capabilities} // {}}
+            };
+            $hash->{helper}{seen_clusters} = { %$servers };
+        }
+    }
+
     # Remember cluster presence for conservative fallback labels in FHEMWEB,
     # including measurement clusters this module does not yet expose as readings.
     $hash->{helper}{seen_clusters}{$cluster_id} = 1 if defined($value);
@@ -2053,8 +2188,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     # the current physical mode reading. Partial reports keep earlier data.
     if (($cluster_id == 0x0201 && $attr_id == 27) ||
         ($cluster_id == 0x0202 && $attr_id == 1)) {
-        $hash->{helper}{capabilities}{$cluster_id}{mode_sequence} = 0 + $value
-            if defined($value) && !ref($value) && $value =~ /\A\d+\z/ && $value <= 5;
+        $hash->{helper}{capabilities}{$cluster_id}{mode_sequence} = $value;
         return;
     }
 
@@ -2103,45 +2237,30 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     # probe during discovery. Do not conflate a sleeping ICD with offline.
     # Process shared global attributes once, then derive ICD properties from
     # the same authoritative feature-map cache rather than maintaining two.
-    my $global = MATTERDevice_ProcessGlobalAttribute($hash, $cluster_id, $attr_id, $value);
     MATTERDevice_RootCapabilityReport($hash, $cluster_id, $attr_id, $value)
         if ($cluster_id == 70 || $cluster_id == 40 ||
             ($cluster_id == 29 && $attr_id == 1));
-    return if $global;
 
     # Descriptor cluster (0x001D), DeviceTypeList (0x0000).
     # Matter.js supplies an array of DeviceTypeStruct objects (deviceType, revision).
     # Persist the advertised IDs as a canonical reading. Unlike helper data,
     # regular FHEM readings survive a restart through the statefile/configDB.
     if ($cluster_id == 0x001D && $attr_id == 0x0000) {
-        if (ref($value) eq 'ARRAY') {
-            my (@types, %seen);
-            foreach my $entry (@{$value}) {
-                next unless ref($entry) eq 'HASH';
-                my $raw_id = $entry->{deviceType} // $entry->{device_type} // $entry->{'0'};
-                my $type_id = MATTERDevice_NormalizeMatterId($raw_id);
-                next unless defined($type_id) && $type_id <= 0xFFFFFFFF;
-                push @types, $type_id unless $seen{$type_id}++;
-            }
-            if (@types) {
-                my $ids = join(',', map { sprintf('0x%04X', $_) } sort { $a <=> $b } @types);
-                if (ReadingsVal($name, 'device_type_ids', '') ne $ids) {
-                    readingsSingleUpdate($hash, 'device_type_ids', $ids, 1);
-                    MATTERDevice_EnsureTypeGroup($hash);
-                }
-            }
+        if (ReadingsVal($name, 'device_type_ids', '') ne $value) {
+            readingsSingleUpdate($hash, 'device_type_ids', $value, 1);
+            MATTERDevice_EnsureTypeGroup($hash);
         }
         return;
     }
     if (($hash->{endpoint_id} // 0) == 0 &&
         $cluster_id == 0x0033 && $attr_id == 0) {
-        my $type = MATTERDevice_NetworkType($value);
+        my $type = $value;
         readingsSingleUpdate($hash, 'networkType', $type, 1)
             if defined($type) && ReadingsVal($name, 'networkType', '') ne $type;
         return;
     }
     if ($cluster_id == 0x0035 || $cluster_id == 0x0036) {
-        MATTERDevice_UpdateNetworkDiagnostics($hash, $cluster_id, $attr_id, $value);
+        MATTERDevice_UpdateNetworkDiagnostics($hash, $value);
         return;
     }
     my $attr_info = $cluster ? $cluster->{attributes}{$attr_id} : undef;
@@ -2152,27 +2271,6 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
 
     my $attr_name = $attr_info->{name};
     my $is_reading = $attr_info->{is_reading} // 0;
-    my $transform = $attr_info->{transform};
-
-    # Validate reported limit types before boolean coercion or publication.
-    # Null, malformed and out-of-domain reports preserve the last valid value.
-    if (my $range = $attr_info->{limit_range}) {
-        return unless defined($value) && !ref($value) &&
-            $value =~ /\A[0-9]+\z/ && $value >= $range->[0] && $value <= $range->[1];
-    }
-
-    my $boolean = MATTERDevice_NormalizeBoolean($value);
-    $value = $boolean if blessed($value) && defined($boolean);
-    return if !defined($value);
-    if ($transform && ref($transform) eq 'CODE') {
-        # Numeric transformations must not turn malformed values into zero.
-        if ($cluster_id != 0x0091) {
-            return if ref($value) || $value !~ /^-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?$/;
-        }
-        $value = $transform->($value);
-        return if !defined($value);
-    }
-    return if ref($value);
     if ($cluster_id == 0x0045 && $attr_id == 0) {
         my $active = MATTERDevice_NormalizeBoolean($value);
         return unless defined $active;
@@ -2188,11 +2286,6 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         }
         $is_reading = 1;
     }
-    return if $cluster_id == 0x0006 && $attr_id == 0 &&
-              !defined(MATTERDevice_NormalizeBoolean($value));
-    return if $cluster_id == 0x0008 && $attr_id == 0 &&
-              ($value !~ /^\d+$/ || $value > 254);
-
     my $model_changed = $cluster_id == 0x0028 && $attr_id == 3 &&
         ($hash->{endpoint_id} // 0) == 0 && (!defined($hash->{READINGS}{model}{VAL}) ||
         $hash->{READINGS}{model}{VAL} ne $value);
@@ -2288,6 +2381,8 @@ sub MATTERDevice_ProcessMessage {
     # Hilfs-Subroutine zur internen Weiterleitung an Root oder Child
     my $route_attribute = sub {
         my ($ep, $cluster, $attr, $val) = @_;
+        return if $received->{request} &&
+            !MATTERDevice_RequestOwner(@{$received->{request}});
         MATTERDevice_RecordReceive($hash, $received) if $ep == $my_endpoint;
         # Offline snapshots can still tell us which endpoint IDs exist.
         # Preserve FHEM identity/association without importing device data.
@@ -2342,36 +2437,11 @@ sub MATTERDevice_ProcessMessage {
             }
             return;
         }
-        # getConfig synchronisiert die Capability-Metadaten der in der Antwort
-        # enthaltenen Endpoints vollständig. Alte Cluster-/Command-Daten dürfen
-        # nicht erhalten bleiben, wenn sie im aktuellen Datenmodell verschwunden sind.
-        my %reported_lists;
-        foreach my $path (keys %{$decoded->{result}}) {
-            next unless $path =~ m{^(\d+)/(\d+)/(\d+)$};
-            my ($ep, $cluster, $attr) = ($1, $2, $3);
-            my $lists = ($reported_lists{$ep} //= []);
-            push @$lists, [$cluster, $MATTER_GLOBAL_ATTRIBUTES{$attr}]
-                if $attr >= 0xFFF8 && $attr <= 0xFFFB;
-        }
-        foreach my $ep (keys %reported_lists) {
-            my $target = $ep == $my_endpoint ? $hash : MATTERDevice_GetOrCreateChild($hash, $ep);
-            next unless $target;
-            next if MATTERDevice_IsDisabled($target);
-            my $previous = delete $target->{helper}{capabilities};
-            # Seed only list paths present in the reply. A valid report replaces
-            # its seed (including []), a malformed one leaves it intact.
-            for my $list (@{$reported_lists{$ep}}) {
-                my ($cluster, $key) = @$list;
-                my $old = $previous->{$cluster}{$key};
-                next unless defined $old;
-                my $cap = ($target->{helper}{capabilities}{$cluster} //= {present => 1});
-                $cap->{$key} = $old;
-            }
-        }
-
+        # Missing paths can be individual read failures. Valid reports replace
+        # metadata per path; only an explicit ServerList proves cluster removal.
         for my $path (sort {
-            ($a eq '0/29/1' ? 2 : $a =~ m{/29/0$} ? 0 : 1) <=>
-            ($b eq '0/29/1' ? 2 : $b =~ m{/29/0$} ? 0 : 1)
+            ($a =~ m{/29/1$} ? 2 : $a =~ m{/29/0$} ? 0 : 1) <=>
+            ($b =~ m{/29/1$} ? 2 : $b =~ m{/29/0$} ? 0 : 1)
         } keys %{$decoded->{result}}) {
             my $value = $decoded->{result}->{$path};
             if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
@@ -2406,8 +2476,17 @@ sub MATTERDevice_ProcessMessage {
         my ($ep, $cluster, $id) = @{$event}{qw(endpoint_id cluster_id event_id)};
         return unless defined($ep) && !ref($ep) && $ep =~ /^\d+$/ && $ep > 0 &&
                       defined($cluster) && !ref($cluster) && $cluster =~ /^\d+$/ &&
-                      $cluster == 0x003B &&
                       defined($id) && !ref($id) && $id =~ /^\d+$/;
+        MATTERDevice_RecordReceive($hash, $received);
+        # Unknown event endpoints cannot create devices. Discovery and the
+        # Descriptor PartsList own endpoint identity, not transient events.
+        my ($child) = grep {
+            ($_->{endpoint_id} // 0) == $ep
+        } MATTERDevice_NodeChildren($hash);
+        return unless $child;
+        MATTERDevice_RecordReceive($child, $received);
+        return if MATTERDevice_IsDisabled($child);
+        return unless $cluster == 0x003B;
         my %events = (1 => 'pressed', 2 => 'long',
                       3 => 'short', 4 => 'long_release');
         my $value = $events{$id};
@@ -2421,15 +2500,6 @@ sub MATTERDevice_ProcessMessage {
                      $count == 3 ? 'triple' : $count . 'x';
         }
         return unless defined $value;
-        MATTERDevice_RecordReceive($hash, $received);
-        # Unknown event endpoints cannot create devices. Discovery and the
-        # Descriptor PartsList own endpoint identity, not transient events.
-        my ($child) = grep {
-            ($_->{endpoint_id} // 0) == $ep
-        } MATTERDevice_NodeChildren($hash);
-        return unless $child;
-        MATTERDevice_RecordReceive($child, $received);
-        return if MATTERDevice_IsDisabled($child);
         readingsSingleUpdate($child, 'button', $value, 0);
         DoTrigger($child->{NAME}, "button: $value");
         return;
@@ -2462,8 +2532,8 @@ sub MATTERDevice_ProcessMessage {
 
         if ($attributes && ref($attributes) eq 'HASH') {
             for my $path (sort {
-                ($a eq '0/29/1' ? 2 : $a =~ m{/29/0$} ? 0 : 1) <=>
-                ($b eq '0/29/1' ? 2 : $b =~ m{/29/0$} ? 0 : 1)
+                ($a =~ m{/29/1$} ? 2 : $a =~ m{/29/0$} ? 0 : 1) <=>
+                ($b =~ m{/29/1$} ? 2 : $b =~ m{/29/0$} ? 0 : 1)
             } keys %{$attributes}) {
                 my $value = $attributes->{$path};
                 if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
@@ -2911,7 +2981,8 @@ not permission to import data.
 including the attributes carried by that same <code>node_updated</code>.
 No separate per-attribute report is required. Explicit <code>getConfig</code>
 replies may update physical values and capability metadata while online.
-Responses from earlier availability epochs or replaced roots are rejected.
+Responses from earlier availability epochs or replaced roots are rejected. Explicit reads additionally verify the requesting FHEM instance and endpoint; a replacement cannot inherit its response, while rename remains supported.
+Freshness tracking uses the same side-effect-free value conversion as reading publication; rejected values never suppress valid pending results.
 Newer values from <code>attribute_updated</code> and <code>node_updated</code> take precedence per attribute path over older discovery/read results.</p>
 <p>After a known offline/online transition, only missing command metadata may
 trigger automatic recovery: at most three event-driven attempts, at least
@@ -2967,7 +3038,7 @@ automated tests model reading restoration.</p></li>
   <li><b>Capabilities:</b> Set commands require a matching endpoint
       <code>AcceptedCommandList</code> entry and applicable
       <code>FeatureMap</code> constraints. The module records the reported <code>ClusterRevision</code> as metadata.
-      A malformed ID list preserves its last valid entries. An explicit empty list clears them.
+      A malformed ID list preserves its last valid entries. An explicit empty list clears them. Missing paths in a partial getConfig reply retain metadata; a valid endpoint Descriptor.ServerList revokes absent clusters and is included in getConfig.
       Until command metadata arrives, controls are not inferred from values,
       cluster presence or retired <code>has_*</code> settings. A saved
       <code>has_*=0</code> no longer disables a reported command.</li>
@@ -2975,6 +3046,7 @@ automated tests model reading restoration.</p></li>
       power and cumulative energy clusters, where the server supplies the
       corresponding attributes.</li>
 </ul>
+<p>Changing the actual IO instance or Matter IDs invalidates old capabilities, firmware offers and control-relevant metadata (device types, ICD permissions, software/specification versions and limits). Other saved physical readings and local attributes remain. Rename and unchanged DEF confirmation preserve identity; an occupied root target is rejected before modification.</p>
 <h4>Attributes</h4>
 <p>Select an attribute in FHEMWEB to show its description. Active device
 settings are <code>IODev</code>, <code>readOnly</code>, <code>disable</code>, <code>dimRate</code>, <code>diagnostics</code>
@@ -3086,6 +3158,7 @@ reports preserve the last valid reading; offline protection also
 applies to limits. Restored readings are cached information, not proof of
 current reachability. Device-class hardware status remains
 <strong>untested</strong>.</p>
+<p>The energy reading accepts the inner EnergyMeasurementStruct field (named or TLV tag 0) only as an integer from 0 to 2^62 mWh, converted to kWh. Invalid/null data preserves the last reading; numeric zero remains valid.</p>
 <h4>Hardware validation status</h4>
 <p>The following classes are implemented but have no class-wide hardware validation
 recorded in this repository. <strong>untested</strong> refers to missing documented
@@ -3319,7 +3392,7 @@ einschließlich der Werte derselben <code>node_updated</code>-Meldung. Ein
 zusätzlicher Report pro Attribut ist nicht erforderlich. Explizites
 <code>getConfig</code> darf online Gerätewerte und Capability-Metadaten aktualisieren.
 Antworten aus früheren Availability-Zyklen oder für ersetzte Roots werden
-verworfen. Neuere Werte aus <code>attribute_updated</code> und <code>node_updated</code> haben je Attributpfad Vorrang vor älteren Discovery-/Leseantworten.</p>
+verworfen. Explizite Reads prüfen zusätzlich die anfragende FHEM-Instanz und den Endpoint; Ersatzgeräte übernehmen deren Antworten nicht, Rename derselben Instanz bleibt unterstützt. Frischeabgleich und Reading-Übernahme verwenden dieselbe seiteneffektfreie Wertprüfung; verworfene Werte verdrängen keine gültigen ausstehenden Antworten. Neuere Werte aus <code>attribute_updated</code> und <code>node_updated</code> haben je Attributpfad Vorrang vor älteren Discovery-/Leseantworten.</p>
 <p>Nach einem bekannten Offline-/Online-Wechsel kann ausschließlich fehlende
 Befehlsmetadaten-Recovery automatisch ausgelöst werden: höchstens drei
 ereignisgesteuerte Versuche mit mindestens 15 Sekunden Abstand, ohne Polling.
@@ -3378,7 +3451,7 @@ Reading-Wiederherstellung.</p></li>
       der <code>AcceptedCommandList</code> des jeweiligen Endpunkts sowie
       gegebenenfalls die in der <code>FeatureMap</code> geforderten Features.
       Das Modul erfasst die gemeldete <code>ClusterRevision</code> als Metadatum. Bei einer fehlerhaften ID-Liste bleiben die
-      letzten gültigen Einträge erhalten. Eine ausdrücklich leere Liste löscht sie. Solange die Metadaten fehlen,
+      letzten gültigen Einträge erhalten. Eine ausdrücklich leere Liste löscht sie. Fehlende Pfade einer getConfig-Teilantwort erhalten Metadaten; eine gültige Descriptor.ServerList des Endpunkts widerruft fehlende Cluster und wird mit getConfig gelesen. Solange die Metadaten fehlen,
       werden keine Befehle aus Einzelwerten oder alten <code>has_*</code>-
       Einstellungen abgeleitet. Gespeicherte <code>has_*=0</code>-Werte
       sperren keine gemeldeten Befehle mehr.</li>
@@ -3386,6 +3459,7 @@ Reading-Wiederherstellung.</p></li>
       Kohlenmonoxidkonzentration, elektrische Leistung und kumulierte Energie,
       soweit die Geräte die jeweiligen Attribute liefern.</li>
 </ul>
+<p>Ein Wechsel der IO-Instanz oder Matter-IDs entwertet alte Capabilities, Firmwareangebote und steuerungsrelevante Metadaten (Gerätetypen, ICD-Freigaben, Software-/Spezifikationsversion und Grenzen). Andere gespeicherte physische Readings und lokale Attribute bleiben erhalten. Rename und unveränderte DEF-Bestätigung erhalten die Identität; ein belegtes Root-Ziel wird vor der Änderung abgewiesen.</p>
 <h4>Attribute</h4>
 <p>Bei Auswahl eines Attributs in FHEMWEB erscheint dessen Beschreibung.
 Aktive Geräteeinstellungen sind <code>IODev</code>, <code>readOnly</code>, <code>disable</code>, <code>dimRate</code>,
@@ -3506,6 +3580,7 @@ Availability-Sperre und Antwortreihenfolge gelten auch für Grenzen. Wiederherge
 Readings sind gespeicherte Informationen und kein Beleg aktueller
 Erreichbarkeit. Hardwarestatus der Geräteklassen weiterhin
 <strong>ungetestet</strong>.</p>
+<p>Das energy-Reading übernimmt das innere EnergyMeasurementStruct-Feld (benannt oder TLV-Tag 0) nur als Ganzzahl von 0 bis 2^62 mWh, umgerechnet in kWh. Ungültige/null Daten erhalten das letzte Reading; die Zahl null bleibt gültig.</p>
 <h4>Hardware-Teststatus</h4>
 <p>Die folgenden Geräteklassen sind implementiert, aber es liegt im Repository
 kein klassenweiter Hardware-Nachweis vor. <strong>ungetestet</strong> bedeutet:
