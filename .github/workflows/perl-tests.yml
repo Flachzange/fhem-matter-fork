@@ -24,6 +24,18 @@ jobs:
       - name: Install Perl JSON dependency
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends libjson-perl
+          sudo apt-get install -y --no-install-recommends libjson-perl libio-compress-perl
       - name: Run FHEM callback and WebSocket regression tests
         run: prove -v t/matter_node_sync.t
+      - name: Check out pinned FHEM core for presentation integration tests
+        uses: actions/checkout@v4
+        with:
+          repository: mhop/fhem-mirror
+          ref: 8b257af4a681169a4162610b158ca6d4d103d489
+          path: .test-fhem
+          persist-credentials: false
+      - name: Run actual FHEM and FHEMWEB display tests in both encoding modes
+        run: |
+          export FHEM_CORE_DIR="$PWD/.test-fhem"
+          prove -v t/matter_display_core.t
+          FHEM_TEST_ENCODING=bytestream prove -v t/matter_display_core.t

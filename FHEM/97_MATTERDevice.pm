@@ -3,11 +3,13 @@ package main;
 
 use strict;
 use warnings;
+use utf8;
 use JSON;
 use List::Util qw(min max);
 use Scalar::Util qw(blessed);
 
 our $init_done; # FHEM startup: statefile and attributes are not yet restored
+our $unicodeEncoding; # FHEM supports both unicode and legacy UTF-8 byte strings.
 
 # Globale Matter-Metadaten-IDs. Sie werden unabhängig von der clusterspezifischen
 # Attributdefinition verarbeitet. EventList (0xFFFA) wird für ältere
@@ -58,6 +60,164 @@ my %MATTER_DEVICE_TYPE_LABELS = (
 # Structural types do not describe a separately usable function. Electrical Sensor
 # (0x0510) is a Matter utility type too, but does represent a useful measurement endpoint.
 my %MATTER_STRUCTURAL_DEVICE_TYPES = map { $_ => 1 } (0x000E, 0x0011, 0x0012, 0x0013, 0x0014, 0x0016);
+
+# Ordered presentation policy, independent of report/Descriptor ordering.
+# Every named functional type must occur here; structural types use the fallback.
+my @MATTER_DISPLAY_TYPES = (
+    [0x0076, 'alarm'], [0x0043, 'state'], [0x0044, 'state'],
+    [0x000A, 'lock'], [0x0202, 'covering'], [0x0301, 'thermostat'],
+    [0x002B, 'fan'],
+    (map { [$_, 'state'] } (0x0100, 0x0101, 0x010C, 0x010D, 0x010A, 0x010B, 0x0015, 0x0107)),
+    [0x0850, 'boolean'],
+    (map { [$_, 'button'] } (0x000F, 0x0103, 0x0104, 0x0105)),
+    [0x002C, 'air'], [0x0510, 'electrical'],
+    [0x0302, 'temperature'], [0x0307, 'humidity'],
+    [0x0305, 'pressure'], [0x0106, 'illuminance'],
+    [0x0306, 'unsupported'], # Type label only; no FlowMeasurement parser.
+);
+
+# Matter 1.4 enum labels; raw readings retain their numeric protocol values.
+my %MATTER_DISPLAY_ENUMS = (
+    alarm_expressed_state => [qw(normal smoke_alarm co_alarm battery_alert testing
+                                hardware_fault end_of_service interconnect_smoke interconnect_co)],
+    lock_state => [qw(not_fully_locked locked unlocked unlatched)],
+    air_quality => [qw(unknown good fair moderate poor very_poor extremely_poor)],
+);
+
+# Pure presentation of this endpoint's persisted readings. Never infer a
+# physical value from an absent reading, a command echo or a sibling endpoint.
+sub MATTERDevice_DefaultState {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+    my $value = sub { return ReadingsVal($name, $_[0], 'unknown'); };
+    my $number = sub {
+        my ($reading) = @_;
+        my $v = $value->($reading);
+        return undef if ref($v) || $v !~ /\A-?(?:\d+(?:\.\d+)?|\.\d+)(?:[eE][+-]?\d+)?\z/;
+        return $v;
+    };
+    my $quantity = sub {
+        my ($reading, $unit) = @_;
+        my $v = $number->($reading);
+        utf8::encode($unit) unless $unicodeEncoding;
+        return defined($v) ? "$v $unit" : 'unknown';
+    };
+    my $enum = sub {
+        my ($reading) = @_;
+        my $v = $value->($reading);
+        my $labels = $MATTER_DISPLAY_ENUMS{$reading};
+        return 'unknown' unless !ref($v) && $v =~ /\A\d+\z/ && $v < @$labels;
+        return $labels->[$v];
+    };
+    my %types = map { $_ => 1 } MATTERDevice_DeviceTypeIds($hash);
+    my ($kind) = map { $_->[1] } grep { $types{$_->[0]} } @MATTER_DISPLAY_TYPES;
+    $kind //= 'state';
+    return $value->('state') if $kind eq 'state' || ($hash->{endpoint_id} // 0) == 0;
+    return 'unknown' if $kind eq 'unsupported';
+    return $enum->('alarm_expressed_state') if $kind eq 'alarm';
+    return $enum->('lock_state') if $kind eq 'lock';
+    if ($kind eq 'boolean') {
+        return $value->('state') if exists $hash->{READINGS}{state};
+        my $v = $value->('boolean_state');
+        return $v =~ /\A[01]\z/ ? $v : 'unknown';
+    }
+    if ($kind eq 'button') {
+        return $value->('state') if !$types{0x000F} && exists $hash->{READINGS}{state};
+        my $v = $value->('button');
+        return $v =~ /\A(?:pressed|long|short|long_release|double|triple|\d+x)\z/
+            ? "last: $v" : 'unknown';
+    }
+    if ($kind eq 'covering') {
+        my @positions;
+        for my $axis (qw(lift tilt)) {
+            my $v = $number->("current_position_${axis}_percent_100_ths");
+            $v = defined($v) ? $v / 100 : $number->("current_position_${axis}_percentage");
+            if (defined($v) && $v >= 0 && $v <= 100) {
+                push @positions, "$axis: $v %";
+            } elsif (defined(my $raw = $number->("current_position_$axis"))) {
+                push @positions, "$axis: $raw (raw)" if $raw >= 0 && $raw < 65535;
+            }
+        }
+        return join(' / ', @positions) if @positions;
+        my $status = $number->('wc_operational_status');
+        return 'unknown' unless defined($status) && $status =~ /\A\d+\z/ && $status <= 63;
+        return (qw(stopped opening closing unknown))[$status & 3];
+    }
+    if ($kind eq 'thermostat') {
+        my $mode = $value->('mode');
+        $mode = 'unknown' unless $mode =~ /\A(?:off|auto|cool|heat|emergency_heat)\z/;
+        my @parts = ($mode, 'measured: ' . $quantity->('measured-temp', '°C'));
+        push @parts, 'heat: ' . $quantity->('desired-temp', '°C')
+            if $mode eq 'heat' || $mode eq 'emergency_heat' || $mode eq 'auto';
+        push @parts, 'cool: ' . $quantity->('desired-temp-cool', '°C')
+            if $mode eq 'cool' || $mode eq 'auto';
+        return join('; ', @parts);
+    }
+    if ($kind eq 'fan') {
+        my $mode = $value->('fan_mode');
+        $mode = 'unknown' unless $mode =~ /\A(?:off|low|medium|high|on|auto)\z/;
+        my $pct = $number->('fan_pct');
+        return defined($pct) && $pct >= 0 && $pct <= 100 ? "$mode; $pct %" : $mode;
+    }
+    if ($kind eq 'air') {
+        return $enum->('air_quality') if exists $hash->{READINGS}{air_quality};
+        my @parts;
+        for my $r (qw(co2 pm25 tvoc)) {
+            my $v = $number->($r);
+            next unless defined($v) && $v >= 0;
+            my $unit = $value->("${r}_unit");
+            # Only the units already recognized by the protocol converter.
+            $unit = 'unknown' unless grep { $unit eq $_ }
+                map { MATTERDevice_ConcentrationUnit($_) } (0..9);
+            push @parts, "$r: $v $unit";
+        }
+        return @parts ? join(' / ', @parts) : 'unknown';
+    }
+    if ($kind eq 'electrical') {
+        for my $r (qw(power energy voltage current)) {
+            next unless defined($number->($r));
+            my %units = (power => 'W', energy => 'kWh', voltage => 'V', current => 'A');
+            return $quantity->($r, $units{$r});
+        }
+        return 'unknown';
+    }
+    return $quantity->('temperature', '°C') . ' / ' . $quantity->('humidity', '%')
+        if ($kind eq 'temperature' || $kind eq 'humidity') && $types{0x0302} && $types{0x0307};
+    my %units = (temperature => '°C', humidity => '%', pressure => 'hPa', illuminance => 'lx');
+    return $quantity->($kind, $units{$kind});
+}
+
+sub MATTERDevice_UpdateDisplay {
+    my ($hash) = @_;
+    return unless $init_done && ($hash->{endpoint_id} // 0) > 0;
+    return if defined AttrVal($hash->{NAME}, 'stateFormat', undef);
+    $hash->{STATE} = ReplaceEventMap($hash->{NAME}, MATTERDevice_DefaultState($hash), 1);
+}
+
+# Core readingsEndUpdate computes userReadings/stateFormat before DoTrigger.
+# Retain its event arrays while ending silently, then set the endpoint default
+# before publishing those SAME events. No state reading or extra event is made.
+sub MATTERDevice_ReadingsEndUpdate {
+    my ($hash, $trigger) = @_;
+    return readingsEndUpdate($hash, $trigger) if !$init_done ||
+        ($hash->{endpoint_id} // 0) == 0 || defined AttrVal($hash->{NAME}, 'stateFormat', undef);
+    my ($events, $times) = @{$hash}{qw(CHANGED CHANGETIME)};
+    readingsEndUpdate($hash, 0);
+    MATTERDevice_UpdateDisplay($hash);
+    if ($trigger && $events) {
+        $hash->{CHANGED} = $events;
+        $hash->{CHANGETIME} = $times if defined $times;
+        DoTrigger($hash->{NAME}, undef);
+    }
+}
+
+sub MATTERDevice_ReadingsSingleUpdate {
+    my ($hash, $reading, $value, $trigger) = @_;
+    readingsBeginUpdate($hash);
+    my $result = readingsBulkUpdate($hash, $reading, $value);
+    MATTERDevice_ReadingsEndUpdate($hash, $trigger);
+    return $result;
+}
 
 # Explicit Matter MeasurementUnitEnum values. Never assume that a
 # concentration reading represents ppm without an accompanying unit.
@@ -238,13 +398,13 @@ my %MATTER_CLUSTERS = (
     0x005B => {
         name       => "Air Quality",
         attributes => {
-            0x0000 => { name => "air_quality", is_reading => 1 },
+            0x0000 => { name => "air_quality", is_reading => 1, value_range => [0, 6] },
         },
     },
     0x005C => {
         name       => "SmokeCoAlarm",
         attributes => {
-            0x0000 => { name => "alarm_expressed_state", is_reading => 1 },
+            0x0000 => { name => "alarm_expressed_state", is_reading => 1, value_range => [0, 8] },
             0x0001 => { name => "smoke_state", is_reading => 1 },
             0x0002 => { name => "co_state", is_reading => 1 },
             0x0003 => { name => "alarm_battery", is_reading => 1 },
@@ -348,7 +508,7 @@ my %MATTER_CLUSTERS = (
     0x0101 => {
         name       => "Door Lock",
         attributes => {
-            0x0000 => { name => "lock_state", is_reading => 1 },
+            0x0000 => { name => "lock_state", is_reading => 1, value_range => [0, 3] },
             0x0001 => { name => "lock_type", is_reading => 1 },
             0x0002 => { name => "actuator_enabled", is_reading => 1},
             0x0003 => { name => "door_state", is_reading => 1 },
@@ -387,19 +547,20 @@ my %MATTER_CLUSTERS = (
             0x0000 => { name => "wc_type", is_reading => 1 },
             0x0001 => { name => "physical_closed_limit_lift", is_reading => 1, limit_range => [0, 65535], required_features => ["lift", "position_aware_lift", "absolute_position"] },
             0x0002 => { name => "physical_closed_limit_tilt", is_reading => 1, limit_range => [0, 65535], required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
-            0x0003 => { name => "current_position_lift", is_reading => 1, required_features => ["lift", "position_aware_lift", "absolute_position"] },
-            0x0004 => { name => "current_position_tilt", is_reading => 1, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
+            0x0003 => { name => "current_position_lift", is_reading => 1, value_range => [0, 65534], required_features => ["lift", "position_aware_lift", "absolute_position"] },
+            0x0004 => { name => "current_position_tilt", is_reading => 1, value_range => [0, 65534], required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
             0x0005 => { name => "number_of_actuations_lift", is_reading => 1 },
             0x0006 => { name => "number_of_actuations_tilt", is_reading => 1},
             0x0007 => { name => "ws_config_status", is_reading => 1},
-            0x0008 => { name => "current_position_lift_percentage", is_reading => 1 },
-            0x0009 => { name => "current_position_tilt_percentage", is_reading => 1 },
-            0x000A => { name => "wc_operational_status", is_reading => 1 },
+            0x0008 => { name => "current_position_lift_percentage", is_reading => 1, value_range => [0, 100] },
+            0x0009 => { name => "current_position_tilt_percentage", is_reading => 1, value_range => [0, 100] },
+            0x000A => { name => "wc_operational_status", is_reading => 1, value_range => [0, 63],
+                         transform => sub { return undef if grep { (($_[0] >> $_) & 3) == 3 } (0, 2, 4); return $_[0]; } },
             0x000B => { name => "target_position_lift_percent_100_ths", is_reading => 1 },
             0x000C => { name => "target_position_tilt_percent_100_ths", is_reading => 1 },
             0x000D => { name => "wc_end_product_type", is_reading => 1},
-            0x000E => { name => "current_position_lift_percent_100_ths", is_reading => 1 },
-            0x000F => { name => "current_position_tilt_percent_100_ths", is_reading => 1 },
+            0x000E => { name => "current_position_lift_percent_100_ths", is_reading => 1, value_range => [0, 10000] },
+            0x000F => { name => "current_position_tilt_percent_100_ths", is_reading => 1, value_range => [0, 10000] },
             0x0010 => { name => "installed_open_limit_lift", is_reading => 1, required_features => ["lift", "position_aware_lift", "absolute_position"] },
             0x0011 => { name => "installed_closed_limit_lift", is_reading => 1, required_features => ["lift", "position_aware_lift", "absolute_position"] },
             0x0012 => { name => "installed_open_limit_tilt", is_reading => 1, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
@@ -529,7 +690,7 @@ sub MATTERDevice_Initialize($) {
 sub MATTERDevice_SetRootState($$) {
     my ($hash, $state) = @_;
     return unless ($hash->{endpoint_id} // 0) == 0;
-    readingsSingleUpdate($hash, 'state', $state, 1)
+    MATTERDevice_ReadingsSingleUpdate($hash, 'state', $state, 1)
         if ReadingsVal($hash->{NAME}, 'state', '') ne $state;
 }
 
@@ -760,7 +921,7 @@ sub MATTERDevice_UpdateAvailability($$) {
         readingsBeginUpdate($hash);
         readingsBulkUpdate($hash, 'available', $available) if $change_available;
         readingsBulkUpdate($hash, 'state', $state) if $change_state;
-        readingsEndUpdate($hash, 1);
+        MATTERDevice_ReadingsEndUpdate($hash, 1);
     }
     MATTERDevice_SyncNodeReadings($hash) if $change_available || $change_state;
 }
@@ -769,6 +930,10 @@ sub MATTERDevice_UpdateAvailability($$) {
 # the global ATTR event below observes the pointer actually installed by FHEM.
 sub MATTERDevice_Attr {
     my ($op, $name, $attr, $value) = @_;
+    if ($init_done && $op eq 'del' && ($defs{$name}{endpoint_id} // 0) > 0 &&
+        (!defined($attr) || 'stateFormat' =~ /^$attr$/)) {
+        $defs{$name}{STATE} = ReplaceEventMap($name, MATTERDevice_DefaultState($defs{$name}), 1);
+    }
     # FHEM deleteattr accepts a name pattern, or no name to clear all attrs.
     $attr = 'disable' if $op eq 'del' && (!defined($attr) || 'disable' =~ /^$attr$/);
     if ($attr eq 'readOnly' || $attr eq 'disable') {
@@ -828,6 +993,9 @@ sub MATTERDevice_Notify($$) {
     my $events = $dev->{CHANGED} // [];
     my $startup = grep { $_ eq 'INITIALIZED' || $_ eq 'REREADCFG' } @$events;
     if (($hash->{endpoint_id} // 0) > 0) {
+        evalStateFormat($hash) if $startup && defined AttrVal($hash->{NAME}, 'stateFormat', undef);
+        MATTERDevice_UpdateDisplay($hash) if $startup ||
+            grep { /\A(?:ATTR|DELETEATTR) \Q$hash->{NAME}\E(?: |\z)/ } @$events;
         return if MATTERDevice_IsDisabled($hash) || !delete($hash->{helper}{enable_sync});
         return if $startup; # Root availability is invalidated during restoration.
         my $root = MATTERDevice_LookupRoot($hash->{IODev}, $hash->{node_id});
@@ -836,7 +1004,7 @@ sub MATTERDevice_Notify($$) {
             $io->{websocket} && ($io->{ws_status} // '') eq 'connected') {
             MATTERDevice_SyncNodeReadings($root, $hash);
             my $status = ReadingsVal($root->{NAME}, 'matter_status', undef);
-            readingsSingleUpdate($hash, 'matter_status', $status, 1)
+            MATTERDevice_ReadingsSingleUpdate($hash, 'matter_status', $status, 1)
                 if defined($status) && !MATTERDevice_IsDisabled($hash) &&
                    ReadingsVal($hash->{NAME}, 'matter_status', '') ne $status;
             my $error = MATTERDevice_Set($hash, $hash->{NAME}, 'getConfig');
@@ -921,6 +1089,7 @@ sub MATTERDevice_Define($$) {
         MATTERDevice_SetRootState($hash, 'unknown') if $init_done &&
             ($changed || !defined($hash->{READINGS}{state}));
     }
+    MATTERDevice_UpdateDisplay($hash);
     Log3 $name, 3, "MATTERDevice: Defined node_id $node_id for $name";
     return undef;
 }
@@ -1039,7 +1208,7 @@ sub MATTERDevice_ProcessGlobalAttribute($$$$) {
     # scale without another CurrentLevel report (including metadata recovery).
     if ($cluster_id == 0x0008 && ($attr_id == 0xFFFB || $attr_id == 0xFFFC)) {
         my $pct = MATTERDevice_Percentage($hash);
-        readingsSingleUpdate($hash, 'pct', $pct, 1)
+        MATTERDevice_ReadingsSingleUpdate($hash, 'pct', $pct, 1)
             if defined($pct) && ReadingsVal($hash->{NAME}, 'pct', '') ne "$pct";
     }
 
@@ -1783,7 +1952,7 @@ sub MATTERDevice_UpdateNetworkDiagnostics {
     return unless ($hash->{endpoint_id} // 0) == 0 &&
                   AttrVal($hash->{NAME}, 'diagnostics', 0);
     while (my ($reading, $val) = each %$readings) {
-        readingsSingleUpdate($hash, $reading, $val, 1)
+        MATTERDevice_ReadingsSingleUpdate($hash, $reading, $val, 1)
             if ReadingsVal($hash->{NAME}, $reading, '') ne "$val";
     }
 }
@@ -1797,7 +1966,7 @@ sub MATTERDevice_RawDiagnostic {
     return if !defined($str) || length($str) > 512;
     my $reading = 'raw_' . ($hash->{endpoint_id} // 0) .
                   '_' . $cluster . '_' . $attr;
-    readingsSingleUpdate($hash, $reading, $str, 1)
+    MATTERDevice_ReadingsSingleUpdate($hash, $reading, $str, 1)
         if ReadingsVal($hash->{NAME}, $reading, '') ne $str;
 }
 
@@ -1815,7 +1984,7 @@ sub MATTERDevice_RefreshIcdCapability {
                   defined($spec) && !ref($spec) && $spec =~ /^\d+$/;
     my $supported = ($features & 0x04) && $spec >= 0x01040000 ?
                     'true' : 'false';
-    readingsSingleUpdate($hash, 'icd_lit_supported', $supported, 1)
+    MATTERDevice_ReadingsSingleUpdate($hash, 'icd_lit_supported', $supported, 1)
         if ReadingsVal($hash->{NAME}, 'icd_lit_supported', '') ne $supported;
 }
 sub MATTERDevice_RootCapabilityReport {
@@ -1839,30 +2008,30 @@ sub MATTERDevice_RootCapabilityReport {
             delete $hash->{helper}{seen_clusters}{70};
         }
         my $reported = $supported ? 'true' : 'false';
-        readingsSingleUpdate($hash, 'icd_supported', $reported, 1)
+        MATTERDevice_ReadingsSingleUpdate($hash, 'icd_supported', $reported, 1)
             if ReadingsVal($hash->{NAME}, 'icd_supported', '') ne $reported;
         if (!$supported && exists($hash->{READINGS}{icd_lit_supported})) {
-            readingsSingleUpdate($hash, 'icd_lit_supported', 'false', 1)
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_lit_supported', 'false', 1)
                 if ReadingsVal($hash->{NAME}, 'icd_lit_supported', '') ne 'false';
         }
     } elsif ($cluster == 70 && defined($value) && !ref($value)) {
         if ($attr == 65532 && $value =~ /^\d+$/) {
-            readingsSingleUpdate($hash, 'icd_supported', 'true', 1)
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_supported', 'true', 1)
                 if ReadingsVal($hash->{NAME}, 'icd_supported', '') ne 'true';
             MATTERDevice_RefreshIcdCapability($hash);
         } elsif ($attr == 8 && $value =~ /^(?:0|1)$/) {
             my $mode = $value == 1 ? 'LIT' : 'SIT';
-            readingsSingleUpdate($hash, 'icd_operating_mode', $mode, 1)
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_operating_mode', $mode, 1)
                 if ReadingsVal($hash->{NAME}, 'icd_operating_mode', '') ne $mode;
-            readingsSingleUpdate($hash, 'icd_supported', 'true', 1)
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_supported', 'true', 1)
                 if ReadingsVal($hash->{NAME}, 'icd_supported', '') ne 'true';
         } elsif ($attr == 0 && $value =~ /^\d+$/ && $value <= 4294967295) {
-            readingsSingleUpdate($hash, 'icd_idle_mode_duration', $value, 1)
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_idle_mode_duration', $value, 1)
                 if ReadingsVal($hash->{NAME}, 'icd_idle_mode_duration', '') ne "$value";
         }
     } elsif ($cluster == 40 && $attr == 21 &&
              defined($value) && !ref($value) && $value =~ /^\d+$/) {
-        readingsSingleUpdate($hash, 'specification_version', $value, 1)
+        MATTERDevice_ReadingsSingleUpdate($hash, 'specification_version', $value, 1)
             if ReadingsVal($hash->{NAME}, 'specification_version', '') ne "$value";
         MATTERDevice_RefreshIcdCapability($hash);
     }
@@ -1958,7 +2127,7 @@ sub MATTERDevice_CompleteRequest {
     if ($reading eq 'lastError' || defined $failure) {
         return if !defined($group->{error}) && $group->{remaining};
         my $status = $group->{error} // 'none';
-        readingsSingleUpdate($owner, $reading, $status, 1)
+        MATTERDevice_ReadingsSingleUpdate($owner, $reading, $status, 1)
             if ReadingsVal($owner->{NAME}, $reading, '') ne $status;
     } else {
         MATTERDevice_HandleNodeOperation($owner, $request, $reply);
@@ -2013,7 +2182,7 @@ sub MATTERDevice_SendNodeOperation {
         return $error;
     }
     my $status = $command eq 'check_node_update' ? 'checking' : 'requested';
-    readingsSingleUpdate($hash, $reading, $status, 1)
+    MATTERDevice_ReadingsSingleUpdate($hash, $reading, $status, 1)
         if $hash->{helper}{latest_request}{$reading};
     return undef;
 }
@@ -2066,20 +2235,20 @@ sub MATTERDevice_HandleNodeOperation {
         delete $hash->{helper}{firmware_update_in_flight} if $cmd eq 'update_node';
         if ($cmd eq 'check_node_update') {
             delete $hash->{helper}{firmware_available};
-            readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
         }
-        readingsSingleUpdate($hash, $reading, $error, 1);
+        MATTERDevice_ReadingsSingleUpdate($hash, $reading, $error, 1);
         return;
     }
     if ($cmd =~ /icd/) {
         if ($cmd eq 'resync_icd' && exists($reply->{result}) &&
             !defined($reply->{result})) {
-            readingsSingleUpdate($hash, 'icd_request', 'resync accepted', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_request', 'resync accepted', 1);
             return;
         }
         my $value = $reply->{result};
         unless (ref($value) eq 'HASH' && exists($value->{supported})) {
-            readingsSingleUpdate($hash, 'icd_request', 'invalid response', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_request', 'invalid response', 1);
             return;
         }
         my %fields = (
@@ -2093,47 +2262,47 @@ sub MATTERDevice_HandleNodeOperation {
             next unless exists($value->{$key});
             my $b = MATTERDevice_NormalizeBoolean($value->{$key});
             next unless defined $b;
-            readingsSingleUpdate($hash, $fields{$key},
+            MATTERDevice_ReadingsSingleUpdate($hash, $fields{$key},
                                  $b ? 'true' : 'false', 1);
         }
         if (defined($value->{operating_mode}) && !ref($value->{operating_mode}) &&
             $value->{operating_mode} =~ /^(?:SIT|LIT)$/) {
-            readingsSingleUpdate($hash, 'icd_controller_mode',
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_controller_mode',
                                  $value->{operating_mode}, 1);
         }
         if (defined($value->{next_expected_checkin}) &&
             !ref($value->{next_expected_checkin}) &&
             $value->{next_expected_checkin} =~ /^\d+$/) {
-            readingsSingleUpdate($hash, 'icd_next_expected_checkin_ms',
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_next_expected_checkin_ms',
                                  $value->{next_expected_checkin}, 1);
         }
-        readingsSingleUpdate($hash, 'icd_request', 'completed', 1);
+        MATTERDevice_ReadingsSingleUpdate($hash, 'icd_request', 'completed', 1);
     } elsif ($cmd eq 'check_node_update') {
         my $update = $reply->{result};
         if (!defined($update) && exists($reply->{result})) {
             delete $hash->{helper}{firmware_available};
-            readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
-            readingsSingleUpdate($hash, 'firmware_update', 'none reported', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', 'none reported', 1);
         } elsif ($hash->{helper}{seen_clusters}{42} &&
                  defined(MATTERDevice_OtaVersion($update))) {
             my $current = ReadingsVal($hash->{NAME}, 'software_version', undef);
             if (defined($current) && $current =~ /^\d+$/ &&
                 $update->{software_version} <= $current) {
                 delete $hash->{helper}{firmware_available};
-                readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
-                readingsSingleUpdate($hash, 'firmware_update', 'up to date', 1);
+                MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
+                MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', 'up to date', 1);
                 return;
             }
             $hash->{helper}{firmware_available} = $update->{software_version};
             my $label = $update->{software_version_string};
             $label = $update->{software_version}
                 unless defined($label) && !ref($label) && length($label) <= 80;
-            readingsSingleUpdate($hash, 'firmware_update_version', $label, 1);
-            readingsSingleUpdate($hash, 'firmware_update', 'available', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update_version', $label, 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', 'available', 1);
         } else {
             delete $hash->{helper}{firmware_available};
-            readingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
-            readingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
         }
     } elsif ($cmd eq 'update_node') {
         my $result = $reply->{result};
@@ -2142,11 +2311,11 @@ sub MATTERDevice_HandleNodeOperation {
         if (defined($target) && exists($reply->{result}) &&
             (!defined($result) || (defined($version) && $version == $target))) {
             my $status = ReadingsVal($hash->{NAME}, 'firmware_update', '');
-            readingsSingleUpdate($hash, 'firmware_update', 'update requested', 1)
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', 'update requested', 1)
                 if $status eq 'requested' || $status eq 'available';
         } else {
             delete $hash->{helper}{firmware_update_in_flight};
-            readingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
         }
     }
 }
@@ -2203,9 +2372,9 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
                      6 => 'waiting to install', 7 => 'rolling back',
                      8 => 'waiting for confirmation');
         if (exists($state{$value})) {
-            readingsSingleUpdate($hash, 'ota_update_state', $state{$value}, 1)
+            MATTERDevice_ReadingsSingleUpdate($hash, 'ota_update_state', $state{$value}, 1)
                 if ReadingsVal($name, 'ota_update_state', '') ne $state{$value};
-            readingsSingleUpdate($hash, 'firmware_update', $state{$value}, 1)
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', $state{$value}, 1)
                 if defined($hash->{helper}{firmware_update_in_flight}) && $value >= 2;
         }
     }
@@ -2218,7 +2387,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
             # Keep correlation, but a later server reply must not overwrite
             # the physical confirmation for this installation.
             delete $hash->{helper}{latest_request}{firmware_update};
-            readingsSingleUpdate($hash, 'firmware_update', 'installed', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', 'installed', 1);
         }
     }
 
@@ -2228,7 +2397,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         $value =~ /^\d+$/ && $value <= 100 &&
         defined($hash->{helper}{firmware_update_in_flight})) {
         my $state = ReadingsVal($name, 'ota_update_state', '');
-        readingsSingleUpdate($hash, 'firmware_update',
+        MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update',
                              "$state $value%", 1)
             if $state eq 'downloading' || $state eq 'installing';
     }
@@ -2247,7 +2416,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     # regular FHEM readings survive a restart through the statefile/configDB.
     if ($cluster_id == 0x001D && $attr_id == 0x0000) {
         if (ReadingsVal($name, 'device_type_ids', '') ne $value) {
-            readingsSingleUpdate($hash, 'device_type_ids', $value, 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'device_type_ids', $value, 1);
             MATTERDevice_EnsureTypeGroup($hash);
         }
         return;
@@ -2255,7 +2424,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     if (($hash->{endpoint_id} // 0) == 0 &&
         $cluster_id == 0x0033 && $attr_id == 0) {
         my $type = $value;
-        readingsSingleUpdate($hash, 'networkType', $type, 1)
+        MATTERDevice_ReadingsSingleUpdate($hash, 'networkType', $type, 1)
             if defined($type) && ReadingsVal($name, 'networkType', '') ne $type;
         return;
     }
@@ -2314,7 +2483,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     }
 
 
-    readingsEndUpdate($hash, 1);
+    MATTERDevice_ReadingsEndUpdate($hash, 1);
     # Model on endpoint 0 identifies the physical node, not a single function.
     MATTERDevice_SyncNodeReadings($hash) if $model_changed;
 }
@@ -2500,7 +2669,7 @@ sub MATTERDevice_ProcessMessage {
                      $count == 3 ? 'triple' : $count . 'x';
         }
         return unless defined $value;
-        readingsSingleUpdate($child, 'button', $value, 0);
+        MATTERDevice_ReadingsSingleUpdate($child, 'button', $value, 0);
         DoTrigger($child->{NAME}, "button: $value");
         return;
     }
@@ -2786,7 +2955,7 @@ sub MATTERDevice_SyncNodeReadings($;$) {
         next unless @changes;
         readingsBeginUpdate($child);
         readingsBulkUpdate($child, $_->[0], $_->[1]) foreach @changes;
-        readingsEndUpdate($child, 1);
+        MATTERDevice_ReadingsEndUpdate($child, 1);
     }
 }
 
@@ -2990,8 +3159,9 @@ trigger automatic recovery: at most three event-driven attempts, at least
 Matter metadata; a normal explicit <code>getConfig</code> is not restricted to
 metadata. FHEM trusts the server's online data model; it does not establish an
 independent freshness guarantee for every reported attribute.
-Real FHEM/configDB restart integration is <strong>untested</strong>;
-automated tests model reading restoration.</p></li>
+Process restart/configDB integration is <strong>untested</strong>. The display
+integration suite executes actual save/rereadcfg statefile loading; the
+existing sensor lifecycle suite models restoration.</p></li>
   <li><b>Root state:</b> Without a <code>stateFormat</code> attribute, the root's
       <code>state</code> reading shows <code>online</code> or <code>offline</code>
       only after valid <code>available=true/false</code> from the server,
@@ -3117,6 +3287,49 @@ as described below.</p>
       Adds no polling; disabling retains existing readings. Hardware
       validation: <strong>untested</strong>.</li>
 </ul>
+<h4>Default endpoint display (hardware untested)</h4>
+<p>Endpoints greater than 0 derive their <code>STATE</code> display from
+persisted <code>device_type_ids</code> and their own existing readings. No
+<code>stateFormat</code> attribute or redundant <code>state</code> reading is
+created. An explicit <code>stateFormat</code> always wins; deleting it restores
+the default. The default is recomputed after statefile restoration and on
+module reading updates. Missing data is <code>unknown</code>, valid zero is
+retained, and invalid reports preserve the last valid values. Offline/disable
+retain existing values; root reachability remains separate. No polling or
+extra Matter requests are used.</p>
+<ul>
+<li>Lights/plugs, contacts, motion, leaks and rain retain their physical
+<code>state</code>. A plug's electrical readings do not replace its on/off display.</li>
+<li>Temperature/humidity/pressure/illuminance use their existing readings and
+units; a combined temperature/humidity endpoint shows both, for example
+<code>22.34 °C / 48 %</code>, with <code>unknown</code> for missing components.</li>
+<li>Door locks display <code>lock_state</code> as not_fully_locked, locked,
+unlocked or unlatched, distinct from the door contact. Coverings show current
+lift/tilt percentages in the reported Matter direction (0 open, 100 closed),
+then raw absolute positions explicitly labelled raw if necessary, otherwise
+reported stopped/opening/closing status. Targets are not current positions.</li>
+<li>Thermostats show reported mode, measured temperature and the heating/cooling
+setpoints appropriate to that mode; auto shows both. Fans show reported
+fan_mode and actual fan_pct, never the requested percent as an actual value.</li>
+<li>Smoke/CO alarms display the reported ExpressedState, including testing,
+battery/fault/end-of-service and interconnect states. Air-quality sensors use
+the reported qualitative value or CO2/PM2.5/TVOC readings with their reported
+units; missing units remain unknown. No local alarm or air-quality evaluation
+is inferred. Electrical sensors prefer power (W), then energy (kWh), voltage
+(V) and current (A).</li>
+<li>Switch/button endpoints show their own last event as <code>last: short</code>
+etc.; repeats still emit separate button events. Controller types are not
+assumed to be lamps. On/Off sensors use their own reported state or a neutral
+boolean 0/1. Structural and unknown types retain an existing state or show
+unknown; Flow Sensor 0x0306 currently has only a label and shows unknown.</li>
+</ul>
+<p>For multi-type endpoints priority is alarm, leak, rain, lock, covering,
+thermostat, fan, lights/plugs, contact, occupancy, On/Off sensor, buttons,
+air quality, electrical, temperature/humidity, pressure, illumination, flow.
+Structural companions do not participate. Missing primary data never switches
+to a lower-priority type. All new display classes remain <strong>hardware
+untested</strong>; actual local FHEM/FHEMWEB tests use synthetic reports.</p>
+
 <h4>Device-limit readings and upgrade from V0.20</h4>
 <p>The following ordinary readings are populated from accepted device reports
 or snapshots, independently for each endpoint. They survive normal FHEM
@@ -3399,9 +3612,10 @@ ereignisgesteuerte Versuche mit mindestens 15 Sekunden Abstand, ohne Polling.
 Diese automatischen Antworten übernehmen nur globale Matter-Metadaten;
 ein normales explizites <code>getConfig</code> ist darauf nicht eingeschränkt.
 FHEM übernimmt das Online-Datenmodell des Servers und behauptet keine eigene
-Frischegarantie für jedes einzelne Attribut. Echte FHEM-/configDB-Neustarts
-sind <strong>ungetestet</strong>; automatisierte Tests modellieren die
-Reading-Wiederherstellung.</p></li>
+Frischegarantie für jedes einzelne Attribut. Prozess-/configDB-Neustarts
+sind <strong>ungetestet</strong>. Der Anzeige-Integrationstest führt echtes
+save/rereadcfg mit Statefile aus; die bisherige Sensor-Lifecycle-Suite
+modelliert die Wiederherstellung.</p></li>
   <li><b>Root-Status:</b> Ohne <code>stateFormat</code>-Attribut zeigt das
       <code>state</code>-Reading am Root <code>online</code> oder
       <code>offline</code> nur nach einer gültigen <code>available=true/false</code>-
@@ -3534,6 +3748,53 @@ vor dem Neustart mit V0.21 wie unten beschrieben entfernen.</p>
       Logs sichtbar machen. Kein Polling; Abschalten erhält vorhandene Readings.
       Hardwarestatus: <strong>ungetestet</strong>.</li>
 </ul>
+<h4>Standardanzeige der Endpunkte (Hardware ungetestet)</h4>
+<p>Endpunkte größer 0 leiten ihre <code>STATE</code>-Anzeige aus den gespeicherten
+<code>device_type_ids</code> und ihren eigenen vorhandenen Readings ab. Es werden
+weder ein <code>stateFormat</code>-Attribut noch redundante <code>state</code>-
+Readings angelegt. Ein ausdrücklich gesetztes <code>stateFormat</code> hat
+Vorrang; Löschen stellt den Standard wieder her. Die Anzeige wird nach der
+Statefile-Wiederherstellung und bei Reading-Updates des Moduls berechnet.
+Fehlende Daten bleiben <code>unknown</code>, eine gültige Null bleibt Null,
+ungültige Meldungen erhalten die letzten gültigen Werte. Offline/disable
+behalten vorhandene Werte; die Root-Erreichbarkeit bleibt getrennt. Kein
+Polling und keine zusätzlichen Matter-Abfragen.</p>
+<ul>
+<li>Leuchten/Steckdosen, Kontakte, Bewegung, Wasserleck und Regen behalten ihr
+physisches <code>state</code>. Elektrische Messwerte einer Steckdose verdrängen
+nicht ihre on/off-Anzeige.</li>
+<li>Temperatur/Feuchte/Druck/Helligkeit verwenden die bestehenden Readings mit
+Einheiten. Ein kombinierter Temperatur-/Feuchte-Endpunkt zeigt beide Werte,
+etwa <code>22.34 °C / 48 %</code>; fehlende Komponenten bleiben unknown.</li>
+<li>Türschlösser zeigen <code>lock_state</code> als not_fully_locked, locked,
+unlocked oder unlatched, getrennt vom Türkontakt. Jalousien zeigen gemeldete
+aktuelle Lift-/Tilt-Prozentwerte in Matter-Richtung (0 offen, 100 geschlossen),
+ersatzweise absolute Rohpositionen ausdrücklich mit raw, sonst den gemeldeten
+Status stopped/opening/closing. Zielpositionen sind keine Istpositionen.</li>
+<li>Thermostate zeigen gemeldeten Modus, Isttemperatur und die zum Modus passenden
+Heiz-/Kühlsollwerte, bei auto beide. Lüfter zeigen fan_mode und gemeldetes
+fan_pct; der angeforderte Soll-Prozentwert ersetzt keinen Istwert.</li>
+<li>Rauch-/CO-Melder zeigen den gemeldeten ExpressedState einschließlich Test,
+Batterie-/Fehler-/Lebensdauer- und Interconnect-Zuständen. Luftqualität verwendet
+den gemeldeten qualitativen Wert, ersatzweise CO2/PM2.5/TVOC mit den gemeldeten
+Einheiten; fehlende Einheiten bleiben unknown. Keine eigene Alarm- oder
+Luftqualitätsbewertung. Elektrische Sensoren bevorzugen Leistung (W), danach
+Energie (kWh), Spannung (V) und Strom (A).</li>
+<li>Taster zeigen das eigene letzte Ereignis, z. B. <code>last: short</code>;
+Wiederholungen bleiben separate button-Events. Steuergeräte werden nicht als
+Leuchten behandelt. On/Off-Sensoren verwenden ihren eigenen gemeldeten state
+oder neutral 0/1. Strukturelle und unbekannte Typen behalten vorhandenes state
+oder zeigen unknown; Flow Sensor 0x0306 besitzt bisher nur einen Typnamen und
+zeigt unknown.</li>
+</ul>
+<p>Bei mehreren Typen gilt: Alarm, Wasserleck, Regen, Schloss, Jalousie,
+Thermostat, Lüfter, Leuchten/Steckdosen, Kontakt, Belegung, On/Off-Sensor,
+Taster, Luftqualität, elektrisch, Temperatur/Feuchte, Druck, Helligkeit,
+Durchfluss. Strukturelle Begleittypen zählen nicht. Fehlende Hauptdaten führen
+nicht zur Anzeige eines niedriger priorisierten Typs. Alle neuen
+Anzeigeklassen sind <strong>Hardware-ungetestet</strong>; die lokale Prüfung
+mit echtem FHEM/FHEMWEB verwendet synthetische Meldungen.</p>
+
 <h4>Gerätegrenzen als Readings und Umstieg von V0.20</h4>
 <p>Die folgenden normalen Readings entstehen aus akzeptierten Gerätemeldungen
 oder Snapshots, getrennt je Endpunkt. Sie überstehen die normale FHEM-
