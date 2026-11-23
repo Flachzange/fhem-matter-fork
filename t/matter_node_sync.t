@@ -154,6 +154,10 @@ sub CommandDeleteAttr {
         my $error = MATTER_Attr('del', $name, $key, undef);
         return $error if defined($error);
     }
+    if ($defs{$name}{TYPE} eq 'MATTERDevice') {
+        my $error = MATTERDevice_Attr('del', $name, $key, undef);
+        return $error if defined($error);
+    }
     delete $attr{$name}{$key};
     return undef;
 }
@@ -4813,6 +4817,175 @@ subtest 'Issue 34: native dim variants, latest command replies and lifecycle' =>
     MATTER_Close($io);
     like(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'dim_stop') // '', qr/No active WebSocket/, 'disconnected Stop is rejected instead of pretending to stop');
     MATTER_Close($other);
+};
+
+subtest 'Issue 77: readOnly blocks control while reads and reports stay active' => sub {
+    my @sent;
+    my @peers;
+    my @ios;
+    my $values = {
+        '1/6/65529' => [0,1,2,64,65,66], '1/6/65532' => 1, '1/6/0' => JSON::false,
+        '1/8/65529' => [0,1,2,3,4,5,6,7,8], '1/8/65532' => 7, '1/8/0' => 100,
+        '1/768/65529' => [6,7,10], '1/768/65532' => 25,
+        '2/258/65529' => [0,1,2,5,8], '2/258/65532' => 23,
+        '3/257/65529' => [0,1],
+        '4/513/65531' => [17,18,27,28], '4/513/65532' => 3, '4/513/27' => 4,
+        '4/513/17' => 2600, '4/513/18' => 2100, '4/513/28' => 4,
+        '5/514/65531' => [0,1,2,3], '5/514/65532' => 2, '5/514/1' => 2,
+        '5/514/0' => 3, '5/514/2' => 50, '5/514/3' => 40,
+        '6/3/65529' => [0],
+    };
+    for my $name (qw(readOnlyIO readOnlyOtherIO)) {
+        socketpair(my $socket, my $peer, AF_UNIX, SOCK_STREAM, PF_UNSPEC) or die 'readOnly socketpair';
+        push @peers, $peer;
+        my $io = $defs{$name} = {NAME => $name, TYPE => 'MATTER', READINGS => {},
+            CD => $socket, websocket => 1, ws_status => 'connected', helper => {}};
+        $io->{test_send_text} = sub {push @sent, JSON::decode_json($_[0]); 1};
+        push @ios, $io;
+        MATTER_ProcessNode($io, {node_id => 7700, name => $name, available => JSON::true,
+            attributes => $values});
+    }
+    my ($io, $other) = @ios;
+    my $root = MATTERDevice_LookupRoot($io, 7700);
+    my %ep = map {$_->{endpoint_id} => $_} MATTERDevice_NodeChildren($root);
+    my $device = $ep{1};
+    my $name = $device->{NAME};
+    my @normal = MATTERDevice_GetSetList($device);
+    my $reply = sub {
+        my ($id, %body) = @_;
+        MATTER_ParseMessage($io, encode_json({message_id => $id, %body}));
+    };
+    my $send = sub {
+        my ($target, $cmd, @args) = @_;
+        my @result = MATTERDevice_Set($target, $target->{NAME}, $cmd, @args);
+        is_deeply(\@result, [undef, 1], "$cmd accepted with asynchronous return");
+        return $sent[-1]{message_id};
+    };
+    my $inflight = $send->($device, 'on');
+    is(CommandAttr(undef, "$name readOnly 1"), undef, 'declared readOnly attribute is accepted');
+    is(CommandAttr(undef, "$name readOnly 1"), undef, 'repeated locking is harmless');
+    like(CommandAttr(undef, "$name readOnly invalid") // '', qr/must be 0 or 1/,
+         'invalid value is rejected without unlocking');
+    like(CommandAttr(undef, "$root->{NAME} readOnly 1") // '', qr/only supported on endpoints/,
+         'root cannot advertise a node-wide protection it does not implement');
+    ok(!exists($attr{$root->{NAME}}{readOnly}), 'root rejection leaves its attributes unchanged');
+    my $before_toggle = scalar @sent;
+    for my $target (values %ep) {
+        is(CommandAttr(undef, "$target->{NAME} readOnly 1"), undef, 'lock each functional endpoint');
+        is_deeply([MATTERDevice_GetSetList($target)], ['getConfig:noArg'],
+                  'dynamic set list retains only the permitted read');
+    }
+    is(scalar @sent, $before_toggle, 'attribute changes send no commands or reads');
+    like(MATTERDevice_Set($device, $name, '?'), qr/choose one of getConfig:noArg\z/,
+         'FHEMWEB query offers only getConfig');
+
+    # Exercise every existing setter family through SetFn in FHEM list context.
+    # fhem.pl DoSet returns a nonempty error before its synthetic DoTrigger.
+    for my $case (
+        [1,'on'], [1,'off'], [1,'toggle'], [1,'off_with_effect','DelayedAllOff,NoFade'],
+        [1,'on_with_recall_global_scene'], [1,'on_with_timed_off','0,10,0'],
+        [1,'brightness',120], [1,'pct',0], [1,'rgb','800000'], [1,'ct',300], [1,'frequency',100],
+        [1,'dim_up'], [1,'dim_down'], [1,'dim_step_up'], [1,'dim_step_down'], [1,'dim_stop'],
+        [2,'on'], [2,'off'], [2,'pct',50], [2,'tilt',25], [2,'stop'],
+        [3,'lock'], [3,'unlock'], [4,'desired-temp',22], [4,'desired-temp-cool',25],
+        [4,'mode','cool'], [5,'fan_mode','low'], [5,'fan_pct',60], [6,'identify']) {
+        my ($endpoint, $cmd, @args) = @$case;
+        my $target = $ep{$endpoint};
+        my $readings = encode_json($target->{READINGS});
+        my $before = scalar @sent;
+        my $pending = scalar keys %{$io->{helper}{pending_command}};
+        my $next_id = $io->{helper}{next_message_id};
+        my @result = MATTERDevice_Set($target, $target->{NAME}, $cmd, @args);
+        like($result[0] // '', qr/readOnly=1.*blocked/, "$cmd returns explicit protection error");
+        is(scalar @sent, $before, "$cmd sends nothing");
+        is(scalar(keys %{$io->{helper}{pending_command}}), $pending, "$cmd registers no request");
+        is($io->{helper}{next_message_id}, $next_id, "$cmd allocates no ID");
+        is_deeply($target->{READINGS}, JSON::decode_json($readings), "$cmd changes no reading or timestamp");
+    }
+    # Internal callers must not bypass the UI/SetFn policy, including writes
+    # and multi-request RGB-style operations.
+    for my $requests (
+        [MATTERDevice_CommandRequest($device, 6, 'Off')],
+        [{command => 'write_attribute', args => {node_id => 7700, attribute_path => '1/6/0', value => 0}}],
+        [MATTERDevice_CommandRequest($device, 8, 'MoveToLevel'), MATTERDevice_CommandRequest($device, 768, 'MoveToColor')]) {
+        my $before = scalar @sent;
+        like(MATTERDevice_SendRequests($device, $requests, 'lastError', 120) // '',
+             qr/readOnly=1.*blocked/, 'common sender enforces policy for internal callers');
+        is(scalar @sent, $before, 'internal call sends no component');
+        ok(!grep({exists $_->{message_id}} @$requests), 'blocked payloads acquire no request IDs');
+    }
+    $reply->($inflight, result => undef);
+    is(ReadingsVal($name, 'lastError', ''), 'none', 'previously sent request completes while locked');
+    ok(!keys %{$io->{helper}{pending_command}}, 'completion retires the old request');
+
+    my $received = $device->{MSGCNT};
+    MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [7700, '1/6/0', JSON::true]}));
+    is(ReadingsVal($name, 'state', ''), 'on', 'live state continues while locked');
+    ok($device->{MSGCNT} > $received, 'receive internals continue while locked');
+    my $events = scalar @direct_events;
+    MATTER_ParseMessage($io, encode_json({event => 'node_event', data => {
+        node_id => 7700, endpoint_id => 1, cluster_id => 59, event_id => 1}}));
+    is(scalar @direct_events, $events + 1, 'button events continue while locked');
+    MATTER_ProcessNode($io, {node_id => 7700, available => JSON::true,
+        attributes => {'0/40/3' => 'Updated model', '1/6/0' => JSON::false}});
+    is(ReadingsVal($name, 'state', ''), 'off', 'discovery snapshot continues while locked');
+    is(ReadingsVal($name, 'model', ''), 'Updated model', 'root metadata still mirrors to locked endpoint');
+
+    is(MATTERDevice_Set($device, $name, 'getConfig'), undef, 'explicit getConfig stays allowed');
+    $reply->($sent[-1]{message_id}, result => {'1/6/0' => JSON::true, '1/6/65529' => [0]});
+    is(ReadingsVal($name, 'state', ''), 'on', 'getConfig still updates physical values');
+    ok(!MATTERDevice_CommandAccepted($device, 6, 1), 'getConfig still revokes removed commands');
+    my ($metadata_id, $metadata_error) = MATTERDevice_RequestCapabilityRefresh($root);
+    is($metadata_error, undef, 'automatic metadata read remains permitted');
+    $reply->($metadata_id, result => {'1/6/65529' => [0,1,2]});
+    ok(MATTERDevice_CommandAccepted($device, 6, 1), 'automatic metadata reply updates locked capability cache');
+    is_deeply([MATTERDevice_GetSetList($device)], ['getConfig:noArg'], 'new capabilities do not bypass protection');
+
+    my $before_unlock = scalar @sent;
+    is(CommandAttr(undef, "$ep{2}{NAME} readOnly 0"), undef, 'unlock sibling');
+    my $sibling_id = $send->($ep{2}, 'off');
+    $reply->($sibling_id, result => undef);
+    my $other_root = MATTERDevice_LookupRoot($other, 7700);
+    my ($other_ep) = grep {$_->{endpoint_id} == 1} MATTERDevice_NodeChildren($other_root);
+    $send->($other_ep, 'off');
+    is(scalar @sent, $before_unlock + 2, 'sibling and same node on another IO remain controllable');
+
+    my @timers_before = @timers;
+    for my $event (qw(INITIALIZED REREADCFG)) {
+        $device->{helper} = {}; # model restored public attributes with fresh transient metadata
+        MATTERDevice_Notify($root, {NAME => 'global', CHANGED => [$event]});
+        MATTERDevice_Notify($device, {NAME => 'global', CHANGED => [$event]});
+        MATTER_ProcessNode($io, {node_id => 7700, available => JSON::true, attributes => $values});
+        like(MATTERDevice_Set($device, $name, 'off') // '', qr/readOnly=1/,
+             "$event cannot unlock the restored readOnly attribute");
+    }
+    my $before = scalar @sent;
+    is(CommandAttr(undef, "$name readOnly 0"), undef, 'zero unlocks immediately');
+    is_deeply([MATTERDevice_GetSetList($device)], \@normal, 'current capabilities restore the original controls');
+    is(CommandAttr(undef, "$name readOnly 0"), undef, 'repeated zero is harmless');
+    is(CommandAttr(undef, "$name readOnly 1"), undef, 'lock again for deletion check');
+    is(CommandDeleteAttr(undef, "$name readOnly"), undef, 'deleting the attribute unlocks');
+    is_deeply([MATTERDevice_GetSetList($device)], \@normal, 'deletion preserves capabilities');
+    is(scalar @sent, $before, 'unlocking does not probe or replay blocked commands');
+    is_deeply(\@timers, \@timers_before, 'readOnly adds no timers');
+    my $off = $send->($device, 'off');
+    $reply->($off, result => undef);
+
+    # A synchronous result/notify may lock the endpoint during a compound send.
+    $io->{test_send_text} = sub {
+        my $request = JSON::decode_json($_[0]); push @sent, $request;
+        $reply->($request->{message_id}, result => undef);
+        CommandAttr(undef, "$name readOnly 1");
+        return 1;
+    };
+    $before = scalar @sent;
+    like(MATTERDevice_Set($device, $name, 'rgb', '800080') // '', qr/readOnly=1/,
+         'mid-send locking reports the unsent compound remainder');
+    is(scalar @sent, $before + 1, 'no second RGB component after synchronous locking');
+    ok(!keys %{$io->{helper}{pending_command}}, 'unsent compound remainder leaves no pending request');
+    ok(!exists($device->{helper}{latest_request}{lastError}), 'compound result group is retired');
+    like(ReadingsVal($name, 'lastError', ''), qr/readOnly=1/, 'partial operation reports protection failure');
+    close $_ for @peers;
 };
 
 subtest 'Shared device requests: all setters, independent replies and grouped results' => sub {

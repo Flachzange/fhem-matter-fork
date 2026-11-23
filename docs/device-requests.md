@@ -23,6 +23,36 @@ credentials retain their own established request contracts.
 
 ## Ownership, parallel requests and diagnostics
 
+### Endpoint readOnly control protection (V0.38, #77)
+
+`readOnly=1` is a local policy for endpoints greater than 0. A single policy
+check supplies the direct SetFn error, the restricted dynamic set list and the
+shared sender guard. The sender checks before allocating IDs and before each
+component send: a synchronous reply/notify can enable protection during RGB.
+An initially blocked invocation leaves readings and request state unchanged.
+If a component was already sent, the ordinary group completion reports the
+unsent remainder as failed and retains correlation of any outstanding part.
+
+No capability, availability, receive or completion gate is added. Explicit
+getConfig and automatic metadata reads retain their separate paths; normal
+reports/events and results of previously sent commands continue. Unlocking
+needs no read, replay, timer or transient mode state. Roots reject the attribute.
+This does not implement endpoint disable (#78) or restrict root administration,
+other controllers, direct server access or physical controls.
+
+FHEM `DoSet` calls SetFn in list context and returns a nonempty error before
+synthesizing a command event. `CommandAttr`/`CommandDeleteAttr` call AttrFn
+before changing the attribute map; readOnly validation has no side effects.
+Inspected 2026-11-23 in
+[fhem.pl](https://github.com/fhem/fhem-mirror/blob/main/fhem/fhem.pl),
+Git blob `07b16fbc7fc14fe95553b1b365f5bdb398220817`.
+The #77 regression covers every current setter family, internal command/write
+callers, compound send reentry, reads, live/snapshot/button reception, prior
+completions, modeled attribute restoration and endpoint/multi-IO isolation.
+Live FHEM/configDB and hardware validation remain **ungetestet / untested**.
+
+### Correlation and results
+
 Every API request has a unique connection-scoped message_id. Its pending
 entry retains the owner hash, FUUID, node, endpoint, API operation, write path,
 status reading, start time and timeout. Completion checks that the hash is
