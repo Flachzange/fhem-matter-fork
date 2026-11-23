@@ -553,20 +553,36 @@ sub MATTERDevice_InvalidateIdentity {
             readingsDelete($hash, $attribute->{name}) if $attribute->{limit_range};
         }
     }
+    MATTERDevice_CancelRequests($hash);
+}
+
+# Cancel owner requests and exclude an endpoint from older shared responses.
+# Used for disable transitions, identity changes and Undef; no new generation.
+sub MATTERDevice_CancelRequests {
+    my ($hash) = @_;
+    delete $hash->{helper}{latest_request};
     my $io = $hash->{IODev};
     return unless $io;
+    my ($node, $ep) = @{$hash}{qw(node_id endpoint_id)};
     for my $id (keys %{$io->{helper}{pending_command} // {}}) {
         my $request = $io->{helper}{pending_command}{$id};
-        delete $io->{helper}{pending_command}{$id}
-            if ref($request) eq 'HASH' && ($request->{owner} // '') eq $hash;
+        if (ref($request) eq 'HASH') {
+            delete $io->{helper}{pending_command}{$id}
+                if ($request->{owner} // '') eq $hash;
+        } elsif ($ep > 0 && ($request eq 'get_nodes' || $request eq 'start_listening')) {
+            $io->{helper}{pending_snapshot_touched}{$id}{$node}{excluded_endpoints}{$ep} = 1;
+        }
     }
     for my $id (keys %{$io->{helper}{pending_config} // {}}) {
         my $request = $io->{helper}{pending_config}{$id};
-        next unless ref($request) eq 'HASH' && $request->{node_id} eq $hash->{node_id};
-        delete $io->{helper}{pending_config}{$id}
-            if ($hash->{endpoint_id} // 0) == 0
-                ? ($request->{root_fuuid} // '') eq ($hash->{FUUID} // '')
-                : ($request->{endpoint_id} // -1) == $hash->{endpoint_id};
+        next unless ref($request) eq 'HASH' && $request->{node_id} eq $node;
+        if (($request->{owner} // '') eq $hash ||
+            ($ep == 0 && ($request->{root_fuuid} // '') eq ($hash->{FUUID} // '')) ||
+            ($ep > 0 && !exists($request->{owner}) && ($request->{endpoint_id} // -1) == $ep)) {
+            delete $io->{helper}{pending_config}{$id};
+        } elsif ($ep > 0) {
+            $request->{excluded_endpoints}{$ep} = 1;
+        }
     }
 }
 
@@ -765,28 +781,7 @@ sub MATTERDevice_Attr {
         }
         # Cancel on both edges: shared reads may also have started while the
         # endpoint was disabled. No persistent request generation is needed.
-        delete $hash->{helper}{latest_request};
-        my $io = $hash->{IODev};
-        return undef unless $io;
-        my ($node, $ep) = @{$hash}{qw(node_id endpoint_id)};
-        for my $id (keys %{$io->{helper}{pending_command} // {}}) {
-            my $request = $io->{helper}{pending_command}{$id};
-            if (ref($request) eq 'HASH') {
-                delete $io->{helper}{pending_command}{$id}
-                    if ($request->{owner} // '') eq $hash;
-            } elsif ($request eq 'get_nodes' || $request eq 'start_listening') {
-                $io->{helper}{pending_snapshot_touched}{$id}{$node}{excluded_endpoints}{$ep} = 1;
-            }
-        }
-        for my $id (keys %{$io->{helper}{pending_config} // {}}) {
-            my $request = $io->{helper}{pending_config}{$id};
-            next unless ref($request) eq 'HASH' && $request->{node_id} eq $node;
-            if (($request->{endpoint_id} // -1) == $ep) {
-                delete $io->{helper}{pending_config}{$id};
-            } else {
-                $request->{excluded_endpoints}{$ep} = 1;
-            }
-        }
+        MATTERDevice_CancelRequests($hash);
         return undef;
     }
     return unless $op eq 'set' && $attr eq 'IODev';
@@ -924,6 +919,7 @@ sub MATTERDevice_Define($$) {
 
 sub MATTERDevice_Undef($$) {
 my ($hash, $arg) = @_;
+    MATTERDevice_CancelRequests($hash);
     if (($hash->{node_id}) && ($hash->{endpoint_id} == 0)) {
         my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
         my $key = "$io_name:$hash->{node_id}";
@@ -1574,6 +1570,7 @@ sub MATTERDevice_Set($$@) {
             $pending_reads->{$msg_id} = {
                 node_id => $node_id,
                 endpoint_id => int($endpoint_id),
+                owner => $hash, fuuid => $hash->{FUUID},
                 root_fuuid => $root ? $root->{FUUID} : undef,
                 availability_epoch => $root ?
                     ($root->{helper}{availability_epoch} // 0) : 0,
@@ -1859,17 +1856,25 @@ sub MATTERDevice_SendRequests {
     return undef;
 }
 
-# One completion path for replies, timeout and disconnect. Every request is
-# retired independently; only the latest setter may update its status reading.
-sub MATTERDevice_CompleteRequest {
-    my ($io, $request, $reply, $failure) = @_;
+# Stable ownership shared by command completion and explicit read replies.
+sub MATTERDevice_RequestOwner {
+    my ($io, $request) = @_;
     my $owner = $request->{owner};
-    return unless $owner && ($defs{$owner->{NAME}} // '') eq $owner &&
+    return undef unless $owner && ($defs{$owner->{NAME}} // '') eq $owner &&
         ($owner->{TYPE} // '') eq 'MATTERDevice' &&
         ($owner->{FUUID} // '') eq ($request->{fuuid} // '') &&
         ($owner->{node_id} // '') eq ($request->{node_id} // '') &&
         ($owner->{endpoint_id} // 0) == $request->{endpoint_id} &&
         $owner->{IODev} && $owner->{IODev} eq $io;
+    return $owner;
+}
+
+# One completion path for replies, timeout and disconnect. Every request is
+# retired independently; only the latest setter may update its status reading.
+sub MATTERDevice_CompleteRequest {
+    my ($io, $request, $reply, $failure) = @_;
+    my $owner = MATTERDevice_RequestOwner($io, $request);
+    return unless $owner;
     if (defined $reply) {
         my $received = {};
         MATTERDevice_RecordReceive(MATTERDevice_LookupRoot($io, $request->{node_id}), $received);
@@ -2345,6 +2350,8 @@ sub MATTERDevice_ProcessMessage {
     # Hilfs-Subroutine zur internen Weiterleitung an Root oder Child
     my $route_attribute = sub {
         my ($ep, $cluster, $attr, $val) = @_;
+        return if $received->{request} &&
+            !MATTERDevice_RequestOwner(@{$received->{request}});
         MATTERDevice_RecordReceive($hash, $received) if $ep == $my_endpoint;
         # Offline snapshots can still tell us which endpoint IDs exist.
         # Preserve FHEM identity/association without importing device data.
@@ -2943,7 +2950,7 @@ not permission to import data.
 including the attributes carried by that same <code>node_updated</code>.
 No separate per-attribute report is required. Explicit <code>getConfig</code>
 replies may update physical values and capability metadata while online.
-Responses from earlier availability epochs or replaced roots are rejected.
+Responses from earlier availability epochs or replaced roots are rejected. Explicit reads additionally verify the requesting FHEM instance and endpoint; a replacement cannot inherit its response, while rename remains supported.
 Newer values from <code>attribute_updated</code> and <code>node_updated</code> take precedence per attribute path over older discovery/read results.</p>
 <p>After a known offline/online transition, only missing command metadata may
 trigger automatic recovery: at most three event-driven attempts, at least
@@ -3352,7 +3359,7 @@ einschließlich der Werte derselben <code>node_updated</code>-Meldung. Ein
 zusätzlicher Report pro Attribut ist nicht erforderlich. Explizites
 <code>getConfig</code> darf online Gerätewerte und Capability-Metadaten aktualisieren.
 Antworten aus früheren Availability-Zyklen oder für ersetzte Roots werden
-verworfen. Neuere Werte aus <code>attribute_updated</code> und <code>node_updated</code> haben je Attributpfad Vorrang vor älteren Discovery-/Leseantworten.</p>
+verworfen. Explizite Reads prüfen zusätzlich die anfragende FHEM-Instanz und den Endpoint; Ersatzgeräte übernehmen deren Antworten nicht, Rename derselben Instanz bleibt unterstützt. Neuere Werte aus <code>attribute_updated</code> und <code>node_updated</code> haben je Attributpfad Vorrang vor älteren Discovery-/Leseantworten.</p>
 <p>Nach einem bekannten Offline-/Online-Wechsel kann ausschließlich fehlende
 Befehlsmetadaten-Recovery automatisch ausgelöst werden: höchstens drei
 ereignisgesteuerte Versuche mit mindestens 15 Sekunden Abstand, ohne Polling.

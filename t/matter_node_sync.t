@@ -5775,4 +5775,65 @@ subtest 'Issue 80: partial reads preserve metadata and structural lists revoke i
     ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'local endpoint exclusion also blocks reconciled ServerList replay');
 };
 
+subtest 'Issue 81: explicit reads belong to the requesting endpoint instance' => sub {
+    my @sent;
+    my $io = $defs{readOwnerIO} = {NAME => 'readOwnerIO', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected', test_send_text => sub {push @sent, JSON::decode_json($_[0]); 1}};
+    MATTER_ProcessNode($io, {node_id => 99110, name => 'ReadOwner', available => JSON::true,
+        attributes => {'1/6/0' => JSON::false, '2/6/0' => JSON::false}});
+    my $root = MATTERDevice_LookupRoot($io, 99110);
+    my ($ep, $sibling) = MATTERDevice_NodeChildren($root);
+    my $read = sub {is(MATTERDevice_Set($_[0], $_[0]{NAME}, 'getConfig'), undef, 'queue owner read'); $sent[-1]{message_id}};
+    my $reply = sub {MATTER_ParseMessage($io, encode_json({message_id => $_[0], result => $_[1]}))};
+    my $old = $read->($ep);
+    my $stale_entry = $io->{helper}{pending_config}{$old};
+    my $name = $ep->{NAME};
+    CommandDelete(undef, $name);
+    ok(!exists($io->{helper}{pending_config}{$old}), 'Undef cancels the endpoint request');
+    CommandDefine(undef, "$name MATTERDevice 99110 1");
+    CommandAttr(undef, "$name IODev readOwnerIO");
+    my $replacement = $defs{$name};
+    $replacement->{FUUID} = 'uuid-read-owner-replacement';
+    readingsSingleUpdate($replacement, 'state', 'off', 0);
+    my $count = $replacement->{MSGCNT} // 0;
+    # Independently exercise the reply guard even if cancellation is bypassed.
+    $io->{helper}{pending_config}{$old} = $stale_entry;
+    $reply->($old, {'1/6/0' => JSON::true});
+    is(ReadingsVal($name, 'state', ''), 'off', 'old read cannot update replacement');
+    is($replacement->{MSGCNT} // 0, $count, 'replacement inherits no old request reception');
+    my $current = $read->($replacement);
+    CommandRename(undef, "$name RenamedReadOwner");
+    $reply->($current, {'1/6/0' => JSON::true, '2/6/0' => JSON::true});
+    is(ReadingsVal('RenamedReadOwner', 'state', ''), 'on', 'same instance accepts reply after rename');
+    is(ReadingsVal($sibling->{NAME}, 'state', ''), 'off', 'endpoint read cannot update sibling paths');
+    my $deleted = $read->($replacement);
+    CommandDelete(undef, $replacement->{NAME});
+    my $devices = count_devices();
+    $reply->($deleted, {'1/6/0' => JSON::false});
+    is(count_devices(), $devices, 'deleted endpoint is not recreated by its old explicit read');
+    my $shared = (MATTERDevice_RequestCapabilityRefresh($root))[0];
+    CommandDelete(undef, $sibling->{NAME});
+    CommandDefine(undef, 'SharedReadReplacement MATTERDevice 99110 2');
+    CommandAttr(undef, 'SharedReadReplacement IODev readOwnerIO');
+    $reply->($shared, {'2/6/65529' => [0, 1]});
+    ok(!MATTERDevice_CommandAccepted($defs{SharedReadReplacement}, 6, 1), 'old shared metadata cannot update a replacement');
+    my $r = $defs{SharedReadReplacement};
+    my $reentrant = $read->($r);
+    $reading_event_hook = sub {
+        return unless $_[0] eq $r && $_[1] eq 'device_type_ids';
+        CommandDelete(undef, $r->{NAME});
+        CommandDefine(undef, 'DuringReadReplacement MATTERDevice 99110 2');
+        CommandAttr(undef, 'DuringReadReplacement IODev readOwnerIO');
+        $reading_event_hook = undef;
+    };
+    $reply->($reentrant, {'2/29/0' => [{deviceType => 0x0100}], '2/6/0' => JSON::true, '2/8/0' => 55});
+    $reading_event_hook = undef;
+    ok(!exists($defs{DuringReadReplacement}{READINGS}{brightness}), 'reentrant replacement cannot receive remaining reply paths');
+    ok(!exists($r->{READINGS}{brightness}), 'remaining reply does not update the deleted owner hash either');
+    my $root_id = $read->($root);
+    $reply->($root_id, {'0/40/3' => 'current root', '2/6/0' => JSON::true});
+    is(ReadingsVal($root->{NAME}, 'model', ''), 'current root', 'root read remains supported');
+    ok(!exists($defs{DuringReadReplacement}{READINGS}{state}), 'root read remains scoped to endpoint zero');
+};
+
 done_testing();

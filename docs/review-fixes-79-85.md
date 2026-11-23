@@ -58,3 +58,24 @@ The new partial-read regression and changed omission expectation failed before
 the fix. The full suite passes 1,016 top-level entries, including explicit
 revocation, malformed/omitted metadata, delayed lists and disable exclusion.
 No live server/device test was performed.
+
+## #81: explicit read ownership
+
+Explicit reads now retain the owner hash/FUUID and use the same stable
+RequestOwner check as device commands. Results are scoped to the requested
+endpoint; root reads remain endpoint-zero reads. Per-message owner validation
+also stops the remaining paths if synchronous reading notifications replace
+or rebind the requester. Renaming the same instance remains valid.
+
+The existing disable cancellation was shared with Undef and identity changes:
+owner requests are cancelled and old shared replies exclude the endpoint.
+Root-FUUID and availability-epoch checks remain separate evidence. No new
+persistent generation or timeout mechanism was introduced.
+
+Post-implementation review traced both explicit and automatic read senders,
+receive internals, public ParseFn, owner completion, registry cleanup and the
+readOnly/disable paths. Tests independently restore an old cancelled entry to
+exercise the ownership guard and force replacement on the first Descriptor
+reading before other reply paths. The new regression failed before the fix;
+the full suite passes 1,017 top-level entries. No live FHEM/configDB/hardware
+test was performed.

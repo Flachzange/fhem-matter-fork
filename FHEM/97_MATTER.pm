@@ -1143,6 +1143,8 @@ sub MATTER_ParseMessage($$) {
             my $node_id = ref($pending) eq 'HASH' ? $pending->{node_id} : $pending;
             my $received = {};
             my $owner = MATTERDevice_LookupRoot($hash, $node_id);
+            my $target = ref($pending) eq 'HASH' && exists($pending->{owner})
+                ? MATTERDevice_RequestOwner($hash, $pending) : undef;
             # Correlated replies (including errors/empty results) are received
             # messages even when their device values are blocked or stale.
             # A replacement device must never inherit an old request's traffic.
@@ -1150,13 +1152,15 @@ sub MATTER_ParseMessage($$) {
                 !defined($pending->{root_fuuid}) ||
                 ($owner->{FUUID} // '') eq $pending->{root_fuuid})) {
                 MATTERDevice_RecordReceive($owner, $received);
+                return if ref($pending) eq 'HASH' && exists($pending->{owner}) && !$target;
                 my %endpoints;
                 $endpoints{$pending->{endpoint_id}} = 1
                     if ref($pending) eq 'HASH' &&
                        defined($pending->{endpoint_id}) && $pending->{endpoint_id} > 0;
                 if (ref($decoded->{result}) eq 'HASH') {
                     for my $path (keys %{$decoded->{result}}) {
-                        $endpoints{0 + $1} = 1 if $path =~ m{^(\d+)/\d+/\d+$};
+                        next unless $path =~ m{^(\d+)/\d+/\d+$};
+                        $endpoints{0 + $1} = 1 if !$target || $1 == $pending->{endpoint_id};
                     }
                 }
                 # Later freshness reconciliation can inject previous live
@@ -1196,6 +1200,13 @@ sub MATTER_ParseMessage($$) {
                         delete $fresh{$path} if $pending->{excluded_endpoints}{$ep};
                     }
                 }
+                if ($target) {
+                    for my $path (keys %fresh) {
+                        my ($ep) = split('/', $path);
+                        delete $fresh{$path} if $ep ne $pending->{endpoint_id};
+                    }
+                    $received->{request} = [$hash, $pending];
+                }
                 if (ref($pending) eq 'HASH' && $pending->{capability_only}) {
                     # Automatic recovery requested global metadata only.
                     MATTERDevice_ApplyCapabilityMetadata(
@@ -1204,7 +1215,7 @@ sub MATTER_ParseMessage($$) {
                             $pending->{endpoint_id}
                     ) if keys %fresh;
                 } else {
-                    MATTERDevice_ProcessMessage($owner, {
+                    MATTERDevice_ProcessMessage($target // $owner, {
                         message_id => $msg_id, result => \%fresh
                     }, $received) if keys %fresh;
                 }
