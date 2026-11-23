@@ -5688,6 +5688,7 @@ subtest 'Issue 79: runtime permissions belong to the actual Matter identity' => 
     my $old_id = $sent_a[-1]{message_id};
     # Persistent capability/limit readings must not authorize a new identity.
     $root->{READINGS}{icd_supported}{VAL} = 'true';
+    $root->{READINGS}{specification_version}{VAL} = 0x01040000;
     $ep->{READINGS}{max_brightness}{VAL} = 20;
     is(CommandAttr(undef, "$root->{NAME} IODev identityB"), undef, 'move root to another server');
     ok(!defined($root->{helper}{available}), 'new server must establish availability');
@@ -5700,6 +5701,12 @@ subtest 'Issue 79: runtime permissions belong to the actual Matter identity' => 
     is(scalar @sent_b, 0, 'no unchecked install or implicit read on new server');
     is($ep->{IODev}, $a, 'child keeps independent IO assignment');
     is(ReadingsVal($ep->{NAME}, 'state', ''), 'off', 'child physical state is preserved');
+    MATTER_ProcessNode($b, {node_id => 99008, available => JSON::true,
+        attributes => {'0/70/65532' => 4}});
+    ok(!exists($root->{READINGS}{icd_lit_supported}), 'new features cannot combine with the old identity specification version');
+    MATTER_ParseMessage($b, encode_json({event => 'attribute_updated',
+        data => [99008, '0/40/21', 0x01040000]}));
+    is(ReadingsVal($root->{NAME}, 'icd_lit_supported', ''), 'true', 'own specification version permits normal LIT derivation');
     MATTER_ProcessNode($b, {node_id => 99008, available => JSON::true,
         attributes => {'0/29/1' => [42]}});
     is(MATTERDevice_Set($root, $root->{NAME}, 'checkFirmwareUpdate'), undef, 'new server check works');

@@ -545,7 +545,7 @@ sub MATTERDevice_InvalidateAvailability($) {
 }
 
 # Runtime permissions and outstanding operations belong to IO + Matter IDs,
-# not to a mutable FHEM definition hash. Saved readings and local policy stay.
+# not to a mutable FHEM definition hash. Physical readings and local policy stay.
 sub MATTERDevice_InvalidateIdentity {
     my ($hash) = @_;
     MATTERDevice_InvalidateAvailability($hash);
@@ -555,7 +555,7 @@ sub MATTERDevice_InvalidateIdentity {
     # These saved metadata values also authorize controls, scaling or device
     # interpretation. They cannot describe a different Matter identity.
     readingsDelete($hash, $_) for qw(device_type_ids icd_supported
-        icd_lit_supported software_version);
+        icd_lit_supported software_version specification_version);
     for my $cluster (values %MATTER_CLUSTERS) {
         for my $attribute (values %{$cluster->{attributes} // {}}) {
             readingsDelete($hash, $attribute->{name}) if $attribute->{limit_range};
@@ -3036,7 +3036,7 @@ automated tests model reading restoration.</p></li>
       power and cumulative energy clusters, where the server supplies the
       corresponding attributes.</li>
 </ul>
-<p>Changing the actual IO instance or Matter IDs invalidates old capabilities, firmware offers and control-relevant metadata (device types, ICD permissions, software version and limits). Other saved physical readings and local attributes remain. Rename and unchanged DEF confirmation preserve identity; an occupied root target is rejected before modification.</p>
+<p>Changing the actual IO instance or Matter IDs invalidates old capabilities, firmware offers and control-relevant metadata (device types, ICD permissions, software/specification versions and limits). Other saved physical readings and local attributes remain. Rename and unchanged DEF confirmation preserve identity; an occupied root target is rejected before modification.</p>
 <h4>Attributes</h4>
 <p>Select an attribute in FHEMWEB to show its description. Active device
 settings are <code>IODev</code>, <code>readOnly</code>, <code>disable</code>, <code>dimRate</code>, <code>diagnostics</code>
@@ -3449,7 +3449,7 @@ Reading-Wiederherstellung.</p></li>
       Kohlenmonoxidkonzentration, elektrische Leistung und kumulierte Energie,
       soweit die Geräte die jeweiligen Attribute liefern.</li>
 </ul>
-<p>Ein Wechsel der IO-Instanz oder Matter-IDs entwertet alte Capabilities, Firmwareangebote und steuerungsrelevante Metadaten (Gerätetypen, ICD-Freigaben, Softwareversion und Grenzen). Andere gespeicherte physische Readings und lokale Attribute bleiben erhalten. Rename und unveränderte DEF-Bestätigung erhalten die Identität; ein belegtes Root-Ziel wird vor der Änderung abgewiesen.</p>
+<p>Ein Wechsel der IO-Instanz oder Matter-IDs entwertet alte Capabilities, Firmwareangebote und steuerungsrelevante Metadaten (Gerätetypen, ICD-Freigaben, Software-/Spezifikationsversion und Grenzen). Andere gespeicherte physische Readings und lokale Attribute bleiben erhalten. Rename und unveränderte DEF-Bestätigung erhalten die Identität; ein belegtes Root-Ziel wird vor der Änderung abgewiesen.</p>
 <h4>Attribute</h4>
 <p>Bei Auswahl eines Attributs in FHEMWEB erscheint dessen Beschreibung.
 Aktive Geräteeinstellungen sind <code>IODev</code>, <code>readOnly</code>, <code>disable</code>, <code>dimRate</code>,

@@ -186,7 +186,7 @@ Matter `Descriptor.DeviceTypeList` is stored per endpoint in the **`device_type_
 
 `matter_status=present` / `removed` indicates membership in the server's node list, **not** physical availability. `available=true` / `false` indicates reachability only if reported by the server. Node-wide `model` and `available` values are mirrored from the root to endpoints when known. No recurring availability poll is introduced.
 
-Changing the actual IO instance, node ID or endpoint ID discards the old runtime permissions and firmware offers. Control-relevant saved metadata (device types, ICD permissions, software version and reported limits) must be reported for the new identity; other saved physical readings and local policy remain. Renaming the same instance or confirming an unchanged DEF preserves its permissions. An occupied root target is rejected before a modify changes internal state.
+Changing the actual IO instance, node ID or endpoint ID discards the old runtime permissions and firmware offers. Control-relevant saved metadata (device types, ICD permissions, software/specification versions and reported limits) must be reported for the new identity; other saved physical readings and local policy remain. Renaming the same instance or confirming an unchanged DEF preserves its permissions. An occupied root target is rejected before a modify changes internal state.
 
 ### Device commands and attributes
 

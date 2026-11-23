@@ -9,7 +9,7 @@ next issue. No merge or live hardware validation is implied.
 Actual IO-instance, node-ID and endpoint-ID changes invalidate runtime
 capabilities, OTA offers/targets and pending owner operations. Saved metadata
 which authorizes control or interpretation (device types, ICD permission,
-software version and reported limits) is discarded for the new identity.
+software/specification versions and reported limits) is discarded for the new identity.
 Physical readings such as state, model and measurements, FUUID, local readOnly
 and disable policy remain. IO/device rename and unchanged/legacy DEF confirmation
 do not change identity. Occupied root targets are checked before modifying state.
@@ -157,3 +157,26 @@ All 1,021 top-level entries pass, including read errors, empty responses,
 reception accounting, freshness, cancellation and identity changes. This is
 an internal simplification with no new public option or migration, so README
 and commandref need no further behavior description.
+
+## Combined final review
+
+Re-read the affected lifecycle, registration/cancellation, response routing,
+capability/command gates, mapping/conversion, reception and event paths in
+both modules, their callers and the existing/new regression fixtures. Reviewed
+README, both commandref languages, current-release notes, manifest generation,
+CI workflows and both AGENTS documents for consistency. Shared rules and
+project supplement are unchanged.
+
+This pass found one further #79 defect: a new ICD FeatureMap could combine
+with the previous identity's persisted specification_version to publish an
+incorrect LIT capability. Identity invalidation now also removes that version.
+The added negative control failed before this correction; the new device's
+own specification report still derives LIT normally afterwards.
+
+Final verification: all 1,021 top-level entries of matter_node_sync.t pass,
+Perl test-harness syntax is valid, make_controls.sh --check and manifest
+generation tests pass, and git diff --check is clean. The harness loads both
+module sources with modeled FHEM/HttpUtils callbacks; this is not a standalone
+syntax/integration check with an installed FHEM core. No live FHEM, configDB
+restart, physical device/firmware operation, or server-version compatibility
+matrix was exercised. No transport or server implementation was changed.
