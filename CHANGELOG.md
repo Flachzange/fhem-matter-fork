@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-24  MATTER V0.44: Apply lowerCamelCase to all module-specific public readings, including batteries, device metadata, limits, alarm details, commissioning, firmware/ICD and network diagnostics. Keep native FHEM thermostat names and wire/API fields unchanged; align reading-backed fan setters and all consumers. No stored-reading conversion or aliases. Hardware untested.
+
 - 2026-11-24  MATTER V0.43: Decode Smoke/CO ExpressedState, AirQuality and covering OperationalStatus in the shared attribute-to-reading path; reuse the readable values in default STATE. Preserve all global/lift/tilt movement fields, reject invalid data without rewriting good readings, and retain user formats/offline/disable/freshness behavior. Audit all default families, remove display-only enum decoding and add callback/real-FHEM regressions. Hardware untested.
 
 - 2026-11-23  MATTER V0.42 (#91): Adopt batteryPercent/batteryVoltage/batteryState, ct/hue/sat, sensor brightness in lux, covering pct/tilt and functional text lock state. Invert lift pct consistently to percent open; separate electrical frequency in Hz from native levelFrequency controls. Keep mixed dimmer/illumination/covering sources separate through level/dimmerPct and silent persistent provenance. No extra reads/timers. Add callback and real FHEM notification/statefile regressions; document functional names and units. Hardware untested.

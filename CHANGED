@@ -1,1 +1,1 @@
-2026-11-24  MATTER V0.43: Use the same readable alarm, air-quality and covering movement states in readings, events and default STATE.
+2026-11-24  MATTER V0.44: Consistent lowerCamelCase for module-specific readings, including metadata/status/diagnostics and reading-backed fan setters; native FHEM thermostat names retained.

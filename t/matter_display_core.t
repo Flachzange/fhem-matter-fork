@@ -208,8 +208,8 @@ close $poll;
 # a valid reading or refresh its timestamp. Readings and display share the text API.
 for my $row (
     [0x000A,'257/0','state',[qw(not_fully_locked locked unlocked unlatched)]],
-    [0x0076,'92/0','alarm_expressed_state',[qw(normal smoke_alarm co_alarm battery_alert testing hardware_fault end_of_service interconnect_smoke interconnect_co)]],
-    [0x002C,'91/0','air_quality',[qw(unknown good fair moderate poor very_poor extremely_poor)]],
+    [0x0076,'92/0','alarmExpressedState',[qw(normal smoke_alarm co_alarm battery_alert testing hardware_fault end_of_service interconnect_smoke interconnect_co)]],
+    [0x002C,'91/0','airQuality',[qw(unknown good fair moderate poor very_poor extremely_poor)]],
 ) {
     my ($type,$path,$reading,$values)=@$row;
     my $name=$name_for{$type};
@@ -240,18 +240,18 @@ is($state->($cover),'global: closing / lift: stopped / tilt: stopped','reserved 
 # All bitmap fields are interpreted in the reading, without losing axis data.
 $report->(0x0202,'258/10',37);
 my $movement = 'global: opening / lift: opening / tilt: closing';
-is($device->($cover)->{Readings}{wc_operational_status}{Value},$movement,'bitmap reading preserves global/lift/tilt meaning');
+is($device->($cover)->{Readings}{wcOperationalStatus}{Value},$movement,'bitmap reading preserves global/lift/tilt meaning');
 is($state->($cover),$movement,'cover fallback uses the same readable bitmap value');
 for my $bad (12,48,63,64,undef,'opening') {
-    my $before=$device->($cover)->{Readings}{wc_operational_status};
+    my $before=$device->($cover)->{Readings}{wcOperationalStatus};
     $report->(0x0202,'258/10',$bad);
-    is_deeply($device->($cover)->{Readings}{wc_operational_status},$before,'invalid/reserved bitmap fields preserve the last reading');
+    is_deeply($device->($cover)->{Readings}{wcOperationalStatus},$before,'invalid/reserved bitmap fields preserve the last reading');
 }
 my $alarm=$name_for{0x0076};
-$cmd->("attr $alarm stateFormat alarm_expressed_state");
+$cmd->("attr $alarm stateFormat alarmExpressedState");
 $report->(0x0076,'92/0',2);
 is($state->($alarm),'co_alarm','a plain reading stateFormat gets the same human-readable alarm');
-$cmd->("attr $alarm stateFormat { 'alarm: ' . ReadingsVal(\$name,q(alarm_expressed_state),q(?)) }");
+$cmd->("attr $alarm stateFormat { 'alarm: ' . ReadingsVal(\$name,q(alarmExpressedState),q(?)) }");
 $report->(0x0076,'92/0',0);
 is($state->($alarm),'alarm: normal','Perl stateFormat observes converted reading values');
 $cmd->("deleteattr $alarm stateFormat");
@@ -259,7 +259,7 @@ is($state->($alarm),'normal','default returns to the same readable source');
 $cmd->("define alarmObserved notify $alarm:.* { push \@{\$defs{$alarm}{test_events}}, [\$EVENT,\$defs{$alarm}{STATE}] }");
 $report->(0x0076,'92/0',8);
 my $alarm_event=decode_json($perl->('JSON->new->ascii->encode($defs{' . $alarm . '}{test_events})'));
-is_deeply($alarm_event,[['alarm_expressed_state: interconnect_co','interconnect_co']], 'notify sees identical readable alarm reading and display');
+is_deeply($alarm_event,[['alarmExpressedState: interconnect_co','interconnect_co']], 'notify sees identical readable alarm reading and display');
 # HVAC: no assumption that a setpoint is actual temperature or actual fan speed.
 my $thermo=$name_for{0x0301};
 for my $row ([3,'cool; measured: 21 °C; cool: unknown'],[1,'auto; measured: 21 °C; heat: 22 °C; cool: unknown'],[0,'off; measured: 21 °C']) {
@@ -271,7 +271,7 @@ $report->(0x002B,'514/2',90);
 is($state->($name_for{0x002B}),'high; 45 %','fan setting cannot replace measured percent');
 # Air quality fallback: no manufactured unit; no local thresholds.
 my $air=$name_for{0x002C};
-$perl->('readingsDelete($defs{' . $air . '},q(air_quality))');
+$perl->('readingsDelete($defs{' . $air . '},q(airQuality))');
 $report->(0x002C,'1037/0',650);
 is($state->($air),'co2: 650 unknown','missing concentration unit stays unknown');
 $report->(0x002C,'1037/8',3);
@@ -416,11 +416,11 @@ close $saved_cfg;
 is($cmd->('rereadcfg'),'','actual rereadcfg runs the loader');
 is($state->($humid),'restored 48','startup evaluates the configured override from restored readings');
 is($state->($temp),'15.5 °C / 48 %','saved readings/types restore the default without a server report');
-is($device->($alarm)->{Readings}{alarm_expressed_state}{Value},'interconnect_co','readable alarm survives the actual statefile loader');
+is($device->($alarm)->{Readings}{alarmExpressedState}{Value},'interconnect_co','readable alarm survives the actual statefile loader');
 is($state->($alarm),'interconnect_co','restored default uses the readable alarm without reinterpreting it');
 my $restored=$device->($temp)->{Readings};
-is_deeply({map { $_=>$restored->{$_} } qw(temperature humidity device_type_ids)},
-          {map { $_=>$saved->{$_} } qw(temperature humidity device_type_ids)},
+is_deeply({map { $_=>$restored->{$_} } qw(temperature humidity deviceTypeIds)},
+          {map { $_=>$saved->{$_} } qw(temperature humidity deviceTypeIds)},
           'actual loader preserves source values and timestamps');
 
 is($state->($mixed),'1000 lx','mixed lux display restores without fresh server data');

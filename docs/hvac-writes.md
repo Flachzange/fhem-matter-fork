@@ -12,8 +12,8 @@ prove controller ACL permission or acceptance of a specific value.
 | desired-temp | Thermostat OccupiedHeatingSetpoint (18) | Heating feature |
 | desired-temp-cool | Thermostat OccupiedCoolingSetpoint (17) | Cooling feature |
 | mode | Thermostat SystemMode (28) | FeatureMap plus ControlSequenceOfOperation (27) |
-| fan_mode | FanControl FanMode (0) | FeatureMap plus FanModeSequence (1) |
-| fan_pct | FanControl PercentSetting (2) | PercentCurrent (3) alone never authorizes a write |
+| fanMode | FanControl FanMode (0) | FeatureMap plus FanModeSequence (1) |
+| fanPct | FanControl PercentSetting (2) | PercentCurrent (3) alone never authorizes a write |
 
 Temperature commands accept Celsius with up to two decimals, encoded as
 centidegrees in the protocol domain -273.15 through 327.67. These are text

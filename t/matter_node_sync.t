@@ -569,20 +569,20 @@ is($attr{MATTER_Other_IO_light_EP1}{group}, 'On/Off light',
    'second IO independently migrates its own endpoint');
 
 MATTER_ProcessNodeList($defs{ioA}, [], 'get_nodes');
-is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'removed', 'missing node marked removed');
+is(ReadingsVal('ManuallyRenamedRoot', 'matterStatus', ''), 'removed', 'missing node marked removed');
 is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'removed',
    'missing node receives removed as native root status');
 ok($defs{ManuallyRenamedRoot}, 'removed node not deleted');
-is(ReadingsVal('MATTER_Other_IO_light', 'matter_status', ''), 'present', 'other IO status untouched');
+is(ReadingsVal('MATTER_Other_IO_light', 'matterStatus', ''), 'present', 'other IO status untouched');
 my $reappearing = node(42, 'Hall Light');
 delete $reappearing->{available};
 MATTER_ParseMessage($defs{ioA}, encode_json({event => 'node_added', data => $reappearing}));
-is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present', 'node_added restores status');
+is(ReadingsVal('ManuallyRenamedRoot', 'matterStatus', ''), 'present', 'node_added restores status');
 is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'unknown',
    'reappearing node without reported reachability is unknown');
 
 MATTER_ProcessNodeList($defs{ioA}, [{ node_id => 'invalid' }], 'get_nodes');
-is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present', 'malformed snapshot cannot mark devices removed');
+is(ReadingsVal('ManuallyRenamedRoot', 'matterStatus', ''), 'present', 'malformed snapshot cannot mark devices removed');
 
 MATTER_ProcessNode($defs{ioA}, {node_id => 42, available => JSON::true});
 MATTER_ProcessNode($defs{ioB}, {node_id => 42, available => JSON::false});
@@ -732,10 +732,10 @@ my $fragment_last = pack('CC', 0x80, length($fragment_json) - $half)
                   . substr($fragment_json, $half);
 syswrite($server, $fragment_first) == length($fragment_first) or die 'fragment first write failed';
 MATTER_Read($ws);
-is(ReadingsVal('ioWS', 'sdk_version', ''), '', 'partial WebSocket message does not publish telemetry');
+is(ReadingsVal('ioWS', 'sdkVersion', ''), '', 'partial WebSocket message does not publish telemetry');
 syswrite($server, $fragment_last) == length($fragment_last) or die 'fragment last write failed';
 MATTER_Read($ws);
-is(ReadingsVal('ioWS', 'sdk_version', ''), 'fragmented-message',
+is(ReadingsVal('ioWS', 'sdkVersion', ''), 'fragmented-message',
    'continuation completes a fragmented WebSocket text message');
 
 # After the upgrade, exactly one heartbeat timer is active.
@@ -1044,7 +1044,7 @@ is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'false',
    'node_updated records physical unavailability on the root');
 is(ReadingsVal('ManuallyRenamedRoot', 'state', ''), 'offline',
    'valid server unavailable report produces native offline state');
-is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present',
+is(ReadingsVal('ManuallyRenamedRoot', 'matterStatus', ''), 'present',
    'availability is independent of server membership');
 MATTER_ProcessNode($defs{ioA}, { node_id => 42, name => 'Hall Light', available => JSON::true });
 is(ReadingsVal('ManuallyRenamedRoot', 'available', ''), 'true',
@@ -1076,7 +1076,7 @@ MATTERDevice_Parse($root, encode_json({
 }));
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'batteryPercent', ''), 77,
    'PowerSource percentage is converted from half-units');
-is(ReadingsVal('MATTER_Hall_Light_EP1', 'smoke_state', ''), 2,
+is(ReadingsVal('MATTER_Hall_Light_EP1', 'smokeState', ''), 2,
    'SmokeCO cluster is mapped to a reading');
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'power', ''), 2.15,
    'electrical power is converted to watts');
@@ -1199,14 +1199,14 @@ is($sent_requests[1]{args}{command_name}, 'MoveToHueAndSaturation',
 like(MATTERDevice_Set($child, $child->{NAME}, 'rgb', 'GG0000'),
      qr/^Usage: set /, 'malformed RGB color is rejected');
 is(scalar(@sent_requests), 0, 'invalid RGB sends no device command');
-$attr{$child->{NAME}}{max_brightness} = 0;
+$attr{$child->{NAME}}{maxBrightness} = 0;
 is(MATTERDevice_MaxBrightness($child), 254,
    'obsolete zero maximum cannot change the protocol fallback');
-$attr{$child->{NAME}}{max_brightness} = 200;
+$attr{$child->{NAME}}{maxBrightness} = 200;
 ok(MATTERDevice_AttributeUsable($child, 8, 3),
    'restored reports can be used until AttributeList arrives');
 ok(grep(/^brightness:slider,0,1,254$/, MATTERDevice_GetSetList($child)),
-   'obsolete max_brightness does not change the brightness slider');
+   'obsolete maxBrightness does not change the brightness slider');
 MATTERDevice_Parse($root, encode_json({
     node_id => 42, attributes => { '1/8/0' => 254 }
 }));
@@ -1309,20 +1309,20 @@ like($type_html, qr/<td>10<\/td><td>Temperature sensor<\/td>/,
      'Descriptor DeviceTypeList identifies the temperature sensor');
 like($type_html, qr/<td>11<\/td><td>Humidity sensor<\/td>/,
      'Descriptor DeviceTypeList identifies the humidity sensor');
-is(ReadingsVal('MATTER_TypeDisplay_EP1', 'device_type_ids', ''), '0x010A',
+is(ReadingsVal('MATTER_TypeDisplay_EP1', 'deviceTypeIds', ''), '0x010A',
    'DeviceTypeList is stored as a persistent canonical FHEM reading');
-is(ReadingsVal('MATTER_TypeDisplay_EP10', 'device_type_ids', ''), '0x0302',
+is(ReadingsVal('MATTER_TypeDisplay_EP10', 'deviceTypeIds', ''), '0x0302',
    'endpoint 10 stores its own DeviceTypeList independently');
-is(ReadingsVal('MATTER_TypeDisplay_EP11', 'device_type_ids', ''), '0x0307',
+is(ReadingsVal('MATTER_TypeDisplay_EP11', 'deviceTypeIds', ''), '0x0307',
    'endpoint 11 stores its own DeviceTypeList independently');
-my $prior_type_events = $single_writes{MATTER_TypeDisplay_EP1}{device_type_ids};
+my $prior_type_events = $single_writes{MATTER_TypeDisplay_EP1}{deviceTypeIds};
 MATTERDevice_Parse($types_root, encode_json({
     node_id => 88, attributes => {
         '1/29/0' => [{deviceType => 0x010A, revision => 1},
                      {deviceType => 0x010A, revision => 1}],
     },
 }));
-is($single_writes{MATTER_TypeDisplay_EP1}{device_type_ids}, $prior_type_events,
+is($single_writes{MATTER_TypeDisplay_EP1}{deviceTypeIds}, $prior_type_events,
    'repeated equivalent Descriptor metadata does not generate another reading update');
 
 # Per-endpoint getConfig reads DeviceTypeList explicitly.
@@ -1466,7 +1466,7 @@ MATTERDevice_Parse($types_root, encode_json({
 }));
 is($attr{MATTER_TypeDisplay_EP1}{group}, 'Smoke CO Alarm',
    'Power Source plus Smoke CO Alarm produces one alarm group');
-is(ReadingsVal('MATTER_TypeDisplay_EP1', 'device_type_ids', ''), '0x0011,0x0076',
+is(ReadingsVal('MATTER_TypeDisplay_EP1', 'deviceTypeIds', ''), '0x0011,0x0076',
    'structural and functional IDs are stored together, sorted numerically');
 
 # Ambiguous functional types must not force an arbitrary group change.
@@ -1542,7 +1542,7 @@ like($type_html, qr/<td>1<\/td><td>On\/Off light<\/td>/,
      'application type is preferred to the utility root type');
 like($type_html, qr/<td>10<\/td><td>0xF123<\/td>/,
      'unknown type ID stays explicitly identifiable');
-is(ReadingsVal('MATTER_TypeDisplay_EP10', 'device_type_ids', ''), '0xF123',
+is(ReadingsVal('MATTER_TypeDisplay_EP10', 'deviceTypeIds', ''), '0xF123',
    'unrecognized type IDs remain persistable and visible without a label');
 
 MATTERDevice_Parse($types_root, encode_json({
@@ -1551,7 +1551,7 @@ MATTERDevice_Parse($types_root, encode_json({
 $type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
 like($type_html, qr/<td>10<\/td><td>0xF123<\/td>/,
      'malformed type metadata does not replace the last valid device type');
-is(ReadingsVal('MATTER_TypeDisplay_EP10', 'device_type_ids', ''), '0xF123',
+is(ReadingsVal('MATTER_TypeDisplay_EP10', 'deviceTypeIds', ''), '0xF123',
    'malformed Descriptor updates do not overwrite persisted type IDs');
 
 # Model a FHEM restart after the statefile has restored the readings but
@@ -1574,10 +1574,10 @@ $attr{MATTER_TypeDisplay_EP10}{group} = 'Node 88 (ioA)';
 MATTERDevice_EnsureTypeGroup($defs{MATTER_TypeDisplay_EP10});
 is($attr{MATTER_TypeDisplay_EP10}{group}, '0xF123',
    'automatic grouping recovers from the persisted reading after restart');
-$defs{MATTER_TypeDisplay_EP10}{READINGS}{device_type_ids}{VAL} = 'not-a-type';
+$defs{MATTER_TypeDisplay_EP10}{READINGS}{deviceTypeIds}{VAL} = 'not-a-type';
 is_deeply([MATTERDevice_DeviceTypeIds($defs{MATTER_TypeDisplay_EP10})], [],
     'invalid restored reading cannot masquerade as a device type');
-$defs{MATTER_TypeDisplay_EP10}{READINGS}{device_type_ids}{VAL} = '0xF123';
+$defs{MATTER_TypeDisplay_EP10}{READINGS}{deviceTypeIds}{VAL} = '0xF123';
 
 # Model and availability are the only root readings mirrored onto endpoints.
 # Test all supported input paths with independent nodes sharing an ID on two IOs.
@@ -1788,11 +1788,11 @@ is(scalar(keys %{$commission_io->{helper}{pending_command} // {}}), 0,
 is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode', $manual_code),
    undef, 'legacy one-argument command remains accepted');
 my $network_request = $read_ws_json->($commission_server);
-is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'running',
+is(ReadingsVal('commissionIO', 'commissioningStatus', ''), 'running',
    'commissioning starts with running status');
-is(ReadingsVal('commissionIO', 'commissioning_mode', ''), 'network',
+is(ReadingsVal('commissionIO', 'commissioningMode', ''), 'network',
    'default mode recorded');
-is(ReadingsVal('commissionIO', 'commissioning_error', 'unset'), '',
+is(ReadingsVal('commissionIO', 'commissioningError', 'unset'), '',
    'running clears previous error');
 is($network_request->{command}, 'commission_with_code',
    'commissioning keeps the existing server API command');
@@ -1814,11 +1814,11 @@ $mock_time += 38;
 MATTER_ParseMessage($commission_io, encode_json({
     message_id => $network_request->{message_id}, result => { node_id => 121 }
 }));
-is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'success',
+is(ReadingsVal('commissionIO', 'commissioningStatus', ''), 'success',
    'server response reports success');
-is(ReadingsVal('commissionIO', 'commissioning_node_id', ''), 121,
+is(ReadingsVal('commissionIO', 'commissioningNodeId', ''), 121,
    'successful response contains node ID');
-is(ReadingsVal('commissionIO', 'commissioning_duration', ''), 38,
+is(ReadingsVal('commissionIO', 'commissioningDuration', ''), 38,
    'duration measures elapsed seconds');
 ok(!exists($commission_io->{helper}{commissioning_active}),
    'success releases the active commissioning slot');
@@ -1832,7 +1832,7 @@ ok($explicit_network->{args}{network_only},
 MATTER_ParseMessage($commission_io, encode_json({
     message_id => $explicit_network->{message_id}, result => { node_id => 122 }
 }));
-is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'success',
+is(ReadingsVal('commissionIO', 'commissioningStatus', ''), 'success',
    'second network request completes independently');
 
 # Attribute default is persistent FHEM configuration; command mode overrides it.
@@ -1845,7 +1845,7 @@ is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode', $manual_code),
 my $from_auto_attr = $read_ws_json->($commission_server);
 ok(!$from_auto_attr->{args}{network_only},
    'configured auto enables BLE/IP discovery without command suffix');
-is(ReadingsVal('commissionIO', 'commissioning_mode', ''), 'auto',
+is(ReadingsVal('commissionIO', 'commissioningMode', ''), 'auto',
    'status reading reflects configured auto');
 MATTER_ParseMessage($commission_io, encode_json({
     message_id => $from_auto_attr->{message_id}, result => { node_id => 124 }
@@ -1856,7 +1856,7 @@ is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode', $manual_code, 'n
 my $from_network_override = $read_ws_json->($commission_server);
 ok($from_network_override->{args}{network_only},
    'explicit network requires IP-only despite auto attribute');
-is(ReadingsVal('commissionIO', 'commissioning_mode', ''), 'network',
+is(ReadingsVal('commissionIO', 'commissioningMode', ''), 'network',
    'status reading reflects explicit network');
 MATTER_ParseMessage($commission_io, encode_json({
     message_id => $from_network_override->{message_id}, result => { node_id => 125 }
@@ -1905,9 +1905,9 @@ like(join("\n", @log), qr/Commissioning requested \(mode=auto; BLE allowed\)/,
      'auto mode is logged without implying that BLE was actually used');
 unlike(join("\n", @log), qr/\Q$manual_code\E/,
        'manual setup code is not logged in auto mode');
-is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'running',
+is(ReadingsVal('commissionIO', 'commissioningStatus', ''), 'running',
    'BLE-capable attempt shows running');
-is(ReadingsVal('commissionIO', 'commissioning_mode', ''), 'auto',
+is(ReadingsVal('commissionIO', 'commissioningMode', ''), 'auto',
    'BLE-capable attempt records auto mode');
 $mock_time += 7;
 MATTER_ParseMessage($commission_io, encode_json({
@@ -1915,16 +1915,16 @@ MATTER_ParseMessage($commission_io, encode_json({
     reason => 'not-discovered',
     details => "Could not commission code $manual_code from $qr_code"
 }));
-is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'failed',
+is(ReadingsVal('commissionIO', 'commissioningStatus', ''), 'failed',
    'server error reports failure');
-is(ReadingsVal('commissionIO', 'commissioning_duration', ''), 7,
+is(ReadingsVal('commissionIO', 'commissioningDuration', ''), 7,
    'failed attempt records duration');
-like(ReadingsVal('commissionIO', 'commissioning_error', ''), qr/^not-discovered:/,
+like(ReadingsVal('commissionIO', 'commissioningError', ''), qr/^not-discovered:/,
    'typed failure reason preserved');
-like(ReadingsVal('commissionIO', 'commissioning_error', ''),
+like(ReadingsVal('commissionIO', 'commissioningError', ''),
      qr/\[code redacted\].*\[QR code redacted\]/,
    'error reading redacts manual and QR codes');
-unlike(ReadingsVal('commissionIO', 'commissioning_error', ''),
+unlike(ReadingsVal('commissionIO', 'commissioningError', ''),
        qr/\Q$manual_code\E|\Q$qr_code\E/,
    'error reading contains no setup code');
 unlike(join("\n", @log), qr/\Q$manual_code\E|\Q$qr_code\E/,
@@ -1937,20 +1937,20 @@ my $qr_request = $read_ws_json->($commission_server);
 is($qr_request->{args}{code}, $qr_code,
    'QR payload is delivered unchanged to the Matter server');
 ok(!$qr_request->{args}{network_only}, 'QR auto mode also permits BLE discovery');
-is(ReadingsVal('commissionIO', 'commissioning_error', 'unset'), '',
+is(ReadingsVal('commissionIO', 'commissioningError', 'unset'), '',
    'new attempt clears stale failure');
 MATTER_ParseMessage($commission_io, encode_json({
     message_id => 'unrelated', result => { node_id => 999 }
 }));
-is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'running',
+is(ReadingsVal('commissionIO', 'commissioningStatus', ''), 'running',
    'unrelated result cannot finish active commissioning');
 $mock_time += 3;
 MATTER_ParseMessage($commission_io, encode_json({
     message_id => $qr_request->{message_id}, result => { node_id => 123 }
 }));
-is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'success',
+is(ReadingsVal('commissionIO', 'commissioningStatus', ''), 'success',
    'QR response reports success');
-is(ReadingsVal('commissionIO', 'commissioning_node_id', ''), 123,
+is(ReadingsVal('commissionIO', 'commissioningNodeId', ''), 123,
    'QR response reports new node ID');
 
 # Legacy server error envelopes must also be sanitized in event-visible readings.
@@ -1963,9 +1963,9 @@ MATTER_ParseMessage($commission_io, encode_json({
     message_id => $legacy_request->{message_id},
     error => { message => "Legacy server failure for code $manual_code" }
 }));
-is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'failed',
+is(ReadingsVal('commissionIO', 'commissioningStatus', ''), 'failed',
    'legacy error response reports failure');
-like(ReadingsVal('commissionIO', 'commissioning_error', ''), qr/\[code redacted\]/,
+like(ReadingsVal('commissionIO', 'commissioningError', ''), qr/\[code redacted\]/,
    'legacy error reading redacts setup code');
 unlike(join("\n", @log), qr/\Q$manual_code\E/,
    'legacy error log redacts setup code');
@@ -2001,11 +2001,11 @@ for my $invalid (
 # The Matter server may still complete; a lost response is not a failure.
 $mock_time += 5;
 MATTER_Close($commission_io);
-is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'interrupted',
+is(ReadingsVal('commissionIO', 'commissioningStatus', ''), 'interrupted',
    'connection loss marks commissioning as interrupted');
-is(ReadingsVal('commissionIO', 'commissioning_duration', ''), 5,
+is(ReadingsVal('commissionIO', 'commissioningDuration', ''), 5,
    'interrupt reports elapsed time');
-like(ReadingsVal('commissionIO', 'commissioning_error', ''), qr/outcome unknown/,
+like(ReadingsVal('commissionIO', 'commissioningError', ''), qr/outcome unknown/,
    'interruption does not imply a failed server operation');
 ok(!exists $commission_io->{helper}{commissioning_active},
    'closed connection releases active commissioning');
@@ -2014,14 +2014,14 @@ ok(!exists $commission_io->{helper}{pending_command},
 MATTER_ParseMessage($commission_io, encode_json({
     message_id => $extended_request->{message_id}, result => { node_id => 456 }
 }));
-is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'interrupted',
+is(ReadingsVal('commissionIO', 'commissioningStatus', ''), 'interrupted',
    'late reply cannot overwrite interrupted status');
 my $disconnected = MATTER_Set($commission_io, 'commissionIO', 'commissionCode',
                               $manual_code, 'auto');
 like($disconnected // '', qr/No active WebSocket/, 'disconnected IO refuses new request');
 unlike($disconnected // '', qr/\Q$manual_code\E/,
    'disconnected error does not echo setup code');
-is(ReadingsVal('commissionIO', 'commissioning_status', ''), 'interrupted',
+is(ReadingsVal('commissionIO', 'commissioningStatus', ''), 'interrupted',
    'failed send does not produce misleading running status');
 close($commission_server);
 
@@ -2040,7 +2040,7 @@ my ($wifi_result, $wifi_skip_event) = MATTER_Set(
 );
 is($wifi_result, undef, 'credential setter accepts a connected request');
 is($wifi_skip_event, 1, 'credential command suppresses FHEM synthetic set event');
-$credential_io->{READINGS}{wifi_7_ssid} = { VAL => 'PreviousSSID' };
+$credential_io->{READINGS}{wifi7Ssid} = { VAL => 'PreviousSSID' };
 is(MATTER_Set($credential_io, 'credentialIO', 'getCredentials'), undef,
    'request credential inventory for failure-preservation checks');
 my $invalid_credential_id = $credential_io->{helper}{next_message_id};
@@ -2051,7 +2051,7 @@ my $credential_parse_ok = eval {
     1;
 };
 ok($credential_parse_ok, 'unexpected credential array response cannot crash parser');
-is(ReadingsVal('credentialIO', 'wifi_7_ssid', ''), 'PreviousSSID',
+is(ReadingsVal('credentialIO', 'wifi7Ssid', ''), 'PreviousSSID',
    'malformed credential response does not erase existing readings');
 is(MATTER_Set($credential_io, 'credentialIO', 'getCredentials'), undef,
    'request credential inventory with invalid nested shape');
@@ -2059,7 +2059,7 @@ my $invalid_nested_id = $credential_io->{helper}{next_message_id};
 MATTER_ParseMessage($credential_io, encode_json({
     message_id => $invalid_nested_id, result => { wifi => 'unexpected' }
 }));
-is(ReadingsVal('credentialIO', 'wifi_7_ssid', ''), 'PreviousSSID',
+is(ReadingsVal('credentialIO', 'wifi7Ssid', ''), 'PreviousSSID',
    'malformed nested credential list preserves existing readings');
 is(MATTER_Set($credential_io, 'credentialIO', 'getCredentials'), undef,
    'request credential inventory with malformed item');
@@ -2068,7 +2068,7 @@ MATTER_ParseMessage($credential_io, encode_json({
     message_id => $invalid_item_id,
     result => { wifi => [{ id => 7, ssid => ['not-a-scalar'] }] }
 }));
-is(ReadingsVal('credentialIO', 'wifi_7_ssid', ''), 'PreviousSSID',
+is(ReadingsVal('credentialIO', 'wifi7Ssid', ''), 'PreviousSSID',
    'malformed credential item cannot partially delete the previous inventory');
 is(MATTER_Set($credential_io, 'credentialIO', 'getCredentials'), undef,
    'request valid updated credential inventory');
@@ -2077,8 +2077,28 @@ MATTER_ParseMessage($credential_io, encode_json({
     message_id => $valid_credential_id,
     result => { wifi => [{ id => 7, ssid => 'ReplacementSSID' }], thread => [] }
 }));
-is(ReadingsVal('credentialIO', 'wifi_7_ssid', ''), 'ReplacementSSID',
+is(ReadingsVal('credentialIO', 'wifi7Ssid', ''), 'ReplacementSSID',
    'valid credential inventory replaces the previous readings');
+# Refresh every renamed dynamic family, including IDs with separators or empty text.
+MATTER_Set($credential_io, 'credentialIO', 'getCredentials');
+MATTER_ParseMessage($credential_io, encode_json({
+    message_id => $credential_io->{helper}{next_message_id},
+    result => {wifi => [{id => '', ssid => 'EmptyIdSSID'},
+                        {id => 'a_b', ssid => 'TextIdSSID'},
+                        {ssid => 'DefaultIdSSID'}],
+               thread => [{id => 3, networkName => 'SyntheticThread', extPanId => '1234'}]}
+}));
+ok(!exists($credential_io->{READINGS}{wifi7Ssid}), 'inventory removes absent numeric credential');
+is(ReadingsVal('credentialIO', 'wifiIdSsid', ''), 'EmptyIdSSID', 'empty ID has a valid public name');
+is(ReadingsVal('credentialIO', 'wifiId615f62Ssid', ''), 'TextIdSSID', 'text ID is encoded without separators');
+is(ReadingsVal('credentialIO', 'wifiDefaultSsid', ''), 'DefaultIdSSID', 'absent ID uses its explicit component');
+is(ReadingsVal('credentialIO', 'thread3Name', ''), 'SyntheticThread', 'thread name uses the current family');
+is(ReadingsVal('credentialIO', 'thread3ExtPanId', ''), '1234', 'thread PAN uses the current family');
+MATTER_Set($credential_io, 'credentialIO', 'getCredentials');
+MATTER_ParseMessage($credential_io, encode_json({
+    message_id => $credential_io->{helper}{next_message_id}, result => {wifi => [], thread => []}
+}));
+ok(!grep(/\A(?:wifi|thread)/, keys %{$credential_io->{READINGS}}), 'empty inventory removes every current credential family');
 MATTER_Close($credential_io);
 close($credential_peer);
 
@@ -2131,17 +2151,17 @@ my $snapshot_id = $defs{ioA}{helper}{next_message_id};
 MATTER_ParseMessage($defs{ioA}, encode_json({
     event => 'node_removed', data => 42
 }));
-is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'removed',
+is(ReadingsVal('ManuallyRenamedRoot', 'matterStatus', ''), 'removed',
    'newer node removal event is applied');
 MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $snapshot_id, result => [node(42, 'OldNodeLabel')]
 }));
-is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'removed',
+is(ReadingsVal('ManuallyRenamedRoot', 'matterStatus', ''), 'removed',
    'late snapshot does not re-add node removed by a newer event');
 MATTER_ParseMessage($defs{ioA}, encode_json({
     event => 'node_added', data => node(42, 'Hall Light')
 }));
-is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present',
+is(ReadingsVal('ManuallyRenamedRoot', 'matterStatus', ''), 'present',
    'new node_added event restores node membership');
 
 # One partial node_updated cannot invalidate useful fields from an older
@@ -2173,7 +2193,7 @@ is(ReadingsVal($child->{NAME}, 'state', ''), 'on',
    'partial node data does not import cached OnOff while the node is offline');
 is(ReadingsVal($child->{NAME}, 'batteryPercent', ''), 66,
    'unrelated battery data is retained from earlier live reports');
-is(ReadingsVal($snapshot_other_root->{NAME}, 'matter_status', ''), 'removed',
+is(ReadingsVal($snapshot_other_root->{NAME}, 'matterStatus', ''), 'removed',
    'event for first node does not suppress removal of unrelated missing node');
 
 # The latest explicit discovery supersedes an unresponsive earlier one,
@@ -2189,13 +2209,13 @@ ok(!exists($defs{ioA}{helper}{pending_command}{$superseded_id}),
 MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $superseded_id, result => []
 }));
-is(ReadingsVal('ManuallyRenamedRoot', 'matter_status', ''), 'present',
+is(ReadingsVal('ManuallyRenamedRoot', 'matterStatus', ''), 'present',
    'response to superseded discovery is ignored');
 MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $current_snapshot_id,
     result => [node(42, 'Hall Light'), node(779, 'MissingInSnapshot')]
 }));
-is(ReadingsVal($snapshot_other_root->{NAME}, 'matter_status', ''), 'present',
+is(ReadingsVal($snapshot_other_root->{NAME}, 'matterStatus', ''), 'present',
    'latest discovery resynchronizes an independently missing node');
 
 # Invalid live node metadata is not a reason to discard a valid attribute
@@ -2333,13 +2353,13 @@ is(ReadingsVal('MATTER_EnvironmentProbe_EP1', 'pressure', ''), 1013,
    'pressure MeasuredValue is displayed in hPa');
 is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2', ''), 650,
    'CO2 measured value is preserved');
-is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2_unit', ''), 'ppm',
+is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2Unit', ''), 'ppm',
    'CO2 unit is advertised, not guessed');
 is(ReadingsVal('MATTER_EnvironmentProbe_EP3', 'pm25', ''), 12.5,
    'PM2.5 measurement handles decimal values');
-is(ReadingsVal('MATTER_EnvironmentProbe_EP3', 'pm25_unit', ''), 'ug/m3',
+is(ReadingsVal('MATTER_EnvironmentProbe_EP3', 'pm25Unit', ''), 'ug/m3',
    'PM2.5 microgram-per-cubic-metre unit');
-is(ReadingsVal('MATTER_EnvironmentProbe_EP4', 'tvoc_unit', ''), 'ppb',
+is(ReadingsVal('MATTER_EnvironmentProbe_EP4', 'tvocUnit', ''), 'ppb',
    'TVOC unit is independent of CO2 unit');
 MATTERDevice_Parse($defs{MATTER_EnvironmentProbe}, encode_json({
     node_id => 3200, attributes => {
@@ -2352,7 +2372,7 @@ is(ReadingsVal('MATTER_EnvironmentProbe_EP1', 'pressure', ''), 1013,
    'pressure null sentinel leaves previous reading');
 is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2', ''), 650,
    'negative concentrations are ignored');
-is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2_unit', ''), 'ppm',
+is(ReadingsVal('MATTER_EnvironmentProbe_EP2', 'co2Unit', ''), 'ppm',
    'unknown units do not overwrite a valid known unit');
 
 
@@ -2439,13 +2459,13 @@ is(ReadingsVal($therm->{NAME}, 'desired-temp', ''), 21,
    'thermostat heating setpoint is scaled');
 is(ReadingsVal($therm->{NAME}, 'mode', ''), 'heat',
    'thermostat mode is decoded');
-is(ReadingsVal($fan->{NAME}, 'fan_mode', ''), 'medium',
+is(ReadingsVal($fan->{NAME}, 'fanMode', ''), 'medium',
    'fan mode is decoded');
-is(ReadingsVal($fan->{NAME}, 'fan_pct', ''), 53,
+is(ReadingsVal($fan->{NAME}, 'fanPct', ''), 53,
    'fan current percentage is read separately from setting');
 ok(grep(/^desired-temp:/, MATTERDevice_GetSetList($therm)),
    'thermostat setpoint offered if advertised in AttributeList');
-ok(grep(/^fan_pct:/, MATTERDevice_GetSetList($fan)),
+ok(grep(/^fanPct:/, MATTERDevice_GetSetList($fan)),
    'fan setting offered if advertised');
 ok(grep(/^identify:noArg$/, MATTERDevice_GetSetList($identify)),
    'Identify offered if command is accepted');
@@ -2463,7 +2483,7 @@ is(ReadingsVal($therm->{NAME}, 'desired-temp', ''), 21,
 MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $sent_requests[-1]{message_id}, result => undef
 }));
-is(MATTERDevice_Set($fan, $fan->{NAME}, 'fan_mode', 'high'), undef,
+is(MATTERDevice_Set($fan, $fan->{NAME}, 'fanMode', 'high'), undef,
    'fan mode is set with native attribute write');
 is($sent_requests[-1]{args}{value}, 3,
    'fan high maps to native enum value 3');
@@ -2476,7 +2496,7 @@ is($sent_requests[-1]{args}{command_name}, 'Identify',
    'native Identify command used');
 is($sent_requests[-1]{args}{payload}{identifyTime}, 15,
    'Identify lasts 15 seconds');
-like(MATTERDevice_Set($fan, $fan->{NAME}, 'fan_pct', '300') // '',
+like(MATTERDevice_Set($fan, $fan->{NAME}, 'fanPct', '300') // '',
    qr/between 0 and 100/, 'invalid fan target is rejected');
 
 
@@ -2497,7 +2517,7 @@ is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'on',
 MATTER_ProcessNode($defs{ioA}, { node_id => 2700, available => JSON::false });
 readingsSingleUpdate($offline_child, 'state', 'off', 1);
 readingsSingleUpdate($offline_child, 'batteryPercent', 10, 1);
-my $old_type = ReadingsVal($offline_child->{NAME}, 'device_type_ids', '');
+my $old_type = ReadingsVal($offline_child->{NAME}, 'deviceTypeIds', '');
 MATTER_ProcessNode($defs{ioA}, {
     node_id => 2700, available => JSON::false,
     attributes => {
@@ -2511,7 +2531,7 @@ is(ReadingsVal($offline_child->{NAME}, 'state', ''), 'off',
    'cached offline OnOff does not overwrite manual correction');
 is(ReadingsVal($offline_child->{NAME}, 'batteryPercent', ''), 10,
    'cached offline power source does not overwrite manual correction');
-is(ReadingsVal($offline_child->{NAME}, 'device_type_ids', ''), $old_type,
+is(ReadingsVal($offline_child->{NAME}, 'deviceTypeIds', ''), $old_type,
    'cached offline device types are not adopted');
 ok(!MATTERDevice_CommandAccepted($offline_child, 8, 1),
    'cached offline command metadata is not adopted');
@@ -2840,9 +2860,9 @@ MATTER_ProcessNode($defs{ioA}, {
 });
 my $dr = $defs{MATTER_DiagnosticsProbe};
 my $dep = $defs{MATTER_DiagnosticsProbe_EP1};
-ok(!defined(ReadingsVal($dr->{NAME}, 'thread_role', undef)),
+ok(!defined(ReadingsVal($dr->{NAME}, 'threadRole', undef)),
    'no default diagnostic readings');
-ok(!defined(ReadingsVal($dep->{NAME}, 'raw_1_987_3', undef)),
+ok(!defined(ReadingsVal($dep->{NAME}, 'rawEp1Cluster987Attribute3', undef)),
    'unmapped data not published by default');
 is(CommandAttr(undef, 'MATTER_DiagnosticsProbe diagnostics 1'), undef,
    'diagnostics opt-in accepted');
@@ -2855,24 +2875,24 @@ MATTERDevice_Parse($dr, encode_json({
         '0/54/4' => -67, '1/987/3' => 42,
     }
 }));
-is(ReadingsVal($dr->{NAME}, 'thread_role', ''), 'router',
+is(ReadingsVal($dr->{NAME}, 'threadRole', ''), 'router',
    'Thread role maps to router');
-is(ReadingsVal($dr->{NAME}, 'thread_neighbors', ''), 1,
+is(ReadingsVal($dr->{NAME}, 'threadNeighbors', ''), 1,
    'neighbor table count');
 is(ReadingsVal($dr->{NAME}, 'rssi', ''), -50,
    'best router RSSI');
 is(ReadingsVal($dr->{NAME}, 'lqi', ''), 3,
    'best router LQI');
-is(ReadingsVal($dr->{NAME}, 'wifi_rssi', ''), -67,
+is(ReadingsVal($dr->{NAME}, 'wifiRssi', ''), -67,
    'Wi-Fi RSSI');
-is(ReadingsVal($dep->{NAME}, 'raw_1_987_3', ''), 42,
+is(ReadingsVal($dep->{NAME}, 'rawEp1Cluster987Attribute3', ''), 42,
    'unmapped scalar exposed explicitly');
 is(CommandAttr(undef, 'MATTER_DiagnosticsProbe diagnostics 0'), undef,
    'disable diagnostics');
 MATTERDevice_Parse($dr, encode_json({
     node_id => 3500, attributes => {'0/54/4' => -62}
 }));
-is(ReadingsVal($dr->{NAME}, 'wifi_rssi', ''), -67,
+is(ReadingsVal($dr->{NAME}, 'wifiRssi', ''), -67,
    'disable stops updating diagnostics without deleting old data');
 
 subtest 'Issue #35 passive diagnostics and raw boundaries' => sub {
@@ -2899,59 +2919,59 @@ subtest 'Issue #35 passive diagnostics and raw boundaries' => sub {
     $report->('0/54/4', -47);
     for my $bad (undef, {}, -129, 1, 'invalid') {
         $report->('0/54/4', $bad);
-        is(ReadingsVal($root, 'wifi_rssi', ''), -47, 'invalid RSSI preserves last valid report');
+        is(ReadingsVal($root, 'wifiRssi', ''), -47, 'invalid RSSI preserves last valid report');
     }
-    is(ReadingsVal('MATTER_DiagSecond', 'wifi_rssi', ''), -63, 'other IO retains snapshot RSSI');
+    is(ReadingsVal('MATTER_DiagSecond', 'wifiRssi', ''), -63, 'other IO retains snapshot RSSI');
     my @rows = map { {extAddress => "n$_", averageRssi => -$_, isChild => JSON::false} } 1..17;
     $report->('0/53/7', [reverse @rows]);
-    is(ReadingsVal($root, 'thread_neighbors', -1), 17, 'count includes all neighbors');
-    is(ReadingsVal($root, 'thread_neighbor_list', ''), join(', ', map {"n$_ (router, -$_ dBm)"} 1..16),
+    is(ReadingsVal($root, 'threadNeighbors', -1), 17, 'count includes all neighbors');
+    is(ReadingsVal($root, 'threadNeighborList', ''), join(', ', map {"n$_ (router, -$_ dBm)"} 1..16),
        'list contains exactly the strongest sixteen in signal order');
     my @long = map { {extAddress => 'a' x 24, averageRssi => -$_} } 1..16;
     $report->('0/53/7', \@long);
-    is(length(ReadingsVal($root, 'thread_neighbor_list', '')), 600, 'formatted list capped at 600 characters');
+    is(length(ReadingsVal($root, 'threadNeighborList', '')), 600, 'formatted list capped at 600 characters');
     $report->('0/53/7', [($rows[0]) x 256]);
-    is(ReadingsVal($root, 'thread_neighbors', -1), 256, '256 rows accepted');
-    my $list = ReadingsVal($root, 'thread_neighbor_list', '');
+    is(ReadingsVal($root, 'threadNeighbors', -1), 256, '256 rows accepted');
+    my $list = ReadingsVal($root, 'threadNeighborList', '');
     for my $invalid (undef, {}, [($rows[-1]) x 257]) {
         $report->('0/53/7', $invalid);
-        is(ReadingsVal($root, 'thread_neighbors', -1), 256, 'invalid table preserves count');
-        is(ReadingsVal($root, 'thread_neighbor_list', ''), $list, 'invalid table preserves list');
+        is(ReadingsVal($root, 'threadNeighbors', -1), 256, 'invalid table preserves count');
+        is(ReadingsVal($root, 'threadNeighborList', ''), $list, 'invalid table preserves list');
         is(ReadingsVal($root, 'rssi', ''), -1, 'invalid table preserves RSSI');
     }
     $report->('0/53/7', []);
-    is(ReadingsVal($root, 'thread_neighbors', -1), 0, 'empty table clears count');
-    is(ReadingsVal($root, 'thread_neighbor_list', ''), 'none', 'empty table clears list');
+    is(ReadingsVal($root, 'threadNeighbors', -1), 0, 'empty table clears count');
+    is(ReadingsVal($root, 'threadNeighborList', ''), 'none', 'empty table clears list');
 
     my $limit = 'x' x 512;
     $report->('1/987/3', $limit);
-    is(ReadingsVal($ep, 'raw_1_987_3', ''), $limit, '512-character scalar accepted');
+    is(ReadingsVal($ep, 'rawEp1Cluster987Attribute3', ''), $limit, '512-character scalar accepted');
     for my $invalid (undef, $limit . 'x') {
         $report->('1/987/3', $invalid);
-        is(ReadingsVal($ep, 'raw_1_987_3', ''), $limit, 'null or oversized raw value preserves reading');
+        is(ReadingsVal($ep, 'rawEp1Cluster987Attribute3', ''), $limit, 'null or oversized raw value preserves reading');
     }
     my $unicode = chr(0x20ac) x 512;
     $report->('1/987/3', $unicode);
-    is(ReadingsVal($ep, 'raw_1_987_3', ''), $unicode, 'scalar limit counts characters');
+    is(ReadingsVal($ep, 'rawEp1Cluster987Attribute3', ''), $unicode, 'scalar limit counts characters');
     $report->('1/987/3', [$unicode]);
-    is(ReadingsVal($ep, 'raw_1_987_3', ''), $unicode, 'encoded structure exceeds byte limit');
+    is(ReadingsVal($ep, 'rawEp1Cluster987Attribute3', ''), $unicode, 'encoded structure exceeds byte limit');
     my $string = 'x' x 508;
     $report->('1/987/3', [$string]);
-    is(ReadingsVal($ep, 'raw_1_987_3', ''), encode_json([$string]), '512-byte JSON array accepted');
+    is(ReadingsVal($ep, 'rawEp1Cluster987Attribute3', ''), encode_json([$string]), '512-byte JSON array accepted');
     $report->('1/987/3', [$string . 'x']);
-    is(ReadingsVal($ep, 'raw_1_987_3', ''), encode_json([$string]), '513-byte JSON array ignored');
-    is(ReadingsVal('MATTER_DiagSecond_EP1', 'raw_1_987_3', ''), 'baseline', 'raw reading isolated by IO');
+    is(ReadingsVal($ep, 'rawEp1Cluster987Attribute3', ''), encode_json([$string]), '513-byte JSON array ignored');
+    is(ReadingsVal('MATTER_DiagSecond_EP1', 'rawEp1Cluster987Attribute3', ''), 'baseline', 'raw reading isolated by IO');
     for my $cluster (31, 48, 49, 60, 62, 63, 64, 65) {
         $report->("1/$cluster/234", 'probe');
-        ok(!exists $defs{$ep}{READINGS}{"raw_1_${cluster}_234"}, "cluster $cluster excluded");
+        ok(!exists $defs{$ep}{READINGS}{"rawEp1Cluster${cluster}Attribute234"}, "cluster $cluster excluded");
     }
     $report->('1/987/65519', 0);
-    is(ReadingsVal($ep, 'raw_1_987_65519', ''), 0, 'unmapped zero below global boundary retained');
+    is(ReadingsVal($ep, 'rawEp1Cluster987Attribute65519', ''), 0, 'unmapped zero below global boundary retained');
     $report->('1/987/65520', 1);
-    ok(!exists $defs{$ep}{READINGS}{raw_1_987_65520}, 'global boundary excluded');
+    ok(!exists $defs{$ep}{READINGS}{rawEp1Cluster987Attribute65520}, 'global boundary excluded');
     CommandAttr(undef, "$ep rawReadings 0");
     $report->('1/987/3', 'changed');
-    is(ReadingsVal($ep, 'raw_1_987_3', ''), encode_json([$string]), 'disabling raw retains cached value');
+    is(ReadingsVal($ep, 'rawEp1Cluster987Attribute3', ''), encode_json([$string]), 'disabling raw retains cached value');
 };
 
 # Issue #28: passive ICD detection, LIT gating, explicit ICD query and
@@ -2966,13 +2986,13 @@ MATTER_ProcessNode($defs{ioA}, {
     }
 });
 my $icd = $defs{MATTER_IcdProbe};
-is(ReadingsVal($icd->{NAME}, 'icd_supported', ''), 'true',
+is(ReadingsVal($icd->{NAME}, 'icdSupported', ''), 'true',
    'ICD presence is announced passively');
-is(ReadingsVal($icd->{NAME}, 'icd_lit_supported', ''), 'true',
+is(ReadingsVal($icd->{NAME}, 'icdLitSupported', ''), 'true',
    'Matter 1.4 and LIT bit both required');
-is(ReadingsVal($icd->{NAME}, 'icd_operating_mode', ''), 'LIT',
+is(ReadingsVal($icd->{NAME}, 'icdOperatingMode', ''), 'LIT',
    'current LIT mode is distinct from LIT capability');
-is(ReadingsVal($icd->{NAME}, 'icd_idle_mode_duration', ''), 3600,
+is(ReadingsVal($icd->{NAME}, 'icdIdleModeDuration', ''), 3600,
    'idle duration is retained');
 is(CommandAttr(undef, 'ioA autocreate 1'), undef,
    'IO remains assignable during ICD tests');
@@ -2996,13 +3016,13 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
         next_expected_checkin => 1735689600000,
     }
 }));
-is(ReadingsVal($icd->{NAME}, 'icd_awake', ''), 'false',
+is(ReadingsVal($icd->{NAME}, 'icdAwake', ''), 'false',
    'sleeping ICD is recorded as awake false');
-is(ReadingsVal($icd->{NAME}, 'icd_controller_available', ''), 'true',
+is(ReadingsVal($icd->{NAME}, 'icdControllerAvailable', ''), 'true',
    'controller availability is independent of awake');
 is(ReadingsVal($icd->{NAME}, 'state', ''), 'online',
    'sleeping ICD never forces root offline');
-is(ReadingsVal($icd->{NAME}, 'icd_registered', ''), 'true',
+is(ReadingsVal($icd->{NAME}, 'icdRegistered', ''), 'true',
    'registration is confirmed only from correlated response');
 @sent_requests = ();
 is(MATTERDevice_Set($icd, $icd->{NAME}, 'icdRegister'), undef,
@@ -3033,9 +3053,9 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $cid,
     result => {software_version => 101, software_version_string => '1.0.1'}
 }));
-is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'available',
+is(ReadingsVal($ota->{NAME}, 'firmwareUpdate', ''), 'available',
    'available firmware comes from server response');
-is(ReadingsVal($ota->{NAME}, 'firmware_update_version', ''), '1.0.1',
+is(ReadingsVal($ota->{NAME}, 'firmwareUpdateVersion', ''), '1.0.1',
    'server-confirmed version label shown');
 ok(grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
    'firmware install enabled after actual update discovery');
@@ -3050,17 +3070,17 @@ my $uid = $sent_requests[-1]{message_id};
 MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $uid, result => undef
 }));
-is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'update requested',
+is(ReadingsVal($ota->{NAME}, 'firmwareUpdate', ''), 'update requested',
    'server acknowledgement is not successful installation');
 MATTER_ParseMessage($defs{ioA}, encode_json({
     event => 'attribute_updated', data => [3600, '0/42/2', 4]
 }));
-is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'downloading',
+is(ReadingsVal($ota->{NAME}, 'firmwareUpdate', ''), 'downloading',
    'device OTA Requestor progress received');
 MATTER_ParseMessage($defs{ioA}, encode_json({
     event => 'attribute_updated', data => [3600, '0/40/9', 101]
 }));
-is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'installed',
+is(ReadingsVal($ota->{NAME}, 'firmwareUpdate', ''), 'installed',
    'installation requires matching new reported software version');
 
 subtest 'Issue 36 OTA eligibility and install lifecycle' => sub {
@@ -3093,12 +3113,12 @@ subtest 'Issue 36 OTA eligibility and install lifecycle' => sub {
     my $install = 'updateFirmware';
     my $set = sub { MATTERDevice_Set($root, $root->{NAME}, $_[0]) };
     my $reply = sub { MATTER_ParseMessage($io, encode_json({message_id => $requests[-1]{message_id}, @_})) };
-    my $status = sub { ReadingsVal($root->{NAME}, 'firmware_update', '') };
+    my $status = sub { ReadingsVal($root->{NAME}, 'firmwareUpdate', '') };
     my $offer = sub {
         is($set->($check), undef, 'manual check sent');
         $reply->(result => {software_version => $_[0]});
     };
-    readingsSingleUpdate($root, 'ota_update_state', 'idle', 0);
+    readingsSingleUpdate($root, 'otaUpdateState', 'idle', 0);
     $info->(11, $js);
     ok(!$can->($root, $check) && !$can->($child, $check), 'saved state and child cluster cannot authorize root or child');
     $report->('0/29/1', [29,42]);
@@ -3223,7 +3243,7 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $same_version_id,
     result => { software_version => 101, software_version_string => '1.0.1' }
 }));
-is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'up to date',
+is(ReadingsVal($ota->{NAME}, 'firmwareUpdate', ''), 'up to date',
    'already installed firmware is not offered as a newer update');
 ok(!grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
    'no install action for the already installed firmware');
@@ -3287,7 +3307,7 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
 }));
 ok(!exists($defs{$stray_name}),
    'unadvertised Switch event endpoints do not autocreate devices');
-is(ReadingsVal($dr->{NAME}, 'thread_device_type', ''), 'FTD',
+is(ReadingsVal($dr->{NAME}, 'threadDeviceType', ''), 'FTD',
    'Thread router role implies a full Thread device');
 is(CommandAttr(undef, 'MATTER_DiagnosticsProbe diagnostics 1'), undef,
    'diagnostics can be re-enabled for later reports');
@@ -3298,7 +3318,7 @@ MATTERDevice_Parse($dr, encode_json({
         {'0' => 'child', '6' => -30, '5' => 3, '13' => JSON::true}
     ]}
 }));
-is(ReadingsVal($dr->{NAME}, 'thread_neighbors', ''), 2,
+is(ReadingsVal($dr->{NAME}, 'threadNeighbors', ''), 2,
    'parent/child neighbors counted');
 is(ReadingsVal($dr->{NAME}, 'rssi', ''), -72,
    'child signal never replaces router-link RSSI');
@@ -3307,7 +3327,7 @@ is(ReadingsVal($dr->{NAME}, 'lqi', ''), 2,
 MATTERDevice_Parse($dr, encode_json({
     node_id => 3500, attributes => {'1/62/42' => 'private'}
 }));
-ok(!defined(ReadingsVal($dep->{NAME}, 'raw_1_62_42', undef)),
+ok(!defined(ReadingsVal($dep->{NAME}, 'rawEp1Cluster62Attribute42', undef)),
    'sensitive credential cluster excluded even with rawReadings enabled');
 
 # Review #36: an empty firmware offer and a failed check invalidate the
@@ -3319,9 +3339,9 @@ my $none_id = $sent_requests[-1]{message_id};
 MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $none_id, result => undef
 }));
-is(ReadingsVal($ota->{NAME}, 'firmware_update', ''), 'none reported',
+is(ReadingsVal($ota->{NAME}, 'firmwareUpdate', ''), 'none reported',
    'a null update response means none reported, not up to date forever');
-is(ReadingsVal($ota->{NAME}, 'firmware_update_version', ''), 'none',
+is(ReadingsVal($ota->{NAME}, 'firmwareUpdateVersion', ''), 'none',
    'outdated firmware offer label is cleared');
 ok(!grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
    'no install set after null result');
@@ -3333,8 +3353,8 @@ MATTER_ParseMessage($defs{ioA}, encode_json({
     message_id => $failure_id,
     error_code => 1, error => { message => 'DCL unavailable' }
 }));
-like(ReadingsVal($ota->{NAME}, 'firmware_update', ''), qr/DCL unavailable/,
-   'server lookup failure is visible in firmware_update');
+like(ReadingsVal($ota->{NAME}, 'firmwareUpdate', ''), qr/DCL unavailable/,
+   'server lookup failure is visible in firmwareUpdate');
 ok(!grep(/^updateFirmware:noArg$/, MATTERDevice_GetSetList($ota)),
    'lookup errors do not leave a stale install action');
 # Receive diagnostics exercise the real IO -> root -> endpoint routing. These
@@ -3730,9 +3750,9 @@ MATTER_ParseMessage($limit_io, encode_json({event => 'node_added', data => {
 my $limit_root = $defs{MATTER_LimitProbe};
 my $limit_ep = $defs{MATTER_LimitProbe_EP1};
 my $limit_ep2 = $defs{MATTER_LimitProbe_EP2};
-my @obsolete_limits = qw(color_temp_min color_temp_max min_brightness
-    max_brightness min_frequency max_frequency min_pin_code_length
-    max_pin_code_length min_rfid_code_length max_rfid_code_length);
+my @obsolete_limits = qw(colorTempMin colorTempMax minBrightness
+    maxBrightness minFrequency maxFrequency minPinCodeLength
+    maxPinCodeLength minRfidCodeLength maxRfidCodeLength);
 for my $old (@obsolete_limits) {
     like(CommandAttr(undef, "$limit_ep->{NAME} $old 999") // '',
        qr/unknown attribute/, "removed $old attribute is rejected");
@@ -3753,14 +3773,14 @@ my $limit_report = sub {
         data => [6400, "$ep/$cluster/$id", $value]}));
 };
 my @limit_reports = (
-    [8, 2, 'min_brightness', 1], [8, 3, 'max_brightness', 200],
-    [8, 5, 'min_frequency', 1000], [8, 6, 'max_frequency', 4000],
-    [768, 16395, 'color_temp_min', 200],
-    [768, 16396, 'color_temp_max', 454],
-    [257, 23, 'max_pin_code_length', 8],
-    [257, 24, 'min_pin_code_length', 4],
-    [257, 25, 'max_rfid_code_length', 20],
-    [257, 26, 'min_rfid_code_length', 8],
+    [8, 2, 'minBrightness', 1], [8, 3, 'maxBrightness', 200],
+    [8, 5, 'minFrequency', 1000], [8, 6, 'maxFrequency', 4000],
+    [768, 16395, 'colorTempMin', 200],
+    [768, 16396, 'colorTempMax', 454],
+    [257, 23, 'maxPinCodeLength', 8],
+    [257, 24, 'minPinCodeLength', 4],
+    [257, 25, 'maxRfidCodeLength', 20],
+    [257, 26, 'minRfidCodeLength', 8],
 );
 for my $r (@limit_reports) {
     $limit_report->(1, $r->[0], $r->[1], $r->[3]);
@@ -3779,7 +3799,7 @@ $limit_report->(2, 8, 3, 100);
 is(MATTERDevice_MaxBrightness($limit_ep2), 100,
    'second endpoint retains its independent reported maximum');
 $limit_report->(1, 8, 3, 180);
-is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 180,
+is(ReadingsVal($limit_ep->{NAME}, 'maxBrightness', ''), 180,
    'later limit reports replace the previous reading');
 @limit_commands = ();
 is(MATTERDevice_Set($limit_ep, $limit_ep->{NAME}, 'pct', 33), undef,
@@ -3808,11 +3828,11 @@ is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 50,
    'generic scale restoration updates percentage without physical level churn');
 for my $bad (undef, JSON::true, [], {}, 'nonsense', -1, 255, '1.5') {
     $limit_report->(1, 8, 3, $bad);
-    is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 180,
+    is(ReadingsVal($limit_ep->{NAME}, 'maxBrightness', ''), 180,
        'invalid maximum preserves last valid device report');
 }
 $limit_report->(1, 8, 3, 0);
-is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 0,
+is(ReadingsVal($limit_ep->{NAME}, 'maxBrightness', ''), 0,
    'generic uint8 MaxLevel zero is retained as reported, not replaced by fallback');
 is(MATTERDevice_MaxBrightness($limit_ep), 0,
    'a reported generic zero maximum is not a missing attribute');
@@ -3831,10 +3851,10 @@ ok(grep(/^ct:textField$/, MATTERDevice_GetSetList($limit_ep)),
    'reversed CT range does not create misleading colorpicker');
 $limit_report->(1, 768, 16395, 200);
 $limit_report->(1, 768, 16396, 65535);
-is(ReadingsVal($limit_ep->{NAME}, 'color_temp_max', ''), 454,
+is(ReadingsVal($limit_ep->{NAME}, 'colorTempMax', ''), 454,
    'out-of-domain color temperature cannot replace hardware limit');
 $limit_report->(1, 257, 23, 256);
-is(ReadingsVal($limit_ep->{NAME}, 'max_pin_code_length', ''), 8,
+is(ReadingsVal($limit_ep->{NAME}, 'maxPinCodeLength', ''), 8,
    'DoorLock length is validated as uint8');
 $limit_report->(1, 8, 65531, [0, 2]);
 is(MATTERDevice_MaxBrightness($limit_ep), 254,
@@ -3847,11 +3867,11 @@ ok(grep(/^ct:textField$/, MATTERDevice_GetSetList($limit_ep)),
    'fresh AttributeList can invalidate restored CT limits');
 $limit_report->(1, 768, 65531, [7, 16395, 16396]);
 # Simulate statefile restoration: readings survive, helper metadata does not.
-my $limit_saved_ct = $limit_ep->{READINGS}{color_temp_min}{VAL};
-$limit_ep->{READINGS}{color_temp_min}{VAL} = 'broken';
+my $limit_saved_ct = $limit_ep->{READINGS}{colorTempMin}{VAL};
+$limit_ep->{READINGS}{colorTempMin}{VAL} = 'broken';
 ok(grep(/^ct:textField$/, MATTERDevice_GetSetList($limit_ep)),
    'invalid restored boundary is validated before constructing a widget');
-$limit_ep->{READINGS}{color_temp_min}{VAL} = $limit_saved_ct;
+$limit_ep->{READINGS}{colorTempMin}{VAL} = $limit_saved_ct;
 my $saved_limit_helper = delete $limit_ep->{helper};
 ok(!grep(/^ct:colorpicker,CT,200,1,454$/, MATTERDevice_GetSetList($limit_ep)),
    'restored readings cannot invent commands without AcceptedCommandList');
@@ -3862,19 +3882,19 @@ MATTER_ParseMessage($limit_io, encode_json({event => 'node_updated', data => {
     node_id => 6400, available => JSON::false}}));
 readingsSingleUpdate($limit_ep, 'pct', 99, 1); # user's manual offline edit
 $limit_report->(1, 8, 3, 111);
-is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 180,
+is(ReadingsVal($limit_ep->{NAME}, 'maxBrightness', ''), 180,
    'offline live data cannot overwrite device limits');
 MATTER_ParseMessage($limit_io, encode_json({event => 'node_updated', data => {
     node_id => 6400, available => JSON::true,
     attributes => {'1/8/3' => 112}}}));
-is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 112,
+is(ReadingsVal($limit_ep->{NAME}, 'maxBrightness', ''), 112,
    'valid online recovery snapshot refreshes the device limit');
 MATTERDevice_ApplyCapabilityMetadata($limit_root, {'1/8/65532' => 6});
 is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 35,
    'online Lighting metadata recalculates percentage using its standardized scale');
 MATTERDevice_ApplyCapabilityMetadata($limit_root, {'1/8/65532' => 4});
 $limit_report->(1, 8, 3, 170);
-is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 170,
+is(ReadingsVal($limit_ep->{NAME}, 'maxBrightness', ''), 170,
    'fresh online limit report updates the reading after recovery');
 is(ReadingsVal($limit_ep->{NAME}, 'pct', ''), 52,
    'online limit change recalculates percentage from the last reported brightness');
@@ -3887,9 +3907,9 @@ for my $r (@limit_reports) {
        "$r->[2] is never auto-created as an attribute");
 }
 $limit_report->(1, 8, 3, 160);
-ok(!exists($attr{$limit_ep->{NAME}}{max_brightness}),
+ok(!exists($attr{$limit_ep->{NAME}}{maxBrightness}),
    'reports never recreate removed obsolete attributes');
-is(ReadingsVal($limit_ep->{NAME}, 'max_brightness', ''), 160,
+is(ReadingsVal($limit_ep->{NAME}, 'maxBrightness', ''), 160,
    'subsequent reports continue to update the reading');
 
 subtest 'Issue 27: unknown/offline blocks, valid online synchronizes' => sub {
@@ -3933,7 +3953,7 @@ subtest 'Issue 27: unknown/offline blocks, valid online synchronizes' => sub {
     readingsSingleUpdate($bep, 'state', 'off', 1);
     my $state_writes = $single_writes{$ep->{NAME}}{state};
     my $battery_writes = $single_writes{$ep->{NAME}}{batteryPercent};
-    my $type_writes = $single_writes{$ep->{NAME}}{device_type_ids};
+    my $type_writes = $single_writes{$ep->{NAME}}{deviceTypeIds};
     my $epoch = $a->{helper}{availability_epoch};
     my $reentered = 0;
     $reading_event_hook = sub {
@@ -3965,7 +3985,7 @@ subtest 'Issue 27: unknown/offline blocks, valid online synchronizes' => sub {
     is(scalar(@requests), $before_reads, 'unknown availability triggers no automatic or manual read');
     is($single_writes{$ep->{NAME}}{state}, $state_writes, 'blocked snapshots do not churn physical state events');
     is($single_writes{$ep->{NAME}}{batteryPercent}, $battery_writes, 'blocked snapshots preserve manual sensor value and timestamp');
-    is($single_writes{$ep->{NAME}}{device_type_ids}, $type_writes, 'blocked snapshots preserve device types and metadata');
+    is($single_writes{$ep->{NAME}}{deviceTypeIds}, $type_writes, 'blocked snapshots preserve device types and metadata');
     MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {
         node_id => 6100, available => JSON::true, attributes => $values}}));
     is(ReadingsVal($a->{NAME}, 'state', ''), 'online', 'validated availability independently restores root status');
@@ -4053,11 +4073,11 @@ subtest 'Issue 28: explicit ICD reconciliation and current backend support' => s
 
     MATTER_ProcessNode($io, {node_id => 6201, name => 'NonIcd', available => JSON::true,
         attributes => {'0/29/1' => [29, 40]}});
-    ok(!exists($defs{MATTER_NonIcd}{READINGS}{icd_supported}), 'ordinary non-ICD root gets no new negative ICD readings');
+    ok(!exists($defs{MATTER_NonIcd}{READINGS}{icdSupported}), 'ordinary non-ICD root gets no new negative ICD readings');
 
     # Persisted presentation readings alone do not establish backend support.
-    readingsSingleUpdate($io, 'schema_version', 15, 0);
-    readingsSingleUpdate($io, 'sdk_version', $sdk, 0);
+    readingsSingleUpdate($io, 'schemaVersion', 15, 0);
+    readingsSingleUpdate($io, 'sdkVersion', $sdk, 0);
     ok(!$can_get->($root) && !$can_admin->($root), 'restored server readings do not advertise ICD operations');
     for my $case ([15, 'python-matter-server/8.0'], [15, 'unknown'],
                   [11, $sdk], [undef, $sdk], [[], $sdk], [12, undef], [12, {}]) {
@@ -4091,30 +4111,30 @@ subtest 'Issue 28: explicit ICD reconciliation and current backend support' => s
     # Whole ServerList content, not the presence of attributes in a node patch,
     # determines explicit removal. Malformed lists never act as absence.
     MATTER_ProcessNode($io, {node_id => 6200, attributes => {'0/40/3' => 'Synthetic ICD'}});
-    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'true', 'partial node update preserves ICD support');
+    is(ReadingsVal($root->{NAME}, 'icdSupported', ''), 'true', 'partial node update preserves ICD support');
     for my $bad (undef, '', {}, [29, undef], [29, {}], [-1], [4294967296]) {
         $report->('0/29/1', $bad);
-        is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'true', 'malformed ServerList cannot revoke ICD support');
+        is(ReadingsVal($root->{NAME}, 'icdSupported', ''), 'true', 'malformed ServerList cannot revoke ICD support');
     }
     $report->('1/29/1', [29, 6]);
-    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'true', 'child ServerList does not revoke root support');
+    is(ReadingsVal($root->{NAME}, 'icdSupported', ''), 'true', 'child ServerList does not revoke root support');
     MATTER_ProcessNode($io, {node_id => 6200, available => JSON::false, attributes => {'0/29/1' => []}});
-    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'true', 'offline snapshot cannot revoke persisted capability');
+    is(ReadingsVal($root->{NAME}, 'icdSupported', ''), 'true', 'offline snapshot cannot revoke persisted capability');
     MATTER_ProcessNode($io, {node_id => 6200, available => JSON::true, attributes => $values});
 
     # ServerList wins over obsolete cluster values in the same payload.
     MATTER_ProcessNode($io, {node_id => 6200, attributes => {%$values, '0/29/1' => [29, 40]}});
-    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'false', 'explicit ServerList absence revokes prior ICD support');
-    is(ReadingsVal($root->{NAME}, 'icd_lit_supported', ''), 'false', 'revoked ICD cannot remain LIT-capable');
+    is(ReadingsVal($root->{NAME}, 'icdSupported', ''), 'false', 'explicit ServerList absence revokes prior ICD support');
+    is(ReadingsVal($root->{NAME}, 'icdLitSupported', ''), 'false', 'revoked ICD cannot remain LIT-capable');
     ok(!exists($root->{helper}{capabilities}{70}), 'obsolete ICD command metadata is removed');
     ok(!$can_get->($root) && !$can_admin->($root), 'revoked capability removes get and set commands');
     ok($can_get->($other_root) && $can_admin->($other_root), 'same node on another IO remains supported');
     is(ReadingsVal($child->{NAME}, 'state', ''), 'on', 'capability reconciliation preserves physical endpoint state');
-    my $writes = $single_writes{$root->{NAME}}{icd_supported};
+    my $writes = $single_writes{$root->{NAME}}{icdSupported};
     $report->('0/29/1', []);
-    is($single_writes{$root->{NAME}}{icd_supported}, $writes, 'repeated absent/empty ServerList does not churn readings');
+    is($single_writes{$root->{NAME}}{icdSupported}, $writes, 'repeated absent/empty ServerList does not churn readings');
     $report->('0/29/1', ['0x001D', '0x0046']);
-    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'true', 'reported ServerList presence restores ICD capability');
+    is(ReadingsVal($root->{NAME}, 'icdSupported', ''), 'true', 'reported ServerList presence restores ICD capability');
     ok($can_get->($root) && !$can_admin->($root), 'restored cluster alone does not reuse obsolete Check-In features');
     $report->('0/70/65532', 5);
     ok($can_admin->($root), 'new Check-In feature report restores administrative commands');
@@ -4126,23 +4146,23 @@ subtest 'Issue 28: explicit ICD reconciliation and current backend support' => s
     ok(grep($_ eq '0/29/1', @{$read->{args}{attribute_path}}), 'root getConfig requests ServerList in its existing read');
     $report->('0/29/1', [29, 40]);
     MATTER_ParseMessage($io, encode_json({message_id => $read->{message_id}, result => $values}));
-    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'false', 'older getConfig cannot undo newer live capability removal');
+    is(ReadingsVal($root->{NAME}, 'icdSupported', ''), 'false', 'older getConfig cannot undo newer live capability removal');
     MATTER_ProcessNode($io, {node_id => 6200, attributes => $values});
     is(MATTERDevice_Set($root, $root->{NAME}, 'getConfig'), undef, 'second explicit configuration read accepted');
     MATTER_ParseMessage($io, encode_json({message_id => $requests[-1]{message_id},
         result => {%$values, '0/29/1' => [29, 40]}}));
-    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'false', 'getConfig ServerList wins over other cluster data in that reply');
+    is(ReadingsVal($root->{NAME}, 'icdSupported', ''), 'false', 'getConfig ServerList wins over other cluster data in that reply');
     MATTER_ProcessNode($io, {node_id => 6200, attributes => $values});
     MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {
         node_id => 6200, attributes => {'0/29/1' => [29, 40]}}}));
-    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'false', 'partial node_updated with explicit complete ServerList reconciles support');
+    is(ReadingsVal($root->{NAME}, 'icdSupported', ''), 'false', 'partial node_updated with explicit complete ServerList reconciles support');
     MATTER_ProcessNode($io, {node_id => 6200, attributes => $values});
     $io->{helper}{pending_command}{'icd-discovery-test'} = 'get_nodes';
     $report->('0/29/1', [29, 40]);
     $report->('0/29/1', [29, undef]);
     MATTER_ParseMessage($io, encode_json({message_id => 'icd-discovery-test', result => [{
         node_id => 6200, available => JSON::true, attributes => $values}]}));
-    is(ReadingsVal($root->{NAME}, 'icd_supported', ''), 'false', 'older discovery preserves valid live ServerList despite a later malformed list');
+    is(ReadingsVal($root->{NAME}, 'icdSupported', ''), 'false', 'older discovery preserves valid live ServerList despite a later malformed list');
 
     # Dynamic observations retain their normal FHEM timestamps and values.
     MATTER_ProcessNode($io, {node_id => 6200, attributes => $values});
@@ -4200,7 +4220,7 @@ subtest 'Issue 30: persisted sensors follow the shared availability lifecycle' =
         [5, 0x0107, 1030, 'motion', 3, 'motion', 'nomotion', 5, 'motion', 2, 'nomotion', 256],
         [6, 0x0043, 69, 'water_leak', JSON::true, 'leak', 'dry', JSON::true, 'leak', JSON::false, 'dry', 7],
         [7, 0x0044, 69, 'rain', JSON::false, 'dry', 'rain', JSON::false, 'dry', JSON::true, 'rain', -1],
-        [8, 0xFFF0, 69, 'boolean_state', JSON::true, 1, 0, JSON::true, 1, JSON::false, 0, 'unknown'],
+        [8, 0xFFF0, 69, 'booleanState', JSON::true, 1, 0, JSON::true, 1, JSON::false, 0, 'unknown'],
     );
     my (%initial, %online, %invalid, %nulls);
     for my $row (@sensors) {
@@ -4227,7 +4247,7 @@ subtest 'Issue 30: persisted sensors follow the shared availability lifecycle' =
         my %snapshot;
         for my $row (@sensors) {
             my $device = $targets->{$row->[0]};
-            for my $reading ($row->[3], 'device_type_ids', $binary->($row->[3]) ? ('state') : ()) {
+            for my $reading ($row->[3], 'deviceTypeIds', $binary->($row->[3]) ? ('state') : ()) {
                 $snapshot{$row->[0]}{$reading} = {
                     %{$device->{READINGS}{$reading}},
                     writes => $single_writes{$device->{NAME}}{$reading} // 0,
@@ -4279,7 +4299,7 @@ subtest 'Issue 30: persisted sensors follow the shared availability lifecycle' =
     }
     is($defs{SensorLifecycleRenamed}, $root, 'rediscovery preserves renamed root identity');
     is($defs{SensorContactRenamed}, $devices{1}, 'rediscovery preserves renamed endpoint identity');
-    is(ReadingsVal('SensorContactRenamed', 'device_type_ids', ''), '0x0015', 'saved type identifies contact without a new Descriptor report');
+    is(ReadingsVal('SensorContactRenamed', 'deviceTypeIds', ''), '0x0015', 'saved type identifies contact without a new Descriptor report');
     is_deeply($capture->(\%other_devices), $other_before, 'same-node sensor values on another IO are unchanged');
 
     my $valid = $capture->(\%devices);
@@ -4339,9 +4359,9 @@ subtest 'Issue 32: environmental values, units and optional numeric measurements
     # invalid raw value. Synthetic payloads use Matter 1.4 attribute IDs.
     my @rows = (
         [1, 1027, 'pressure', undef, undef, undef, 1013, 1008, 999, -32768],
-        [2, 1037, 'co2', 'co2_unit', 0, 'ppm', 650, 720.5, 500.25, -5],
-        [3, 1066, 'pm25', 'pm25_unit', 4, 'ug/m3', 12.5, 4.5, 0.1, -0.1],
-        [4, 1070, 'tvoc', 'tvoc_unit', 1, 'ppb', 3.5, 0.25, 12, -1],
+        [2, 1037, 'co2', 'co2Unit', 0, 'ppm', 650, 720.5, 500.25, -5],
+        [3, 1066, 'pm25', 'pm25Unit', 4, 'ug/m3', 12.5, 4.5, 0.1, -0.1],
+        [4, 1070, 'tvoc', 'tvocUnit', 1, 'ppb', 3.5, 0.25, 12, -1],
     );
     my %initial;
     for my $row (@rows) {
@@ -4398,20 +4418,20 @@ subtest 'Issue 32: environmental values, units and optional numeric measurements
         ok(!exists($ep{$q->[0]}{READINGS}{$q->[2] . '_unit'}), 'qualitative feature metadata cannot fabricate a measurement unit');
     }
     is(ReadingsVal($ep{8}{NAME}, 'co2', ''), 0.75, 'numeric concentration without a unit remains the supplied raw number');
-    ok(!exists($ep{8}{READINGS}{co2_unit}), 'missing unit is not assumed to be ppm');
+    ok(!exists($ep{8}{READINGS}{co2Unit}), 'missing unit is not assumed to be ppm');
     $report->(8, 1037, 8, 255);
-    ok(!exists($ep{8}{READINGS}{co2_unit}), 'unknown unit on a new endpoint does not create a unit reading');
+    ok(!exists($ep{8}{READINGS}{co2Unit}), 'unknown unit on a new endpoint does not create a unit reading');
     $report->(8, 1037, 8, undef);
-    ok(!exists($ep{8}{READINGS}{co2_unit}), 'null unit on a new endpoint does not create a unit reading');
+    ok(!exists($ep{8}{READINGS}{co2Unit}), 'null unit on a new endpoint does not create a unit reading');
     my $raw_writes = $single_writes{$ep{8}{NAME}}{co2};
     $report->(8, 1037, 8, 3);
-    is(ReadingsVal($ep{8}{NAME}, 'co2_unit', ''), 'mg/m3', 'a later supplied unit is accepted without a ppm default');
+    is(ReadingsVal($ep{8}{NAME}, 'co2Unit', ''), 'mg/m3', 'a later supplied unit is accepted without a ppm default');
     is(ReadingsVal($ep{8}{NAME}, 'co2', ''), 0.75, 'mg/m3 concentration is not silently converted to ppm');
     is($single_writes{$ep{8}{NAME}}{co2}, $raw_writes, 'unit-only report does not rewrite the measured value');
     ok(!exists($ep{9}{READINGS}{tvoc}), 'unit and NumericMeasurement metadata alone do not create a zero measurement');
     $report->(9, 1070, 0, 0);
     is(ReadingsVal($ep{9}{NAME}, 'tvoc', ''), 0, 'explicit numeric zero is a valid first measurement');
-    is(ReadingsVal($ep{9}{NAME}, 'tvoc_unit', ''), 'ppb', 'unit-first ordering retains the supplied unit');
+    is(ReadingsVal($ep{9}{NAME}, 'tvocUnit', ''), 'ppb', 'unit-first ordering retains the supplied unit');
 
     $snapshot->({map { ("$_->[0]/$_->[1]/0" => 0) } @rows});
     for my $row (@rows) {
@@ -4506,24 +4526,24 @@ subtest 'Issue 33: HVAC capabilities, cooling writes and correlated Matter statu
         return [{Path => {EndpointId => 0 + $endpoint, ClusterId => 0 + $cluster, AttributeId => 0 + $attribute},
                  Status => $code, defined($cluster_code) ? (ClusterStatus => $cluster_code) : ()}];
     };
-    unlike($list->($root), qr/(?:desired-temp|fan_mode|fan_pct|identify):/, 'endpoint capabilities are not offered on the root');
+    unlike($list->($root), qr/(?:desired-temp|fanMode|fanPct|identify):/, 'endpoint capabilities are not offered on the root');
     like($list->($ep{1}), qr/desired-temp:textField/, 'heating target uses advertised attribute and heating feature');
     unlike($list->($ep{1}), qr/desired-temp-cool:|mode:[^ ]*\b(?:cool|auto)\b/, 'heater does not offer cooling target or cooling/auto modes');
     like($list->($ep{2}), qr/desired-temp-cool:textField/, 'cooler offers the cooling target');
     unlike($list->($ep{2}), qr/desired-temp:|mode:[^ ]*\b(?:heat|emergency_heat|auto)\b/, 'cooler does not offer heating or auto modes');
     like($list->($ep{3}), qr/mode:off,heat,cool,auto,emergency_heat/, 'combined auto thermostat offers feature-compatible modes');
-    like($list->($ep{4}), qr/fan_mode:off,low,high(?: |$)/, 'fan sequence excludes medium and auto');
-    like($list->($ep{5}), qr/fan_mode:off,high,auto(?: |$)/, 'auto fan sequence excludes low and medium');
+    like($list->($ep{4}), qr/fanMode:off,low,high(?: |$)/, 'fan sequence excludes medium and auto');
+    like($list->($ep{5}), qr/fanMode:off,high,auto(?: |$)/, 'auto fan sequence excludes low and medium');
     unlike($list->($ep{6}), qr/(?:desired-temp(?:-cool)?|mode):/, 'saved physical mode cannot replace missing FeatureMap');
     unlike($list->($ep{7}), qr/(?:desired-temp(?:-cool)?|mode):/, 'reported values cannot replace missing AttributeList');
-    unlike($list->($ep{9}), qr/fan_pct:|fan_mode:/, 'PercentCurrent alone cannot authorize PercentSetting');
+    unlike($list->($ep{9}), qr/fanPct:|fanMode:/, 'PercentCurrent alone cannot authorize PercentSetting');
     like($list->($ep{8}), qr/identify:noArg/, 'Identify still follows AcceptedCommandList');
     ok(!MATTERDevice_AttributeWritable($ep{9}, 514, 3), 'read-only PercentCurrent is not a standard write target');
     my $before = @requests;
     for my $case ([$ep{1}, 'desired-temp-cool', 26], [$ep{1}, 'mode', 'cool'],
-                  [$ep{2}, 'mode', 'heat'], [$ep{4}, 'fan_mode', 'medium'],
-                  [$ep{4}, 'fan_mode', 'auto'], [$ep{5}, 'fan_mode', 'low'],
-                  [$ep{4}, 'fan_mode', 'on'], [$ep{9}, 'fan_pct', 50]) {
+                  [$ep{2}, 'mode', 'heat'], [$ep{4}, 'fanMode', 'medium'],
+                  [$ep{4}, 'fanMode', 'auto'], [$ep{5}, 'fanMode', 'low'],
+                  [$ep{4}, 'fanMode', 'on'], [$ep{9}, 'fanPct', 50]) {
         ok(defined(MATTERDevice_Set($case->[0], $case->[0]{NAME}, $case->[1], $case->[2])), 'explicit unsupported target/mode is rejected');
     }
     is(scalar @requests, $before, 'unsupported commands send no request');
@@ -4582,11 +4602,11 @@ subtest 'Issue 33: HVAC capabilities, cooling writes and correlated Matter statu
         $report->(5, 514, 1, $sequence);
         my @expected = ('off,low,medium,high', 'off,low,high',
                         'off,low,medium,high,auto', 'off,low,high,auto', 'off,high,auto', 'off,high');
-        like($list->($ep{5}), qr/\bfan_mode:\Q$expected[$sequence]\E(?: |$)/, 'FanModeSequence enum controls the displayed list');
+        like($list->($ep{5}), qr/\bfanMode:\Q$expected[$sequence]\E(?: |$)/, 'FanModeSequence enum controls the displayed list');
     }
     $report->(5, 514, 1, 4);
     $report->(5, 514, 65532, 0);
-    like($list->($ep{5}), qr/fan_mode:off,high(?: |$)/, 'missing Auto feature removes auto even from an auto-capable sequence');
+    like($list->($ep{5}), qr/fanMode:off,high(?: |$)/, 'missing Auto feature removes auto even from an auto-capable sequence');
     $report->(5, 514, 65532, 2);
     for my $sequence (0 .. 5) {
         $report->(3, 513, 27, $sequence);
@@ -4619,18 +4639,18 @@ subtest 'Issue 33: HVAC capabilities, cooling writes and correlated Matter statu
     is(MATTERDevice_Set($ep{4}, $ep{4}{NAME}, 'getConfig'), undef, 'explicit getConfig can refresh mode metadata');
     MATTER_ParseMessage($io, encode_json({message_id => $requests[-1]{message_id}, result => {
         '4/514/65531' => [0, 1, 2, 3], '4/514/65532' => 0, '4/514/1' => 5}}));
-    like($list->($ep{4}), qr/fan_mode:off,high(?: |$)/, 'full getConfig reconciles a changed mode sequence');
+    like($list->($ep{4}), qr/fanMode:off,high(?: |$)/, 'full getConfig reconciles a changed mode sequence');
     is(MATTERDevice_Set($ep{4}, $ep{4}{NAME}, 'getConfig'), undef, 'configuration read queued before a newer sequence');
     my $sequence_read = $requests[-1]{message_id};
     $report->(4, 514, 1, 1);
     $report->(4, 514, 1, 99);
     MATTER_ParseMessage($io, encode_json({message_id => $sequence_read, result => {
         '4/514/65531' => [0, 1, 2, 3], '4/514/65532' => 0, '4/514/1' => 5}}));
-    like($list->($ep{4}), qr/fan_mode:off,low,high(?: |$)/,
+    like($list->($ep{4}), qr/fanMode:off,low,high(?: |$)/,
          'newer valid sequence wins over an old read despite a later malformed report');
     $report->(4, 514, 65531, [0, 2, 3]);
-    unlike($list->($ep{4}), qr/fan_mode:/, 'sequence removed from AttributeList cannot authorize modes from old cached metadata');
-    like($list->($ep{4}), qr/fan_pct:/, 'independent writable percentage remains available');
+    unlike($list->($ep{4}), qr/fanMode:/, 'sequence removed from AttributeList cannot authorize modes from old cached metadata');
+    like($list->($ep{4}), qr/fanPct:/, 'independent writable percentage remains available');
 
     MATTER_ProcessNode($io, {node_id => 6501, name => 'HvacMissingFeatures', available => JSON::true,
         attributes => {'1/513/65531' => [18], '1/513/18' => 2100}});
@@ -4750,7 +4770,7 @@ subtest 'Issue 34: native dim variants, latest command replies and lifecycle' =>
     like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/failed: synthetic device refusal/, 'server refusal is reported on the endpoint');
     $reply->($move, result => undef);
     like(ReadingsVal($ep{1}{NAME}, 'lastError', ''), qr/failed:/, 'late Move acknowledgement cannot clear newer Stop failure');
-    unlike(ReadingsVal($ep{1}{NAME}, 'firmware_update', ''), qr/failed:/, 'dim errors do not appear as firmware status');
+    unlike(ReadingsVal($ep{1}{NAME}, 'firmwareUpdate', ''), qr/failed:/, 'dim errors do not appear as firmware status');
 
     my $missing = $send->(1, 'dim_stop');
     $reply->($missing);
@@ -4805,7 +4825,7 @@ subtest 'Issue 34: native dim variants, latest command replies and lifecycle' =>
     MATTER_ProcessNode($io, {node_id => 6600, attributes => {
         '1/514/65531' => [2], '1/514/2' => 40}});
     $id = $send->(1, 'dim_up');
-    is(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'fan_pct', 50), undef,
+    is(MATTERDevice_Set($ep{1}, $ep{1}{NAME}, 'fanPct', 50), undef,
        'tracking a dim reply does not introduce a lock for an unrelated setter');
     my $write_id = $requests[-1]{message_id};
     ok(exists($io->{helper}{pending_command}{$id}), 'unrelated write does not cancel the dim request');
@@ -5145,7 +5165,7 @@ subtest 'Issue 77: readOnly blocks control while reads and reports stay active' 
         [1,'dim_up'], [1,'dim_down'], [1,'dim_step_up'], [1,'dim_step_down'], [1,'dim_stop'],
         [2,'on'], [2,'off'], [2,'pct',50], [2,'tilt',25], [2,'stop'],
         [3,'lock'], [3,'unlock'], [4,'desired-temp',22], [4,'desired-temp-cool',25],
-        [4,'mode','cool'], [5,'fan_mode','low'], [5,'fan_pct',60], [6,'identify']) {
+        [4,'mode','cool'], [5,'fanMode','low'], [5,'fanPct',60], [6,'identify']) {
         my ($endpoint, $cmd, @args) = @$case;
         my $target = $ep{$endpoint};
         my $readings = encode_json($target->{READINGS});
@@ -5308,7 +5328,7 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
         [1,'dim_up'], [1,'dim_down'], [1,'dim_step_up'], [1,'dim_step_down'], [1,'dim_stop'],
         [2,'on'], [2,'off'], [2,'pct',50], [2,'tilt',25], [2,'stop'],
         [3,'lock'], [3,'unlock'], [4,'desired-temp',22], [4,'desired-temp-cool',25],
-        [4,'mode','cool'], [5,'fan_mode','low'], [5,'fan_pct',60], [6,'identify']) {
+        [4,'mode','cool'], [5,'fanMode','low'], [5,'fanPct',60], [6,'identify']) {
         my ($endpoint,$cmd,@args) = @$case;
         my $before = JSON::decode_json(encode_json($physical->($ep{$endpoint})));
         my @requests = $send->($endpoint,$cmd,@args);
@@ -5476,16 +5496,16 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     MATTER_ProcessNodeList($io, [{node_id => 9802, name => 'CoverLimits', available => JSON::true,
         attributes => {'1/258/1' => 1250, '1/258/2' => 90, '2/258/2' => 45}}], 'get_nodes');
     my $ep = 'MATTER_CoverLimits_EP1';
-    is(ReadingsVal($ep, 'physical_closed_limit_lift', undef), 1250, 'discovery publishes lift limit');
-    is(ReadingsVal($ep, 'physical_closed_limit_tilt', undef), 90, 'discovery publishes tilt limit');
+    is(ReadingsVal($ep, 'physicalClosedLimitLift', undef), 1250, 'discovery publishes lift limit');
+    is(ReadingsVal($ep, 'physicalClosedLimitTilt', undef), 90, 'discovery publishes tilt limit');
     for my $value (0, undef, 65536) {
         MATTER_ParseMessage($io, encode_json({event => 'attribute_updated',
             data => [9802, '1/258/2', $value]}));
-        is(ReadingsVal($ep, 'physical_closed_limit_tilt', undef), 0,
+        is(ReadingsVal($ep, 'physicalClosedLimitTilt', undef), 0,
            'valid zero or subsequent invalid report retains tilt limit zero');
     }
-    is(ReadingsVal($ep, 'physical_closed_limit_lift', undef), 1250, 'tilt update preserves lift');
-    is(ReadingsVal('MATTER_CoverLimits_EP2', 'physical_closed_limit_tilt', undef), 45,
+    is(ReadingsVal($ep, 'physicalClosedLimitLift', undef), 1250, 'tilt update preserves lift');
+    is(ReadingsVal('MATTER_CoverLimits_EP2', 'physicalClosedLimitTilt', undef), 45,
        'sibling keeps its reported limit');
     is_deeply(\@limit_writes, [], 'reports never attempt to configure covering attributes');
 }
@@ -5690,15 +5710,15 @@ subtest 'Issue 79: runtime permissions belong to the actual Matter identity' => 
     is(MATTERDevice_Set($root, $root->{NAME}, 'identify'), undef, 'root command is pending before rebind');
     my $old_id = $sent_a[-1]{message_id};
     # Persistent capability/limit readings must not authorize a new identity.
-    $root->{READINGS}{icd_supported}{VAL} = 'true';
-    $root->{READINGS}{specification_version}{VAL} = 0x01040000;
-    $ep->{READINGS}{max_brightness}{VAL} = 20;
+    $root->{READINGS}{icdSupported}{VAL} = 'true';
+    $root->{READINGS}{specificationVersion}{VAL} = 0x01040000;
+    $ep->{READINGS}{maxBrightness}{VAL} = 20;
     is(CommandAttr(undef, "$root->{NAME} IODev identityB"), undef, 'move root to another server');
     ok(!defined($root->{helper}{available}), 'new server must establish availability');
     ok(!exists($root->{helper}{firmware_available}), 'old offer is discarded');
     ok(!exists($root->{helper}{seen_clusters}{42}), 'old OTA capability is discarded');
-    ok(!exists($root->{READINGS}{icd_supported}), 'old persisted ICD permission is discarded');
-    ok(!exists($root->{READINGS}{software_version}), 'old firmware version cannot reject a new server offer');
+    ok(!exists($root->{READINGS}{icdSupported}), 'old persisted ICD permission is discarded');
+    ok(!exists($root->{READINGS}{softwareVersion}), 'old firmware version cannot reject a new server offer');
     ok(!exists($a->{helper}{pending_command}{$old_id}), 'old owner operation is cancelled');
     ok(defined(MATTERDevice_Set($root, $root->{NAME}, 'updateFirmware')), 'new server cannot use old offer');
     is(scalar @sent_b, 0, 'no unchecked install or implicit read on new server');
@@ -5706,10 +5726,10 @@ subtest 'Issue 79: runtime permissions belong to the actual Matter identity' => 
     is(ReadingsVal($ep->{NAME}, 'state', ''), 'off', 'child physical state is preserved');
     MATTER_ProcessNode($b, {node_id => 99008, available => JSON::true,
         attributes => {'0/70/65532' => 4}});
-    ok(!exists($root->{READINGS}{icd_lit_supported}), 'new features cannot combine with the old identity specification version');
+    ok(!exists($root->{READINGS}{icdLitSupported}), 'new features cannot combine with the old identity specification version');
     MATTER_ParseMessage($b, encode_json({event => 'attribute_updated',
         data => [99008, '0/40/21', 0x01040000]}));
-    is(ReadingsVal($root->{NAME}, 'icd_lit_supported', ''), 'true', 'own specification version permits normal LIT derivation');
+    is(ReadingsVal($root->{NAME}, 'icdLitSupported', ''), 'true', 'own specification version permits normal LIT derivation');
     MATTER_ProcessNode($b, {node_id => 99008, available => JSON::true,
         attributes => {'0/29/1' => [42]}});
     is(MATTERDevice_Set($root, $root->{NAME}, 'checkFirmwareUpdate'), undef, 'new server check works');
@@ -5734,7 +5754,7 @@ subtest 'Issue 79: runtime permissions belong to the actual Matter identity' => 
     CommandAttr(undef, "$ep->{NAME} readOnly 1");
     is(CommandModify(undef, "$ep->{NAME} 99008 2"), undef, 'change endpoint identity');
     ok(!MATTERDevice_CommandAccepted($ep, 6, 1), 'new endpoint cannot inherit commands');
-    ok(!exists($ep->{READINGS}{max_brightness}), 'old limit cannot scale a new endpoint');
+    ok(!exists($ep->{READINGS}{maxBrightness}), 'old limit cannot scale a new endpoint');
     is(AttrVal($ep->{NAME}, 'readOnly', 0), 1, 'manual endpoint policy survives identity change');
     is(ReadingsVal($ep->{NAME}, 'state', ''), 'off', 'identity reset retains saved physical reading');
     MATTERDevice_ProcessGlobalAttribute($ep, 6, 65529, [0, 1]);
@@ -5772,7 +5792,7 @@ subtest 'Issue 80: partial reads preserve metadata and structural lists revoke i
     is(ReadingsVal($ep->{NAME}, 'batteryPercent', ''), 51, 'partial read retains useful data');
     ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'omitted command list is retained');
     unlike($list->(), qr/\bon:/, 'omitted OffOnly FeatureMap still restricts commands');
-    like($list->(), qr/fan_mode:off,low,high/, 'omitted HVAC metadata and sequence are retained');
+    like($list->(), qr/fanMode:off,low,high/, 'omitted HVAC metadata and sequence are retained');
     $reply->($read->(), {'1/6/65532' => {}, '1/6/65529' => [0, {}]});
     ok(MATTERDevice_CommandAccepted($ep, 6, 1), 'malformed list retains previous entries');
     unlike($list->(), qr/\bon:/, 'malformed FeatureMap retains restrictions');
@@ -5850,7 +5870,7 @@ subtest 'Issue 81: explicit reads belong to the requesting endpoint instance' =>
     my $r = $defs{SharedReadReplacement};
     my $reentrant = $read->($r);
     $reading_event_hook = sub {
-        return unless $_[0] eq $r && $_[1] eq 'device_type_ids';
+        return unless $_[0] eq $r && $_[1] eq 'deviceTypeIds';
         CommandDelete(undef, $r->{NAME});
         CommandDefine(undef, 'DuringReadReplacement MATTERDevice 99110 2');
         CommandAttr(undef, 'DuringReadReplacement IODev readOwnerIO');
@@ -5874,9 +5894,9 @@ subtest 'Issue 82: only accepted values supersede pending reads and snapshots' =
         [1, 1026, 0, 2000, -32768, 2200, 'temperature', 22],
         [2, 1029, 0, 4000, 65535, 5000, 'humidity', 50],
         [3, 1030, 0, 1, -1, 0, 'motion', 'nomotion'],
-        [4, 69, 0, JSON::true, 'false', JSON::false, 'boolean_state', 0],
-        [5, 768, 16395, 153, 0, 200, 'color_temp_min', 200],
-        [6, 1037, 8, 0, 255, 1, 'co2_unit', 'ppb'],
+        [4, 69, 0, JSON::true, 'false', JSON::false, 'booleanState', 0],
+        [5, 768, 16395, 153, 0, 200, 'colorTempMin', 200],
+        [6, 1037, 8, 0, 255, 1, 'co2Unit', 'ppb'],
     );
     MATTER_ProcessNode($io, {node_id => 99120, name => 'ValueProbe', available => JSON::true,
         attributes => {map {("$_->[0]/$_->[1]/$_->[2]" => $_->[3])} @cases}});
@@ -5918,7 +5938,7 @@ subtest 'Issue 82: only accepted values supersede pending reads and snapshots' =
     MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99120, '0/54/4', 'invalid']}));
     MATTER_ParseMessage($io, encode_json({message_id => $diag_id, result => [{node_id => 99120,
         available => JSON::true, attributes => {'0/54/4' => -60}}]}));
-    is(ReadingsVal($root->{NAME}, 'wifi_rssi', ''), -60, 'diagnostics use the same acceptance rule before snapshot masking');
+    is(ReadingsVal($root->{NAME}, 'wifiRssi', ''), -60, 'diagnostics use the same acceptance rule before snapshot masking');
     my $writes = $single_writes{$ep{1}{NAME}}{temperature};
     my $timers = scalar @timers;
     is(MATTERDevice_AttributeValue(1026, 0, 2500), 25, 'shared conversion returns the publishable value');
@@ -5930,7 +5950,7 @@ subtest 'Issue 82: only accepted values supersede pending reads and snapshots' =
     CommandAttr(undef, "$ep{1}{NAME} rawReadings 1");
     my $interfaces = [{isOperational => JSON::true, type => 1}];
     MATTER_ParseMessage($io, encode_json({event => 'attribute_updated', data => [99120, '1/51/0', $interfaces]}));
-    is_deeply(JSON::decode_json(ReadingsVal($ep{1}{NAME}, 'raw_1_51_0', 'null')), $interfaces,
+    is_deeply(JSON::decode_json(ReadingsVal($ep{1}{NAME}, 'rawEp1Cluster51Attribute0', 'null')), $interfaces,
         'root-only network interpretation leaves unmatched child raw structs intact');
 };
 
@@ -6068,7 +6088,7 @@ subtest 'In-progress read is cancelled across disable and enable' => sub {
  MATTERDevice_Set($ep,$ep->{NAME},'getConfig'); my $id=$sent[-1]{message_id};
  my $reentered=0;
  $reading_event_hook=sub {
-   return unless $_[0] eq $ep && $_[1] eq 'device_type_ids';
+   return unless $_[0] eq $ep && $_[1] eq 'deviceTypeIds';
    $reading_event_hook=undef;
    # Duplicate delivery must not consume the active registration.
    MATTER_ParseMessage($io,encode_json({message_id=>$id,result=>{'1/6/0'=>JSON::true}}));
@@ -6138,7 +6158,7 @@ subtest 'Issue 91: functional readings and independent sources' => sub {
     $live->(4, 92, 3, 0);
     is($val->(4, 'batteryState'), 'ok', 'alarm-only endpoint works independently');
     for my $row ([47,12,'batteryPercent',201], [47,11,'batteryVoltage',4294967296],
-                 [47,14,'battery_charge_level',3], [92,3,'alarm_battery',3]) {
+                 [47,14,'batteryChargeLevel',3], [92,3,'batteryAlert',3]) {
         my ($cluster,$attr,$reading,$bad) = @$row;
         my $before = $val->(1,$reading);
         $live->(1,$cluster,$attr,$bad);
@@ -6240,6 +6260,26 @@ subtest 'Issue 91: functional readings and independent sources' => sub {
     is(MATTERDevice_Percentage($ep{4}),undef,'ambiguous old brightness cannot scale a new identity');
 };
 
+subtest 'All module public reading names follow one naming policy' => sub {
+    my %native = map {$_=>1} qw(state associatedWith IODev measured-temp desired-temp desired-temp-cool);
+    my @names;
+    for my $path (qw(FHEM/97_MATTER.pm FHEM/97_MATTERDevice.pm)) {
+        open my $fh, '<', $path or die $!;
+        my $source=do {local $/; <$fh>};
+        push @names, $source =~ /name\s*=>\s*"([^"]+)"\s*,\s*is_reading/g;
+        push @names, $source =~ /(?:readingsBulkUpdate|readingsSingleUpdate|MATTERDevice_ReadingsSingleUpdate)\([^,]+,\s*['"]([a-zA-Z.][a-zA-Z0-9_.-]*)['"]/g;
+        push @names, $source =~ /\$readings\{([a-zA-Z0-9_]+)\}/g;
+    }
+    my %seen;
+    for my $name (grep {!$seen{$_}++} @names) {
+        ok($native{$name} || $name =~ /\A\.?[a-z][a-zA-Z0-9]*\z/,"canonical public name: $name");
+    }
+    is(MATTER_CredentialReadingId(7),'7','numeric credential IDs stay readable');
+    is(MATTER_CredentialReadingId(undef),'Default','default credential ID has an explicit component');
+    isnt(MATTER_CredentialReadingId('a-b'),MATTER_CredentialReadingId('ab'),'ID punctuation cannot create naming collisions');
+    like(MATTER_CredentialReadingId('a_b'),qr/\AId[0-9a-f]+\z/,'arbitrary ID does not introduce reading separators');
+};
+
 
 subtest 'Default source readings decode protocol states before publication' => sub {
     my @sent;
@@ -6255,9 +6295,9 @@ subtest 'Default source readings decode protocol states before publication' => s
     my $root = MATTERDevice_LookupRoot($io, 99400);
     my %ep = map { $_->{endpoint_id} => $_ } MATTERDevice_NodeChildren($root);
     my @sources = (
-        [1,92,0,'alarm_expressed_state','normal'],
-        [2,91,0,'air_quality','fair'],
-        [3,258,10,'wc_operational_status','global: opening / lift: opening / tilt: closing'],
+        [1,92,0,'alarmExpressedState','normal'],
+        [2,91,0,'airQuality','fair'],
+        [3,258,10,'wcOperationalStatus','global: opening / lift: opening / tilt: closing'],
     );
     my $live = sub {
         my ($ep,$cluster,$attr,$raw) = @_;
@@ -6279,7 +6319,7 @@ subtest 'Default source readings decode protocol states before publication' => s
                 my $raw=$global+4*$lift+16*$tilt;
                 my $expected="global: $states[$global] / lift: $states[$lift] / tilt: $states[$tilt]";
                 $live->(3,258,10,$raw);
-                is(ReadingsVal($ep{3}{NAME},'wc_operational_status',''),$expected,'all non-reserved bitmap fields survive decoding');
+                is(ReadingsVal($ep{3}{NAME},'wcOperationalStatus',''),$expected,'all non-reserved bitmap fields survive decoding');
                 is(MATTERDevice_DefaultState($ep{3}),$expected,'bitmap default adds no second interpretation');
             }
         }
@@ -6299,12 +6339,12 @@ subtest 'Default source readings decode protocol states before publication' => s
     $live->(1,92,0,'co_alarm');
     ok(!exists $io->{helper}{pending_config}{$id}{live_values}{'1/92/0'},'human-readable input is not accepted as a protocol enum');
     MATTER_ParseMessage($io,encode_json({message_id=>$id,result=>{'1/92/0'=>1}}));
-    is(ReadingsVal($ep{1}{NAME},'alarm_expressed_state',''),'smoke_alarm','valid read remains applicable after invalid live data');
+    is(ReadingsVal($ep{1}{NAME},'alarmExpressedState',''),'smoke_alarm','valid read remains applicable after invalid live data');
     is(MATTERDevice_Set($ep{2},$ep{2}{NAME},'getConfig'),undef,'explicit air-quality read starts');
     $id=$sent[-1]{message_id};
     $live->(2,91,0,6);
     MATTER_ParseMessage($io,encode_json({message_id=>$id,result=>{'2/91/0'=>0}}));
-    is(ReadingsVal($ep{2}{NAME},'air_quality',''),'extremely_poor','newer valid enum survives an older read');
+    is(ReadingsVal($ep{2}{NAME},'airQuality',''),'extremely_poor','newer valid enum survives an older read');
     MATTER_ParseMessage($io,encode_json({event=>'node_updated',data=>{node_id=>99400,available=>JSON::true,
         attributes=>{'1/92/0'=>2,'2/91/0'=>1,'3/258/10'=>26}}}));
     is_deeply([map { ReadingsVal($ep{$_->[0]}{NAME},$_->[3],'') } @sources],
@@ -6321,9 +6361,9 @@ subtest 'Default source readings decode protocol states before publication' => s
     is_deeply([map { $ep{$_}{READINGS} } (1..3)],JSON::decode_json($saved),'offline reports preserve readable values');
     MATTERDevice_UpdateAvailability($root,1);
     CommandAttr(undef,"$ep{3}{NAME} disable 1");
-    my $cover_before={%{$ep{3}{READINGS}{wc_operational_status}}};
+    my $cover_before={%{$ep{3}{READINGS}{wcOperationalStatus}}};
     $live->(3,258,10,0);
-    is_deeply($ep{3}{READINGS}{wc_operational_status},$cover_before,'disabled endpoint retains its readable bitmap');
+    is_deeply($ep{3}{READINGS}{wcOperationalStatus},$cover_before,'disabled endpoint retains its readable bitmap');
     is(scalar(@timers),$timer_count,'conversions add no timers');
 };
 

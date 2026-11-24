@@ -10,9 +10,9 @@ tests/documentation only, with no new module version or updater bytes.
 | Cluster | Reading | Presentation exercised |
 | --- | --- | --- |
 | PressureMeasurement (0x0403) | pressure | Existing hPa presentation; integer raw MeasuredValue retained, e.g. 1013 -> 1013. |
-| CarbonDioxideConcentrationMeasurement (0x040D) | co2, co2_unit | Raw numeric value plus supplied unit; ppm and mg/m3 exercised independently. |
-| Pm25ConcentrationMeasurement (0x042A) | pm25, pm25_unit | Raw decimal value plus supplied ug/m3. |
-| TotalVolatileOrganicCompoundsConcentrationMeasurement (0x042E) | tvoc, tvoc_unit | Raw decimal value plus supplied ppb. |
+| CarbonDioxideConcentrationMeasurement (0x040D) | co2, co2Unit | Raw numeric value plus supplied unit; ppm and mg/m3 exercised independently. |
+| Pm25ConcentrationMeasurement (0x042A) | pm25, pm25Unit | Raw decimal value plus supplied ug/m3. |
+| TotalVolatileOrganicCompoundsConcentrationMeasurement (0x042E) | tvoc, tvocUnit | Raw decimal value plus supplied ppb. |
 
 Concentration values are not converted to an assumed unit. In particular,
 0.75 with unit mg/m3 remains 0.75 mg/m3, not a manufactured ppm value. A

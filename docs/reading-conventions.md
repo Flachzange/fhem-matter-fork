@@ -1,10 +1,33 @@
-# Functional reading conventions (#91; readable default sources V0.43)
+# Functional reading conventions (V0.44; functional policy #91)
 
 These are public interface changes. The battery names follow FHEM's agreed
 battery convention; the other names combine established FHEM practice with
 explicit project choices, including `brightness` for measured illuminance.
 No protocol read, polling, timer or automatic configuration change is added.
 Hardware validation of the changed mappings: **untested**.
+
+## Module-wide name policy
+
+All module-specific public readings use lowerCamelCase: functional details,
+device metadata, limits, IO/server status, commissioning, OTA/ICD maintenance
+and optional diagnostics. Native FHEM interfaces retain their established
+names: `state`, `associatedWith`, `IODev`, `measured-temp`, `desired-temp`
+and the matching `desired-temp-cool` thermostat family. Single-word names
+such as `temperature`, `brightness`, `power`, `pct`, `ct`, `hue` and `sat`
+already meet the policy. The dynamic prefixes are `rawEp…Cluster…Attribute…`,
+`wifi…Ssid`, `thread…Name` and `thread…ExtPanId`.
+
+Credential numeric IDs remain numeric; an absent ID uses `Default`, and other
+scalar IDs use `Id` plus their UTF-8 bytes as hexadecimal. This avoids reading
+separators and collisions between distinct identifiers. Inventory refresh
+replaces only readings belonging to these current credential families.
+
+Names are set directly in the existing mappings and publishers. Reader paths,
+widgets and reading-backed fan setters use the same spelling (`fanMode` and
+`fanPct`). There is no runtime naming adapter or compatibility alias table.
+Server JSON keys, protocol command names, attribute paths, enum values,
+physical units and numerical scaling remain unchanged. Both module types
+follow this policy, not merely battery fields.
 
 ## Functional data
 
@@ -21,9 +44,9 @@ Hardware validation of the changed mappings: **untested**.
 | `state` | DoorLock LockState | 0=not_fully_locked, 1=locked, 2=unlocked, 3=unlatched. Door contact is separate. |
 | `frequency` | ElectricalPowerMeasurement Frequency | Hz, native mHz divided by 1000; 50000 becomes 50. Range 0..1000 Hz; zero is valid. |
 | `levelFrequency` | LevelControl CurrentFrequency | Native uint16 units; zero means unknown. The matching setter accepts 1..65535. |
-| `alarm_expressed_state` | SmokeCOAlarm ExpressedState | normal / smoke_alarm / co_alarm / battery_alert / testing / hardware_fault / end_of_service / interconnect_smoke / interconnect_co (protocol values 0..8). |
-| `air_quality` | AirQuality AirQuality | unknown / good / fair / moderate / poor / very_poor / extremely_poor (protocol values 0..6). |
-| `wc_operational_status` | WindowCovering OperationalStatus | Text retaining each two-bit field, e.g. global: opening / lift: opening / tilt: closing. Field values 0/1/2 mean stopped/opening/closing; reserved 3 is rejected. |
+| `alarmExpressedState` | SmokeCOAlarm ExpressedState | normal / smoke_alarm / co_alarm / battery_alert / testing / hardware_fault / end_of_service / interconnect_smoke / interconnect_co (protocol values 0..8). |
+| `airQuality` | AirQuality AirQuality | unknown / good / fair / moderate / poor / very_poor / extremely_poor (protocol values 0..6). |
+| `wcOperationalStatus` | WindowCovering OperationalStatus | Text retaining each two-bit field, e.g. global: opening / lift: opening / tilt: closing. Field values 0/1/2 mean stopped/opening/closing; reserved 3 is rejected. |
 
 The covering `pct` setter accepts percent **open** and sends
 `(100 - pct) * 100` to Matter. Open/close commands retain their physical meaning;
@@ -72,8 +95,8 @@ BatteryAlert (0 normal, 1 warning, 2 critical). Any known warning/replacement
 request means `low`; `ok` requires at least one valid source and no known
 warning. An unchanged normal source cannot hide another source's warning.
 
-The three detailed source readings `battery_charge_level`,
-`battery_replacement_needed` (0/1) and `alarm_battery` remain because they
+The three detailed source readings `batteryChargeLevel`,
+`batteryReplacementNeeded` (0/1) and `batteryAlert` remain because they
 preserve cause/severity not expressible by `ok/low`. Restored sources from this
 mapping still participate in a partial update. Origin metadata prevents old
 warnings from a different identity being adopted. No thresholds are inferred
@@ -143,7 +166,7 @@ Both unicode and bytestream modes are tested. See CI and endpoint-display.md
 for reproducible commands. Synthetic reports are used; physical Matter devices,
 external server integration, configDB and a full process/OS restart are untested.
 
-## Implementation review record
+## V0.42 implementation review record (historical)
 
 The separate consistency pass traced both modules' dispatch, shared pure
 attribute validation/freshness reconciliation, snapshot/getConfig/live routing,
@@ -164,3 +187,29 @@ context is not an independent supported syntax check. UTF-8, unique callbacks,
 DE/EN commandref blocks, updater manifest generation/staleness regressions and
 the pinned shared-rule provenance check pass. The physical/server/configDB/full
 process-restart limitations stated above remain.
+
+
+## V0.44 consistency review
+
+The review traced both modules' reading mappings, publishers and consumers,
+server JSON boundaries, dynamic raw/credential families, diagnostics, ICD/OTA,
+reported limits, setters/widgets, central display and restoration. Current
+README, DE/EN commandref, related evidence documents, contributor policy,
+CI and updater metadata were reconciled. Enum labels and wire JSON keys
+were checked separately from public reading names.
+
+Validation: 1,032 callback/WebSocket entries plus 202 actual-core assertions;
+the same 202 core assertions pass in bytestream mode. A deliberately inserted
+snake_case mapping fails the naming-policy regression. Credential refresh
+checks numeric, absent, empty and textual IDs and removal of absent entries.
+Updater manifest generation/staleness checks and pinned shared-rule provenance
+pass. Physical/server/configDB/full process-restart limitations remain as above.
+
+
+### Integration with readable source states
+
+Before merging V0.44, testing commit 0689ee7 (#95) was integrated. The shared
+alarm/air-quality/covering decoding remains intact under the new reading names;
+user stateFormat, notification and statefile tests use those same names.
+The combined suites pass 1,033 callback/WebSocket entries and 216 actual-core
+assertions, with the same 216 assertions passing in bytestream mode.

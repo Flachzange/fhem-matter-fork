@@ -48,7 +48,7 @@ The original [tostmann/THBR](https://github.com/tostmann/THBR) uses a host-based
 - **Automatic node synchronization:** complete `start_listening` snapshot on connection/reconnection plus `node_added`, `node_updated` and `node_removed` events. Manual `discover` is still available; there is no periodic node polling.
 - **FHEM device management:** optional `autocreate` (enabled by default), collision-safe root/endpoint identities, default room `Matter` for newly created devices, administrative root-node grouping, DeviceTypeList-based endpoint groups and links to endpoints in the root's FHEMWEB details. Existing names, rooms and custom groups are preserved; removed server nodes are marked rather than deleted.
 - **Device commands:** exposed from the relevant Matter command/feature metadata when available, using endpoint `AcceptedCommandList` and applicable Matter feature metadata; old `has_*` settings have no effect. Mappings include on/off, color, window covering, locks, native LevelControl continuous/step dimming, Identify, Thermostat and FanControl where supported.
-- **Device status and measurements:** separate `matter_status` (server membership) and `available` (server-reported reachability); device attributes are blocked while offline or availability is unknown; valid online reports resume normal snapshot and live synchronization. Readings include basic information, battery, smoke/CO, electrical metering, common environmental sensors, BooleanState contacts/leaks, Occupancy and Switch button events.
+- **Device status and measurements:** separate `matterStatus` (server membership) and `available` (server-reported reachability); device attributes are blocked while offline or availability is unknown; valid online reports resume normal snapshot and live synchronization. Readings include basic information, battery, smoke/CO, electrical metering, common environmental sensors, BooleanState contacts/leaks, Occupancy and Switch button events.
 - **Network type:** root-only `networkType` reports operational Wi-Fi, Thread, Ethernet or Cellular interfaces from supplied Matter attributes, without extra requests or configuration. Multiple active types remain visible; a bridge's connection is never copied to its bridged endpoints.
 - **Optional diagnostics and maintenance:** `diagnostics=1` and `rawReadings=1` are explicitly opt-in and do not trigger additional polling. ICD metadata is detected passively; compatible roots can query controller-side ICD state. Supported nodes can request a server-backed firmware update check/install without firmware upload or automatic updates.
 - **Commissioning:** manual pairing codes or `MT:` QR payloads, with `network` (IP-only, default) or `auto` (IP and optionally BLE via the Matter server).
@@ -166,7 +166,7 @@ Without the `commissionMode` attribute, an omitted mode defaults to **`network`*
 
 The Matter server handles commissioning, fabric and stored Thread/Wi-Fi network credentials. The FHEM module neither stores a Thread operational dataset nor operates the BLE radio.
 
-The MATTER IO reports `commissioning_status` (`running`, `success`, `failed` or `interrupted`), `commissioning_mode`, `commissioning_node_id`, `commissioning_duration` (seconds) and `commissioning_error`. A new attempt clears old results; one attempt per IO is permitted at a time. These readings are independent of the server connection's `state`. The server does not expose intermediate BLE/PASE commissioning phases over WebSocket. `interrupted` means the connection was lost before the outcome was received: check server nodes before trying again.
+The MATTER IO reports `commissioningStatus` (`running`, `success`, `failed` or `interrupted`), `commissioningMode`, `commissioningNodeId`, `commissioningDuration` (seconds) and `commissioningError`. A new attempt clears old results; one attempt per IO is permitted at a time. These readings are independent of the server connection's `state`. The server does not expose intermediate BLE/PASE commissioning phases over WebSocket. `interrupted` means the connection was lost before the outcome was received: check server nodes before trying again.
 
 ### Node synchronization and status
 
@@ -189,8 +189,8 @@ values. On/off and binary-sensor state readings retain their existing values
 and events. Button displays show `last: short` (or the last other
 reported event), never an inferred actuator state. An explicit `stateFormat`
 always takes precedence, including after restoration; deleting it restores
-the default. Smoke/CO `alarm_expressed_state`, qualitative `air_quality` and
-the covering movement bitmap `wc_operational_status` are readable functional
+the default. Smoke/CO `alarmExpressedState`, qualitative `airQuality` and
+the covering movement bitmap `wcOperationalStatus` are readable functional
 readings; their defaults use those same values without a separate enum lookup.
 Movement status retains global/lift/tilt fields in the existing reading.
 Missing data is `unknown`; a valid numeric measurement of zero remains zero. Offline
@@ -205,9 +205,9 @@ and FHEMWEB, including live longpoll and statefile restoration.
 
 **Upgrade from V0.15:** At FHEM `INITIALIZED` / `REREADCFG`, roots that still have the old exact `stateFormat available` setting but no new-style `state` reading have that attribute removed automatically. Custom `stateFormat` values are preserved. Because V0.15 did not mark attributes as auto-created, an intentionally manually configured, identical `stateFormat available` cannot be distinguished from the old automatic default. Once migrated and a new `state` reading exists, that value can be deliberately configured again. Save the FHEM configuration after the update/restart to persist the migration.
 
-Matter `Descriptor.DeviceTypeList` is stored per endpoint in the **`device_type_ids` reading** as canonical comma-separated hexadecimal IDs (for example `0x0011,0x0076`). Both the root detail's endpoint type labels and automatic device-type groups use this reading rather than temporary helper metadata. Once a valid DeviceTypeList has been received, FHEM restores the IDs after restart through its normal statefile or configDB handling, even when the Matter server is still disconnected. Repeated identical values do not produce additional reading events. Invalid Descriptor responses do not erase previously known IDs. For endpoints that have **never** supplied a valid DeviceTypeList, the existing cluster-based fallback is still based on currently observed runtime clusters; the fix does not invent an authoritative device type or add polling. The runtime capabilities/command metadata remains transient and is not treated as a persisted reading.
+Matter `Descriptor.DeviceTypeList` is stored per endpoint in the **`deviceTypeIds` reading** as canonical comma-separated hexadecimal IDs (for example `0x0011,0x0076`). Both the root detail's endpoint type labels and automatic device-type groups use this reading rather than temporary helper metadata. Once a valid DeviceTypeList has been received, FHEM restores the IDs after restart through its normal statefile or configDB handling, even when the Matter server is still disconnected. Repeated identical values do not produce additional reading events. Invalid Descriptor responses do not erase previously known IDs. For endpoints that have **never** supplied a valid DeviceTypeList, the existing cluster-based fallback is still based on currently observed runtime clusters; the fix does not invent an authoritative device type or add polling. The runtime capabilities/command metadata remains transient and is not treated as a persisted reading.
 
-`matter_status=present` / `removed` indicates membership in the server's node list, **not** physical availability. `available=true` / `false` indicates reachability only if reported by the server. Node-wide `model` and `available` values are mirrored from the root to endpoints when known. No recurring availability poll is introduced.
+`matterStatus=present` / `removed` indicates membership in the server's node list, **not** physical availability. `available=true` / `false` indicates reachability only if reported by the server. Node-wide `model` and `available` values are mirrored from the root to endpoints when known. No recurring availability poll is introduced.
 
 Changing the actual IO instance, node ID or endpoint ID discards the old runtime permissions and firmware offers. Control-relevant saved metadata (device types, ICD permissions, software/specification versions and reported limits) must be reported for the new identity; other saved physical readings and local policy remain. Renaming the same instance or confirming an unchanged DEF preserves its permissions. An occupied root target is rejected before a modify changes internal state.
 
@@ -256,9 +256,9 @@ replay is added. The attribute defaults to `0`, is rejected on roots, and does
 not change `readOnly`. No Matter radio traffic reduction is promised.
 
 **V0.21 transition: device limits are readings.** The ten names
-`min_brightness`, `max_brightness`, `min_frequency`, `max_frequency`,
-`color_temp_min`, `color_temp_max`, `min_pin_code_length`, `max_pin_code_length`,
-`min_rfid_code_length` and `max_rfid_code_length` are populated from received
+`minBrightness`, `maxBrightness`, `minFrequency`, `maxFrequency`,
+`colorTempMin`, `colorTempMax`, `minPinCodeLength`, `maxPinCodeLength`,
+`minRfidCodeLength` and `maxRfidCodeLength` are populated from received
 device data and updated as ordinary endpoint readings. No old attribute value
 is copied into a reading. The ten attribute declarations are removed entirely;
 there is no compatibility or automatic migration. Review automations using
@@ -293,6 +293,20 @@ statefile/configDB restoration. No new polling or automatic reads are added.
 See the embedded DE/EN commandref for per-reading details and
 [protocol evidence](docs/device-limits.md) for source references and test scope.
 
+## Consistent reading names (V0.44)
+
+All module-specific readings use lowerCamelCase, including device metadata,
+limits, alarm details, commissioning, server status, firmware/ICD and network
+diagnostics. Examples are `batteryChargeLevel`, `batteryCapacity` (mAh),
+`batteryTimeRemaining` (s), `deviceTypeIds`, `firmwareUpdate`, `fanMode`,
+`fanPct`, `threadRole`, `wifiRssi` and `commissioningStatus`.
+Native FHEM names retain their spelling: `IODev`, `associatedWith`, `state`,
+`measured-temp`, `desired-temp` and `desired-temp-cool`. Wire/API fields and
+enum values remain unchanged. Dynamic raw readings use
+`rawEp<endpoint>Cluster<cluster>Attribute<attribute>`; credential metadata
+uses `wifi<id>Ssid`, `thread<id>Name` and `thread<id>ExtPanId`.
+See [the reading contract](docs/reading-conventions.md) for units and scope.
+
 ## Functional readings (V0.42, #91)
 
 Battery readings are `batteryPercent`, `batteryVoltage` (V) and `batteryState`
@@ -311,7 +325,7 @@ No additional reads or polling. Hardware validation: **untested**.
 
 ## Known limitations
 
-- **Window coverings:** supports basic open/close, stop, lift percentage and tilt commands when exposed by the device; the endpoint readings `physical_closed_limit_lift` and `physical_closed_limit_tilt` contain the last reported physical limits when available.
+- **Window coverings:** supports basic open/close, stop, lift percentage and tilt commands when exposed by the device; the endpoint readings `physicalClosedLimitLift` and `physicalClosedLimitTilt` contain the last reported physical limits when available.
 - **Door locks:** basic `lock`/`unlock` commands and selected readings are implemented; management of users, PINs and credentials is not implemented.
 - **Thermostats / fans:** standard attributes, basic desired-temperature/mode and fan-mode/speed commands are supported when advertised. Advanced schedules, manufacturer features and unsupported writable attributes are not implemented.
 - **Transport:** the FHEM IO supports an IPv4 WebSocket connection without built-in TLS or authentication; the network boundary and security requirements are described above.
@@ -394,12 +408,12 @@ engine.
   (cooling) from advertised writable attributes and the corresponding features.
   Celsius text inputs accept up to two decimals, without an arbitrary 5–30 °C
   widget range; the device checks its actual limits. `mode` uses thermostat
-  features plus ControlSequenceOfOperation; `fan_mode` uses FanModeSequence
+  features plus ControlSequenceOfOperation; `fanMode` uses FanModeSequence
   plus Auto support. Mode lists require the supplied sequence metadata and
   do not infer capabilities from current values. Normal snapshots or explicit
   `getConfig` supply it, without extra probes. Optional thermostat enum support
   and controller ACLs remain device decisions.
-  `fan_pct` writes PercentSetting, distinct from the reported PercentCurrent.
+  `fanPct` writes PercentSetting, distinct from the reported PercentCurrent.
   Setter validation uses the same metadata as FHEMWEB. A correlated status
   reply must match the written path; nonzero Matter status or malformed replies
   appear in `lastError`. Existing null API acknowledgements remain accepted.
@@ -421,7 +435,7 @@ engine.
   Deactivating them stops new diagnostic updates but does not delete existing
   readings. Unknown and vendor-specific attributes can expose private device
   information in readings and logs.
-- ICD-capable root nodes expose static `icd_*` capabilities from reported
+- ICD-capable root nodes expose static `icd…` capabilities from reported
   attributes. A valid root `Descriptor.ServerList` (`0/29/1`) without cluster
   70 revokes previous ICD support and its commands. Omitted or malformed
   lists do not imply removal. Root `getConfig` includes ServerList in its
@@ -429,11 +443,11 @@ engine.
   replies. Historical mode/duration readings remain; ordinary non-ICD roots
   receive no extra negative ICD readings.
   `get <root> icdState` requires current-session OHF matterjs-server
-  identification (`sdk_version=matter-server/... (matter.js/...)`) and schema
+  identification (`sdkVersion=matter-server/... (matter.js/...)`) and schema
   >= 12. Check-In-capable roots on that backend can use `icdRegister`,
   `icdUnregister` or `icdResync`. Saved server readings cannot enable these
   operations after reconnect; other/unknown backends retain passive detection.
-  The controller manages registration; `icd_awake=false` is not the same as
+  The controller manages registration; `icdAwake=false` is not the same as
   `available=false`. Dynamic controller readings describe the last explicit
   query and keep their normal FHEM timestamps across reconnect. See
   [ICD evidence and limits](docs/icd-capabilities.md).
