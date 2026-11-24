@@ -278,13 +278,9 @@ ok(!exists($attr{MATTER_Hall_Light}{stateFormat}),
    'a missing root stateFormat stays absent during discovery');
 is($root->{DEF}, '42', 'root definition contains only the node ID');
 is($child->{DEF}, '42 1', 'endpoint definition contains no root FHEM name');
-my $legacy_define = CommandDefine(undef, 'Legacy_Endpoint MATTERDevice 42 9 Former_Root');
-is($legacy_define, undef, 'legacy three-argument endpoint DEF is accepted for migration');
-is($defs{Legacy_Endpoint}{DEF}, '42 9', 'old root name is removed from persisted DEF at define');
-is($defs{Legacy_Endpoint}{endpoint_id}, 9, 'migration retains endpoint identity');
-is($defs{Legacy_Endpoint}{node_id}, 42, 'migration retains node identity');
-ok(!exists $defs{Legacy_Endpoint}{device}, 'legacy root name is not retained as parent identity');
-is(CommandDelete(undef, 'Legacy_Endpoint'), undef, 'temporary legacy test device is removed');
+like(CommandDefine(undef, 'Invalid_Legacy_Endpoint MATTERDevice 42 9 Former_Root') // '',
+     qr/wrong syntax/, 'endpoint definitions reject an extra root-name argument');
+ok(!exists($defs{Invalid_Legacy_Endpoint}), 'invalid definition does not create an endpoint');
 like(CommandDefine(undef, 'Invalid_Endpoint MATTERDevice 42 0') // '',
      qr/wrong syntax/, 'explicit endpoint zero is rejected; roots omit endpoint ID');
 # FHEM's CommandDefine starts at STATE=???; its startup setstate restores a
@@ -294,13 +290,13 @@ is($child->{STATE}, '???', 'endpoint Define leaves default STATE for statefile r
 
 # FHEM emits INITIALIZED only after config and statefile are both restored.
 is(CommandAttr(undef, 'MATTER_Hall_Light stateFormat available'), undef,
-   'old V0.15 root format can be restored from FHEM configuration');
-delete $root->{READINGS}{state}; # Legacy statefile has no new-style root state.
+   'user can choose available as an explicit root display format');
+delete $root->{READINGS}{state}; # Statefile can lack the native root status.
 $defs{global} = { NAME => 'global', CHANGED => ['INITIALIZED'] };
 $init_done = 1;
 MATTERDevice_Notify($root, $defs{global});
-ok(!exists($attr{MATTER_Hall_Light}{stateFormat}),
-   'INITIALIZED removes legacy auto stateFormat after config restoration');
+is($attr{MATTER_Hall_Light}{stateFormat}, 'available',
+   'INITIALIZED retains an explicitly configured available stateFormat');
 is(ReadingsVal('MATTER_Hall_Light', 'state', ''), 'unknown',
    'INITIALIZED invalidates any stale root status');
 is(CommandAttr(undef, 'MATTER_Hall_Light stateFormat Custom'), undef,
@@ -312,13 +308,13 @@ is($attr{MATTER_Hall_Light}{stateFormat}, 'Custom',
 is(CommandDeleteAttr(undef, 'MATTER_Hall_Light stateFormat'), undef,
    'custom display can be removed');
 is(CommandAttr(undef, 'MATTER_Hall_Light stateFormat available'), undef,
-   'user may explicitly restore available display after migration');
+   'user may explicitly select available display');
 MATTERDevice_Notify($root, $defs{global});
 is($attr{MATTER_Hall_Light}{stateFormat}, 'available',
-   'post-migration user override is not removed again in the same process');
+   'REREADCFG retains explicit available display');
 CommandDeleteAttr(undef, 'MATTER_Hall_Light stateFormat');
 
-# The startup/migration scenario is complete. Use a separate initial-online
+# The startup/display scenario is complete. Use a separate initial-online
 # scenario for the following grouping/autocreate/read tests. Real recovery
 # is exercised explicitly in the lifecycle subtest.
 MATTERDevice_UpdateAvailability($root, JSON::true);
@@ -354,7 +350,7 @@ ok(!defined(MATTERDevice_FWDetail('WEB', 'MATTER_Hall_Light_EP1', 'Matter')),
 is(ReadingsVal('MATTER_Hall_Light_EP1', 'state', ''), 'on', 'actual attribute path reaches endpoint');
 is($modules{MATTERDevice}{defptr}{'ioA:42'}, $root, 'root registered for owning IO');
 
-# Migrate only precisely matching legacy groups; preserve the existing room.
+# Existing group names remain owned by the user, including historical-looking ones.
 $attr{MATTER_Hall_Light}{group} = 'Node 42 (ioA)';
 $attr{MATTER_Hall_Light_EP1}{group} = 'Node 42 (ioA)';
 $attr{MATTER_Hall_Light_EP1}{room} = 'EG Wohnzimmer';
@@ -362,8 +358,17 @@ MATTER_ProcessNode($defs{ioA}, node(42, 'Hall Light'));
 is($bulk_writes{MATTER_Hall_Light_EP1}{associatedWith},
    $initial_association_writes,
    'repeated snapshots do not emit duplicate root association events');
-is($attr{MATTER_Hall_Light}{group}, 'Matter Nodes', 'legacy root group is migrated');
-is($attr{MATTER_Hall_Light_EP1}{group}, 'On/Off light', 'legacy endpoint group is migrated');
+is($attr{MATTER_Hall_Light}{group}, 'Node 42 (ioA)',
+   'existing root group is not rewritten');
+is($attr{MATTER_Hall_Light_EP1}{group}, 'Node 42 (ioA)',
+   'existing endpoint group is not rewritten');
+delete $attr{MATTER_Hall_Light}{group};
+delete $attr{MATTER_Hall_Light_EP1}{group};
+MATTER_ProcessNode($defs{ioA}, node(42, 'Hall Light'));
+is($attr{MATTER_Hall_Light}{group}, 'Matter Nodes',
+   'missing root group gets the current default');
+is($attr{MATTER_Hall_Light_EP1}{group}, 'On/Off light',
+   'missing endpoint group gets the current type');
 is($attr{MATTER_Hall_Light_EP1}{room}, 'EG Wohnzimmer', 'type grouping does not move a device');
 
 # Disabling autocreate must stop all new FHEM devices, without suppressing
@@ -479,13 +484,13 @@ ok(!exists $child->{device}, 'modify clears any cached display-only parent name'
 my $child_uuid = $child->{FUUID};
 my $child_io = $child->{IODev};
 my $child_readings = $child->{READINGS};
-is(CommandModify(undef, "$child->{NAME} 42 1 MATTER_Hall_Light"), undef,
-   'confirming a stale legacy DEF migrates it instead of reassigning the root');
-is($child->{DEF}, '42 1', 'legacy modify is normalized to node ID and endpoint ID');
-is($child->{FUUID}, $child_uuid, 'DEF migration preserves FUUID');
-is($child->{IODev}, $child_io, 'DEF migration preserves IODev');
-is($child->{READINGS}, $child_readings, 'DEF migration preserves readings');
-ok(!exists $child->{device}, 'legacy root name does not restore display parent');
+like(CommandModify(undef, "$child->{NAME} 42 1 MATTER_Hall_Light") // '',
+     qr/wrong syntax/, 'modifying an endpoint with a surplus root name is rejected');
+is($child->{DEF}, '42 1', 'rejected modify restores the original definition');
+is($child->{FUUID}, $child_uuid, 'rejected modify preserves FUUID');
+is($child->{IODev}, $child_io, 'rejected modify preserves IODev');
+is($child->{READINGS}, $child_readings, 'rejected modify preserves readings');
+ok(!exists $child->{device}, 'rejected modify does not restore a display parent');
 like(CommandModify(undef, "$child->{NAME} 42 1 MATTER_Hall_Light extra") // '',
      qr/wrong syntax/, 'unrecognized extra DEF arguments remain invalid');
 is($child->{DEF}, $child_before_modify, 'invalid modify rolls back the DEF');
@@ -497,20 +502,20 @@ is(ReadingsVal($child->{NAME}, 'associatedWith', ''),
    'metadata-only discovery retains native root association after endpoint modify');
 is($defs{$child->{NAME}}, $child, 'reconfirmed endpoint does not get recreated');
 
-# Migration must work without any fresh endpoint attributes.
+# Missing groups can be regenerated without fresh endpoint attributes.
 delete $attr{MATTER_Hall_Light_EP1}{group};
 my $prior_devices = count_devices();
 MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'Metadata only'});
 is($attr{MATTER_Hall_Light_EP1}{group}, 'On/Off light',
    'cached Descriptor type restores a missing group without new attributes');
-is(count_devices(), $prior_devices, 'group migration never recreates the endpoint');
+is(count_devices(), $prior_devices, 'group synchronization never recreates the endpoint');
 
 # Persisted IODev identifies the endpoint even when its runtime pointer is missing.
 delete $attr{MATTER_Hall_Light_EP1}{group};
 delete $child->{IODev};
 MATTER_ProcessNode($defs{ioA}, {node_id => 42, name => 'No endpoint attributes'});
 is($attr{MATTER_Hall_Light_EP1}{group}, 'On/Off light',
-   'configured IODev is sufficient to migrate an endpoint without runtime IODev');
+   'configured IODev permits grouping an endpoint without runtime IODev');
 like(MATTERDevice_FWDetail('WEB', 'ManuallyRenamedRoot', 'Matter'),
      qr/MATTER_Hall_Light_EP1/, 'root detail also finds endpoint with configured IODev');
 is(CommandAttr(undef, 'MATTER_Hall_Light_EP1 IODev ioA'), undef,
@@ -566,7 +571,7 @@ ok(!exists($attr{MATTER_Other_IO_light_EP1}{group}),
    'a same-ID endpoint belonging to another IO is not modified');
 MATTER_ProcessNode($defs{ioB}, {node_id => 42, name => 'Metadata only'});
 is($attr{MATTER_Other_IO_light_EP1}{group}, 'On/Off light',
-   'second IO independently migrates its own endpoint');
+   'second IO independently sets its missing endpoint group');
 
 MATTER_ProcessNodeList($defs{ioA}, [], 'get_nodes');
 is(ReadingsVal('ManuallyRenamedRoot', 'matterStatus', ''), 'removed', 'missing node marked removed');
@@ -1490,7 +1495,7 @@ is($attr{MATTER_Unknown_type_EP1}{group}, '0xF123',
    'unknown application type has a stable hexadecimal group');
 
 # Matter Electrical Sensor is usable even though its spec category is Utility.
-# Technical bridge topology endpoints should not retain the legacy node group.
+# Technical bridge topology endpoints get structural type groups.
 MATTER_ProcessNode($defs{ioA}, {
     node_id => 190, name => 'Bridge grouping',
     available => JSON::true,
@@ -1516,10 +1521,17 @@ is($attr{MATTER_Bridge_grouping_EP2}{group}, 'Electrical Sensor',
 $attr{MATTER_Bridge_grouping_EP1}{group} = 'Node 190 (ioA)';
 $attr{MATTER_Bridge_grouping_EP10}{group} = 'Node 190 (ioA)';
 MATTER_ProcessNode($defs{ioA}, { node_id => 190, name => 'Bridge grouping' });
+is($attr{MATTER_Bridge_grouping_EP1}{group}, 'Node 190 (ioA)',
+   'existing Aggregator group is preserved');
+is($attr{MATTER_Bridge_grouping_EP10}{group}, 'Node 190 (ioA)',
+   'existing Bridged Node group is preserved');
+delete $attr{MATTER_Bridge_grouping_EP1}{group};
+delete $attr{MATTER_Bridge_grouping_EP10}{group};
+MATTER_ProcessNode($defs{ioA}, { node_id => 190, name => 'Bridge grouping' });
 is($attr{MATTER_Bridge_grouping_EP1}{group}, 'Matter Infrastruktur',
-   'legacy Aggregator node group is migrated without new endpoint attributes');
+   'missing Aggregator group is initialized from stored type');
 is($attr{MATTER_Bridge_grouping_EP10}{group}, 'Matter Infrastruktur',
-   'legacy Bridged Node group is migrated without new endpoint attributes');
+   'missing Bridged Node group is initialized from stored type');
 
 
 
@@ -1572,9 +1584,13 @@ is_deeply([MATTERDevice_DeviceTypeIds($defs{MATTER_TypeDisplay_EP10})], [0xF123]
     'group and display consume the same persisted type ID data');
 $attr{MATTER_TypeDisplay_EP10}{group} = 'Node 88 (ioA)';
 MATTERDevice_EnsureTypeGroup($defs{MATTER_TypeDisplay_EP10});
+is($attr{MATTER_TypeDisplay_EP10}{group}, 'Node 88 (ioA)',
+   'an existing group remains unchanged after restoration');
+delete $attr{MATTER_TypeDisplay_EP10}{group};
+MATTERDevice_EnsureTypeGroup($defs{MATTER_TypeDisplay_EP10});
 is($attr{MATTER_TypeDisplay_EP10}{group}, '0xF123',
-   'automatic grouping recovers from the persisted reading after restart');
-$defs{MATTER_TypeDisplay_EP10}{READINGS}{deviceTypeIds}{VAL} = 'not-a-type';
+   'missing group is recovered from the persisted reading after restart');
+$defs{MATTER_TypeDisplay_EP10}{READINGS}{deviceTypeIds}{VAL} = 'not-a-type';$defs{MATTER_TypeDisplay_EP10}{READINGS}{deviceTypeIds}{VAL} = 'not-a-type';
 is_deeply([MATTERDevice_DeviceTypeIds($defs{MATTER_TypeDisplay_EP10})], [],
     'invalid restored reading cannot masquerade as a device type');
 $defs{MATTER_TypeDisplay_EP10}{READINGS}{deviceTypeIds}{VAL} = '0xF123';
@@ -1786,7 +1802,7 @@ is(scalar(keys %{$commission_io->{helper}{pending_command} // {}}), 0,
 
 @log = ();
 is(MATTER_Set($commission_io, 'commissionIO', 'commissionCode', $manual_code),
-   undef, 'legacy one-argument command remains accepted');
+   undef, 'commissionCode uses the configured default mode when unspecified');
 my $network_request = $read_ws_json->($commission_server);
 is(ReadingsVal('commissionIO', 'commissioningStatus', ''), 'running',
    'commissioning starts with running status');
@@ -3759,7 +3775,7 @@ for my $old (@obsolete_limits) {
     ok(!exists($attr{$limit_ep->{NAME}}{$old}),
        "rejected $old attribute is not stored");
     ok(!exists($limit_ep->{READINGS}{$old}),
-       "saved $old is not migrated into a device reading");
+       "rejected $old attribute does not create a reading");
 }
 ok(grep(/^ct:textField$/, MATTERDevice_GetSetList($limit_ep)),
    'CT command remains usable without fabricated colorpicker limits');

@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-24  MATTER V0.45 (#93): Remove three historical configuration migrations (extra endpoint DEF root-name field, root stateFormat=available auto-deletion, and old node group rewriting). Reject obsolete endpoint DEF syntax; preserve explicitly configured display formats and groups. Remove upgrade instructions from README, DE/EN commandref and current rules while retaining historical changelog, startup lifecycle, identity protection, device-type grouping, current lowerCamelCase readings and source provenance. Extend regression tests. Hardware untested.
+
 - 2026-11-24  MATTER V0.44: Apply lowerCamelCase to all module-specific public readings, including batteries, device metadata, limits, alarm details, commissioning, firmware/ICD and network diagnostics. Keep native FHEM thermostat names and wire/API fields unchanged; align reading-backed fan setters and all consumers. No stored-reading conversion or aliases. Hardware untested.
 
 - 2026-11-24  MATTER V0.43: Decode Smoke/CO ExpressedState, AirQuality and covering OperationalStatus in the shared attribute-to-reading path; reuse the readable values in default STATE. Preserve all global/lift/tilt movement fields, reject invalid data without rewriting good readings, and retain user formats/offline/disable/freshness behavior. Audit all default families, remove display-only enum decoding and add callback/real-FHEM regressions. Hardware untested.
