@@ -6240,4 +6240,91 @@ subtest 'Issue 91: functional readings and independent sources' => sub {
     is(MATTERDevice_Percentage($ep{4}),undef,'ambiguous old brightness cannot scale a new identity');
 };
 
+
+subtest 'Default source readings decode protocol states before publication' => sub {
+    my @sent;
+    my $io = $defs{symbolicIO} = { NAME => 'symbolicIO', TYPE => 'MATTER', CD => 1,
+        websocket => 1, ws_status => 'connected', helper => {},
+        test_send_text => sub { push @sent, JSON::decode_json($_[0]); 1 } };
+    MATTER_ProcessNode($io, { node_id => 99400, name => 'Symbolic', available => JSON::true,
+        attributes => {
+            '1/29/0' => [{deviceType => 0x0076}], '1/92/0' => 0,
+            '2/29/0' => [{deviceType => 0x002C}], '2/91/0' => 2,
+            '3/29/0' => [{deviceType => 0x0202}], '3/258/10' => 37,
+        } });
+    my $root = MATTERDevice_LookupRoot($io, 99400);
+    my %ep = map { $_->{endpoint_id} => $_ } MATTERDevice_NodeChildren($root);
+    my @sources = (
+        [1,92,0,'alarm_expressed_state','normal'],
+        [2,91,0,'air_quality','fair'],
+        [3,258,10,'wc_operational_status','global: opening / lift: opening / tilt: closing'],
+    );
+    my $live = sub {
+        my ($ep,$cluster,$attr,$raw) = @_;
+        MATTER_ParseMessage($io, encode_json({event=>'attribute_updated',data=>[99400,"$ep/$cluster/$attr",$raw]}));
+    };
+    for my $row (@sources) {
+        my ($epid,undef,undef,$reading,$expected) = @$row;
+        is(ReadingsVal($ep{$epid}{NAME},$reading,''),$expected,"$reading is readable in the initial snapshot");
+        is(MATTERDevice_DefaultState($ep{$epid}),$expected,"$reading default uses the same value");
+        ok(!exists $ep{$epid}{READINGS}{state},'no derived state reading is created');
+    }
+    is_deeply(\@sent,[],'automatic conversion sends no requests');
+    my $timer_count = scalar @timers;
+    # Each valid combination has an explicit global/lift/tilt interpretation.
+    my @states = qw(stopped opening closing);
+    for my $global (0..2) {
+        for my $lift (0..2) {
+            for my $tilt (0..2) {
+                my $raw=$global+4*$lift+16*$tilt;
+                my $expected="global: $states[$global] / lift: $states[$lift] / tilt: $states[$tilt]";
+                $live->(3,258,10,$raw);
+                is(ReadingsVal($ep{3}{NAME},'wc_operational_status',''),$expected,'all non-reserved bitmap fields survive decoding');
+                is(MATTERDevice_DefaultState($ep{3}),$expected,'bitmap default adds no second interpretation');
+            }
+        }
+    }
+    for my $row (@sources) {
+        my ($epid,$cluster,$attr,$reading) = @$row;
+        my $saved={%{$ep{$epid}{READINGS}{$reading}}};
+        my $writes=$single_writes{$ep{$epid}{NAME}}{$reading};
+        for my $bad (undef,-1,999,'normal',{},[]) { $live->($epid,$cluster,$attr,$bad); }
+        is_deeply($ep{$epid}{READINGS}{$reading},$saved,"$reading invalid/null reports preserve the last valid reading/time");
+        is($single_writes{$ep{$epid}{NAME}}{$reading},$writes,'rejection produces no extra reading writes');
+    }
+    # Freshness uses the same shared raw-to-reading conversion. Invalid live
+    # values cannot supersede a valid pending read; newer valid values do.
+    is(MATTERDevice_Set($ep{1},$ep{1}{NAME},'getConfig'),undef,'explicit alarm read starts');
+    my $id=$sent[-1]{message_id};
+    $live->(1,92,0,'co_alarm');
+    ok(!exists $io->{helper}{pending_config}{$id}{live_values}{'1/92/0'},'human-readable input is not accepted as a protocol enum');
+    MATTER_ParseMessage($io,encode_json({message_id=>$id,result=>{'1/92/0'=>1}}));
+    is(ReadingsVal($ep{1}{NAME},'alarm_expressed_state',''),'smoke_alarm','valid read remains applicable after invalid live data');
+    is(MATTERDevice_Set($ep{2},$ep{2}{NAME},'getConfig'),undef,'explicit air-quality read starts');
+    $id=$sent[-1]{message_id};
+    $live->(2,91,0,6);
+    MATTER_ParseMessage($io,encode_json({message_id=>$id,result=>{'2/91/0'=>0}}));
+    is(ReadingsVal($ep{2}{NAME},'air_quality',''),'extremely_poor','newer valid enum survives an older read');
+    MATTER_ParseMessage($io,encode_json({event=>'node_updated',data=>{node_id=>99400,available=>JSON::true,
+        attributes=>{'1/92/0'=>2,'2/91/0'=>1,'3/258/10'=>26}}}));
+    is_deeply([map { ReadingsVal($ep{$_->[0]}{NAME},$_->[3],'') } @sources],
+        ['co_alarm','good','global: closing / lift: closing / tilt: opening'],
+        'node_updated applies the same three readable mappings');
+    # Unknown availability, offline and endpoint-disable remain data gates.
+    MATTERDevice_InvalidateAvailability($root);
+    my $saved=encode_json([map { $ep{$_}{READINGS} } (1..3)]);
+    $live->(1,92,0,0); $live->(2,91,0,0); $live->(3,258,10,0);
+    is_deeply([map { $ep{$_}{READINGS} } (1..3)],JSON::decode_json($saved),'unknown availability preserves readable values');
+    MATTERDevice_UpdateAvailability($root,0);
+    $saved=encode_json([map { $ep{$_}{READINGS} } (1..3)]);
+    for my $row (@sources) { $live->(@$row[0..2],0); }
+    is_deeply([map { $ep{$_}{READINGS} } (1..3)],JSON::decode_json($saved),'offline reports preserve readable values');
+    MATTERDevice_UpdateAvailability($root,1);
+    CommandAttr(undef,"$ep{3}{NAME} disable 1");
+    my $cover_before={%{$ep{3}{READINGS}{wc_operational_status}}};
+    $live->(3,258,10,0);
+    is_deeply($ep{3}{READINGS}{wc_operational_status},$cover_before,'disabled endpoint retains its readable bitmap');
+    is(scalar(@timers),$timer_count,'conversions add no timers');
+};
+
 done_testing();
