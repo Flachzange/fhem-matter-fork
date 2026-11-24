@@ -3188,13 +3188,14 @@ sub MATTERDevice_GetOrCreateChild($$) {
 <h3>MATTERDevice</h3>
 <p>A MATTERDevice represents a Matter node (root endpoint 0) or one of its
 additional endpoints. It uses the assigned MATTER IO device to receive attribute
-updates and send supported commands. The module preserves existing FHEM names,
-rooms and attributes during node synchronization. Device set commands
+updates and send supported commands. The module preserves existing FHEM names
+and rooms during node synchronization. Endpoint groups follow the grouping rules below. Device set commands
 require an active IO WebSocket; a send failure is reported as an error. It does not override FHEM's
 initial STATE, allowing the normal statefile restoration at startup.</p>
 <ul>
   <li><b>Define:</b>
       <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id]</code>.
+      For node 4, use DEF <code>4</code> for the root and <code>4 2</code> for endpoint 2. Omit endpoint 0 in a root definition.
       The endpoint's IODev attribute identifies the Matter server; the root
       name is not part of the DEF.</li>
   <li><b>Set:</b> Depending on the reported capabilities:
@@ -3245,7 +3246,7 @@ existing sensor lifecycle suite models restoration.</p></li>
       and correlated replies (including errors) count as server reception,
       not proof of recent physical device contact. These internals generate no
       additional reading events and are not restored after a FHEM restart.</li>
-  <li><b>Reading matterStatus:  <li><b>Reading matterStatus:</b> <code>present</code> means the node exists on
+  <li><b>Reading matterStatus:</b> <code>present</code> means the node exists on
       the Matter server; <code>removed</code> means it was decommissioned or is
       missing from a complete server snapshot. Neither value is a reachability
       or availability indication.</li>
@@ -3265,9 +3266,9 @@ existing sensor lifecycle suite models restoration.</p></li>
       User-added associations are preserved. FHEM updates the reference when
       the root device is renamed; no additional HTML navigation is needed.</li>
   <li>Set commands marked <code>noArg</code> reject additional arguments before sending.</li>
-  <li><b>Capabilities:</b> Set commands require a matching endpoint
+  <li><b>Capabilities:</b> Cluster commands such as on and identify require a matching endpoint
       <code>AcceptedCommandList</code> entry and applicable
-      <code>FeatureMap</code> constraints. The module records the reported <code>ClusterRevision</code> as metadata.
+      <code>FeatureMap</code> constraints. Attribute writes such as desired-temp and fanPct use attribute and feature metadata. The mode and fanMode choices also require the corresponding sequence. The module records the reported <code>ClusterRevision</code> as metadata.
       A malformed ID list preserves its last valid entries. An explicit empty list clears them. Missing paths in a partial getConfig reply retain metadata; a valid endpoint Descriptor.ServerList revokes absent clusters and is included in getConfig.
       Until command metadata arrives, controls are not inferred from values,
       cluster presence or local attribute flags.</li>
@@ -3393,7 +3394,7 @@ to a lower-priority type. All new display classes remain <strong>hardware
 untested</strong>; actual local FHEM/FHEMWEB tests use synthetic reports.</p>
 
 <h4>Functional readings (hardware untested)</h4>
-<p>All module-specific public readings use lowerCamelCase, including metadata, limits, alarms, maintenance and diagnostics. Native FHEM names measured-temp, desired-temp and desired-temp-cool retain their spelling. Reading-backed fan setters are fanMode and fanPct; protocol fields and enum values remain unchanged.</p>
+<p>Module-specific public readings follow lowerCamelCase except for the water-leak reading <code>water_leak</code>. Native FHEM names measured-temp, desired-temp and desired-temp-cool retain their spelling. Reading-backed fan setters are fanMode and fanPct; protocol fields and enum values remain unchanged.</p>
 <table>
 <tr><th>Reading</th><th>Meaning</th></tr>
 <tr><td>batteryPercent / batteryVoltage</td><td>Integer 0..100 % (native half-percent rounded half up) / volts (mV divided by 1000).</td></tr>
@@ -3425,7 +3426,7 @@ warning are required for ok. Missing/null data never means all-clear. Detailed
 batteryChargeLevel, batteryReplacementNeeded and batteryAlert preserve
 cause/severity; a normal source cannot hide another warning. No cross-endpoint
 aggregation, polling or extra reads. See
-<a href="https://github.com/Flachzange/fhem-matter-fork/blob/testing/docs/reading-conventions.md">functional names, source evidence and test scope</a>.</p>
+<a href="https://github.com/Flachzange/fhem-matter-fork/blob/main/docs/reading-conventions.md">functional names, source evidence and test scope</a>.</p>
 
 <h4>Device-limit readings</h4>
 <p>The following ordinary readings are populated from accepted device reports
@@ -3640,7 +3641,7 @@ Aggregator and Bridged Node) use <code>Matter Infrastruktur</code>.
 Additional structural types such as Power Source and OTA Requestor are ignored
 when a functional type is present. Unknown IDs use hexadecimal labels.
 Multiple distinct functional types do not cause an arbitrary group choice.
-Existing custom groups are preserved. The root detail view links to its
+Existing root groups are preserved. An endpoint group can follow a changed device type if its current name exactly matches a known type label, <code>Matter Infrastruktur</code>, or <code>0x</code> followed by four to eight uppercase hexadecimal digits. This also applies to manually assigned matching names. Other existing groups, including <code>Node 4 (matterServer)</code>, are preserved. The root detail view links to its
 endpoints, even after renaming.</p>
 <p>Only newly autocreated nodes/endpoints are assigned to room <code>Matter</code>.
 Decommissioned devices are retained in FHEM rather than automatically deleted.</p>
@@ -3655,12 +3656,13 @@ Decommissioned devices are retained in FHEM rather than automatically deleted.</
 seiner weiteren Endpunkte. Über das zugeordnete MATTER-IO-Device empfängt es
 Attributänderungen und sendet unterstützte Befehle. Ein Set-Befehl setzt
 eine aktive IO-WebSocket-Verbindung voraus; Sendefehler werden gemeldet.
-Bei der Synchronisation bleiben bestehende Namen, Räume und Benutzerattribute erhalten. Der von FHEM
+Bei der Synchronisation bleiben bestehende Namen und Räume erhalten. Für Endpunktgruppen gelten die unten beschriebenen Gruppierungsregeln. Der von FHEM
 initial gesetzte STATE bleibt unverändert, damit das Statefile beim Neustart
 den gespeicherten Anzeigestatus wiederherstellen kann.</p>
 <ul>
   <li><b>Definition:</b>
       <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id]</code>.
+      Für Node 4 lautet die DEF des Roots <code>4</code>, die von Endpunkt 2 <code>4 2</code>. Beim Root entfällt die Endpunktangabe vollständig.
       Das IODev-Attribut bestimmt den Matter-Server; der Root-Name gehört nicht
       in die DEF.</li>
   <li><b>Set:</b> Abhängig von den Fähigkeiten z. B. <code>on</code>,
@@ -3713,7 +3715,7 @@ modelliert die Wiederherstellung.</p></li>
       Antworten einschließlich Fehlern zählen als Serverempfang; sie beweisen
       keinen aktuellen Kontakt zum physischen Gerät. Die Internals erzeugen keine
       zusätzlichen Reading-Events und werden beim FHEM-Neustart nicht wiederhergestellt.</li>
-  <li><b>Reading matterStatus:  <li><b>Reading matterStatus:</b> <code>present</code> bedeutet, dass der Knoten
+  <li><b>Reading matterStatus:</b> <code>present</code> bedeutet, dass der Knoten
       auf dem Matter-Server vorhanden ist; <code>removed</code> bedeutet, dass er
       dort entfernt wurde oder in einer vollständigen Node-Liste fehlt. Das Reading
       zeigt nicht die physische Erreichbarkeit oder Verfügbarkeit an.</li>
@@ -3734,9 +3736,9 @@ modelliert die Wiederherstellung.</p></li>
       Manuell ergänzte Zuordnungen bleiben erhalten. Beim Umbenennen des Roots
       aktualisiert FHEM die Referenz automatisch; zusätzliches HTML ist nicht nötig.</li>
   <li>Set-Befehle mit <code>noArg</code> weisen zusätzliche Argumente vor dem Versand ab.</li>
-  <li><b>Capabilities:</b> Set-Befehle erfordern einen passenden Eintrag in
+  <li><b>Capabilities:</b> Cluster-Befehle wie on und identify erfordern einen passenden Eintrag in
       der <code>AcceptedCommandList</code> des jeweiligen Endpunkts sowie
-      gegebenenfalls die in der <code>FeatureMap</code> geforderten Features.
+      gegebenenfalls die in der <code>FeatureMap</code> geforderten Features. Schreibzugriffe wie desired-temp und fanPct verwenden Attribut- und Feature-Metadaten. Die Auswahl für mode und fanMode erfordert zusätzlich die zugehörige Sequenz.
       Das Modul erfasst die gemeldete <code>ClusterRevision</code> als Metadatum. Bei einer fehlerhaften ID-Liste bleiben die
       letzten gültigen Einträge erhalten. Eine ausdrücklich leere Liste löscht sie. Fehlende Pfade einer getConfig-Teilantwort erhalten Metadaten; eine gültige Descriptor.ServerList des Endpunkts widerruft fehlende Cluster und wird mit getConfig gelesen. Solange die Metadaten fehlen,
       werden keine Befehle aus Einzelwerten, bloßer Clusterpräsenz
@@ -3872,7 +3874,7 @@ Anzeigeklassen sind <strong>Hardware-ungetestet</strong>; die lokale Prüfung
 mit echtem FHEM/FHEMWEB verwendet synthetische Meldungen.</p>
 
 <h4>Funktionale Readings (Hardware ungetestet)</h4>
-<p>Alle moduleigenen öffentlichen Readings verwenden lowerCamelCase, einschließlich Metadaten, Grenzen, Alarmen, Wartung und Diagnosen. Native FHEM-Namen measured-temp, desired-temp und desired-temp-cool bleiben bestehen. Die Reading-bezogenen Lüftersetter heißen fanMode und fanPct; Protokollfelder und Enum-Werte bleiben unverändert.</p>
+<p>Moduleigene öffentliche Readings folgen lowerCamelCase. Das Wasserleck-Reading <code>water_leak</code> ist die Ausnahme. Native FHEM-Namen measured-temp, desired-temp und desired-temp-cool bleiben bestehen. Die Reading-bezogenen Lüftersetter heißen fanMode und fanPct; Protokollfelder und Enum-Werte bleiben unverändert.</p>
 <table>
 <tr><th>Reading</th><th>Bedeutung</th></tr>
 <tr><td>batteryPercent / batteryVoltage</td><td>Ganzzahlige 0..100 % (native Halbprozent kaufmännisch gerundet) / Volt (mV geteilt durch 1000).</td></tr>
@@ -3905,7 +3907,7 @@ gültige Quelle und keine bekannte Warnung nötig. Fehlende/null Daten sind kein
 Entwarnung. batteryChargeLevel, batteryReplacementNeeded und batteryAlert
 behalten Ursache/Schweregrad; normale Quellen verdecken keine andere Warnung.
 Keine endpunktübergreifende Zusammenführung, Polling oder zusätzlichen Abfragen.
-Siehe <a href="https://github.com/Flachzange/fhem-matter-fork/blob/testing/docs/reading-conventions.md">funktionale Namen, Quellen und Testumfang</a>.</p>
+Siehe <a href="https://github.com/Flachzange/fhem-matter-fork/blob/main/docs/reading-conventions.md">funktionale Namen, Quellen und Testumfang</a>.</p>
 
 <h4>Gerätegrenzen als Readings</h4>
 <p>Die folgenden normalen Readings entstehen aus akzeptierten Gerätemeldungen
@@ -4136,9 +4138,7 @@ Aggregator und Bridged Node erhalten <code>Matter Infrastruktur</code>.
 Zusätzliche strukturelle Typen wie Power Source oder OTA Requestor werden
 bei vorhandener Gerätefunktion ignoriert. Unbekannte Typ-IDs erscheinen
 hexadezimal. Bei mehreren funktionalen Typen wird keine willkürliche
-Auswahl getroffen. Bisherige automatisch erzeugte
-<code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code>-Gruppen werden migriert;
-eigene Gruppen bleiben erhalten. Die Root-Detailansicht verlinkt die Endpunkte.</p>
+Auswahl getroffen. Bestehende Root-Gruppen bleiben erhalten. Eine Endpunktgruppe kann einem geänderten Gerätetyp folgen, wenn ihr Name exakt einem bekannten Typnamen, <code>Matter Infrastruktur</code> oder <code>0x</code> mit vier bis acht hexadezimalen Ziffern (A–F in Großschrift) entspricht. Das gilt auch bei manueller Vergabe dieser Namen. Andere bestehende Gruppen wie <code>Node 4 (matterServer)</code> bleiben erhalten. Die Root-Detailansicht verlinkt die Endpunkte.</p>
 <p>Nur neu automatisch erzeugte Geräte werden dem Raum <code>Matter</code>
 zugeordnet. Entfernte Geräte bleiben in FHEM erhalten.</p>
 

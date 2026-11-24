@@ -1344,7 +1344,7 @@ Subsequent <code>node_added</code>, <code>node_updated</code> and <code>node_rem
 events synchronize logical MATTERDevice nodes and their endpoints automatically.</p>
 <ul>
   <li><b>Define:</b> <code>define &lt;name&gt; MATTER &lt;IP&gt; &lt;PORT&gt;</code>
-      (default server port: 5580). The initial connection is scheduled for
+      (port required, typically 5580). The initial connection is scheduled for
       FHEM's event loop after configuration loading, so the 10-second
       handshake deadline does not run during startup.</li>
   <li><b>Set connect:</b> Reconnect the WebSocket to the server.</li>
@@ -1364,10 +1364,10 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
       <code>commissioningDuration</code> (seconds) and <code>commissioningError</code>.
       One commissioning request can be active per IO. On connection loss
       the result is unknown; no BLE/PASE intermediate progress is exposed.</li>
-  <li><b>Set setWifiCredentials / getCredentials:</b> Configure or inspect available
-      network credentials. The synthetic FHEM set event is suppressed for
+  <li><b>Set setWifiCredentials:</b> Supply the Wi-Fi SSID and password to the Matter server, optionally with a numeric credential ID. The synthetic FHEM set event is suppressed for
       Wi-Fi credentials; FHEM command history and plaintext WebSocket traffic
       remain sensitive.</li>
+  <li><b>Set getCredentials:</b> Request the credential inventory. FHEM publishes the Wi-Fi SSID, Thread network name and Extended PAN ID as readings.</li>
   <li><a id="MATTER-attr-commissionMode"></a><b>Attribute commissionMode (network/auto):</b> Persistent default
       for <code>commissionCode</code> when no mode argument is supplied.
       <code>network</code> uses IP discovery only; <code>auto</code> also
@@ -1391,7 +1391,7 @@ are <strong>untested</strong> in this repository unless a specific real-device
 commissioning path has separately documented hardware evidence. Automated
 WebSocket tests do not replace end-to-end hardware verification.</p>
 <p>Newly created logical devices default to room <code>Matter</code>; existing FHEM
-names, rooms and user attributes are retained. A removed node is marked with
+names and rooms are retained. Endpoint groups follow the MATTERDevice grouping rules. A removed node is marked with
 <code>matterStatus=removed</code> rather than deleted. This status describes node
 membership on the server, not physical device availability. The root and its endpoints mirror
 <code>available</code> when the server reports a valid node-wide boolean.
@@ -1421,7 +1421,7 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
 <code>node_removed</code> die Matter-Knoten und ihre Endpunkte ereignisgesteuert.</p>
 <ul>
   <li><b>Definition:</b> <code>define &lt;name&gt; MATTER &lt;IP&gt; &lt;PORT&gt;</code>
-      (Standardport: 5580). Der erste Verbindungsversuch wird erst in
+      (Portangabe erforderlich, üblicherweise 5580). Der erste Verbindungsversuch wird erst in
       FHEMs Ereignisschleife nach dem Einlesen der Konfiguration gestartet.
       Damit läuft die 10-Sekunden-Frist nicht schon während des Starts.</li>
   <li><b>Set connect:</b> Verbindung zum Matter-Server neu aufbauen.</li>
@@ -1442,10 +1442,10 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
       <code>commissioningDuration</code> (Sekunden) und <code>commissioningError</code>.
       Pro IO ist nur ein Vorgang gleichzeitig aktiv. Bei Verbindungsabbruch
       ist das Ergebnis unbekannt; einzelne BLE-/PASE-Phasen meldet der Server nicht.</li>
-  <li><b>Set setWifiCredentials / getCredentials:</b> Netzwerkzugangsdaten
-      konfigurieren bzw. auslesen. Das synthetische FHEM-set-Event für WLAN-
+  <li><b>Set setWifiCredentials:</b> Übermittelt WLAN-SSID und Passwort an den Matter-Server, optional mit numerischer Zugangsdaten-ID. Das synthetische FHEM-set-Event für WLAN-
       Zugangsdaten wird unterdrückt; Eingabeverlauf und unverschlüsselter
       WebSocket-Verkehr bleiben vertraulich zu behandeln.</li>
+  <li><b>Set getCredentials:</b> Fragt die hinterlegten Netzwerke ab. FHEM übernimmt WLAN-SSID, Thread-Netzname und Extended PAN ID als Readings.</li>
   <li><a id="MATTER-attr-commissionMode"></a><b>Attribut commissionMode (network/auto):</b> Dauerhafter
       Standard für <code>commissionCode</code> ohne Modusangabe.
       <code>network</code> nutzt nur IP-Discovery; <code>auto</code> erlaubt
@@ -1473,7 +1473,7 @@ erhalten, gibt aber keine Geräteupdates frei. Dafür ist eine neue gültige
 Availability-Meldung in der aktuellen Verbindung erforderlich. Die
 MATTERDevice-Offline-Sperre schützt auch den Wiederanlauf nach FHEM-Neustart.</p>
 <p>Neue logische Geräte erhalten standardmäßig den Raum <code>Matter</code>.
-Vorhandene Namen, Räume und Benutzerattribute bleiben unverändert. Entfernte
+Vorhandene Namen und Räume bleiben erhalten. Für Endpunktgruppen gelten die Gruppierungsregeln von MATTERDevice. Entfernte
 Nodes werden mit <code>matterStatus=removed</code> markiert und nicht automatisch
 gelöscht. Dieses Reading beschreibt die Mitgliedschaft auf dem Matter-Server,
 nicht die physische Erreichbarkeit des Geräts. Das am Root und seinen Endpunkten geführte Reading

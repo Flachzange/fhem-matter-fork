@@ -8,7 +8,7 @@ Hardware validation of the changed mappings: **untested**.
 
 ## Module-wide name policy
 
-All module-specific public readings use lowerCamelCase: functional details,
+Module-specific public readings follow lowerCamelCase except for the water-leak reading `water_leak`. The convention covers functional details,
 device metadata, limits, IO/server status, commissioning, OTA/ICD maintenance
 and optional diagnostics. Native FHEM interfaces retain their established
 names: `state`, `associatedWith`, `IODev`, `measured-temp`, `desired-temp`
