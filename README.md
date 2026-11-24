@@ -189,7 +189,11 @@ values. On/off and binary-sensor state readings retain their existing values
 and events. Button displays show `last: short` (or the last other
 reported event), never an inferred actuator state. An explicit `stateFormat`
 always takes precedence, including after restoration; deleting it restores
-the default. Missing data is `unknown`, and valid zero remains zero. Offline
+the default. Smoke/CO `alarm_expressed_state`, qualitative `air_quality` and
+the covering movement bitmap `wc_operational_status` are readable functional
+readings; their defaults use those same values without a separate enum lookup.
+Movement status retains global/lift/tilt fields in the existing reading.
+Missing data is `unknown`; a valid numeric measurement of zero remains zero. Offline
 or disabled endpoints retain their last values. Structural/unknown types use
 an existing state or `unknown`; the Flow Sensor label alone has no measurement
 parser and displays `unknown`. No polling or additional Matter requests are

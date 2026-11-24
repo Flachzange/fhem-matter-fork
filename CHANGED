@@ -1,1 +1,1 @@
-2026-11-23  MATTER V0.42 (#91): Standardize functional readings; sensor brightness in lux, covering pct as percent open, batteryState and textual lock state. Separate electrical Hz from native levelFrequency.
+2026-11-24  MATTER V0.43: Use the same readable alarm, air-quality and covering movement states in readings, events and default STATE.
