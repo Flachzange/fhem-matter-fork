@@ -108,16 +108,6 @@ Only merged changes on `main` are published by this source. Adding it does not a
 
 The [`testing` branch](https://github.com/Flachzange/fhem-matter-fork/tree/testing) contains changes that are being evaluated before they are merged into `main`. It provides its own [FHEM updater manifest](https://raw.githubusercontent.com/Flachzange/fhem-matter-fork/testing/controls_matter.txt). Use this branch only when you intentionally want to test newer development changes.
 
-**Automatic migration (introduced in testing V0.10):** Endpoint definitions now contain only a node ID and endpoint ID, for example `18 11`. On the first startup with the updated module, legacy definitions such as `18 11 MATTER_MatterDevice_18` are recognized and normalized **in memory**, discarding the obsolete root FHEM name. No pre-update `modify` commands are required. Existing device names, FUUIDs, readings and attributes are retained. The separate `IODev` attribute still identifies the Matter server; previously autocreated endpoints already have it.
-
-After restarting FHEM with V0.10, **save the configuration once** using the **FHEM command line**:
-
-```text
-save
-```
-
-FHEM's normal save then writes the normalized endpoint definitions permanently, both for file-based configuration and configDB. The module does **not** automatically rewrite the configuration during startup. If no save is performed, the migration repeats on the next startup; the legacy root name is never used for device ownership. New endpoint definitions are always generated without a root-name parameter. Arbitrary extra fields remain invalid.
-
 FHEM permits **only one update source named `controls_matter.txt`**. To switch an existing installation from this fork's `main` source to `testing`, enter the following commands in the **FHEM command line** (check your current sources with `update list` first):
 
 ```text
@@ -176,7 +166,7 @@ Newly commissioned nodes are normally imported automatically. After a reconnect 
 set matterServer discover
 ```
 
-Root devices use `DEF = <node_id>` (for example `18`); endpoints use `DEF = <node_id> <endpoint_id>` (for example `18 11`). The `IODev` attribute selects the Matter server independently of the FHEM name; a root name is never part of an endpoint DEF. This allows root and endpoint devices to be renamed without changing the technical definition. New root and endpoint devices default to FHEM room `Matter` unless manually changed later. Root devices (endpoint 0) use the shared administrative group `Matter Nodes`; functional endpoints use the name of their **single non-structural** Matter `Descriptor.DeviceTypeList` device type (for example `On/Off light`, `Electrical Sensor` for `0x0510`, or `Smoke CO Alarm`). Although Matter classifies `Electrical Sensor` as a utility type, it represents a usable measurement endpoint. Endpoints with only structural types, including `Aggregator` and `Bridged Node`, use `Matter Infrastruktur` instead of retaining a technical node group. Structural companions such as Power Source and OTA Requestor do not create additional groups. Unknown device type IDs use hexadecimal labels; multiple distinct functional device types do not trigger an arbitrary choice. Automatically generated legacy groups in the exact format `Node <node_id> (<IODev>)` migrate to these groups; custom group values are not replaced. Existing physical room assignments are never changed during synchronization. `Smoke CO Alarm` is Matter's shared device type and does not imply that a CO-only detector also detects smoke. The root detail view links to existing endpoints and shows their Matter Descriptor device types when known, otherwise a conservative cluster-based description. Every endpoint also has a persistent `associatedWith` reading linking to its owning root in FHEMWEB's native **Probably associated with** section. Existing user-added links are kept, and FHEM automatically updates root references on rename. Both relationships are matched by Matter IODev and node ID, not by FHEM naming conventions.
+Root devices use `DEF = <node_id>` (for example `18`); endpoints use `DEF = <node_id> <endpoint_id>` (for example `18 11`). The `IODev` attribute selects the Matter server independently of the FHEM name; a root name is never part of an endpoint DEF. This allows root and endpoint devices to be renamed without changing the technical definition. New root and endpoint devices default to FHEM room `Matter` unless manually changed later. Root devices (endpoint 0) use the shared administrative group `Matter Nodes`; functional endpoints use the name of their **single non-structural** Matter `Descriptor.DeviceTypeList` device type (for example `On/Off light`, `Electrical Sensor` for `0x0510`, or `Smoke CO Alarm`). Although Matter classifies `Electrical Sensor` as a utility type, it represents a usable measurement endpoint. Endpoints with only structural types, including `Aggregator` and `Bridged Node`, use `Matter Infrastruktur` instead of retaining a technical node group. Structural companions such as Power Source and OTA Requestor do not create additional groups. Unknown device type IDs use hexadecimal labels; multiple distinct functional device types do not trigger an arbitrary choice. Existing custom groups are preserved, including values that resemble generated names. Existing physical room assignments are never changed during synchronization. `Smoke CO Alarm` is Matter's shared device type and does not imply that a CO-only detector also detects smoke. The root detail view links to existing endpoints and shows their Matter Descriptor device types when known, otherwise a conservative cluster-based description. Every endpoint also has a persistent `associatedWith` reading linking to its owning root in FHEMWEB's native **Probably associated with** section. Existing user-added links are kept, and FHEM automatically updates root references on rename. Both relationships are matched by Matter IODev and node ID, not by FHEM naming conventions.
 
 MATTERDevice leaves FHEM's initial `STATE` unchanged during configuration loading, allowing normal statefile restoration. Once initialization finishes, root nodes (endpoint 0) expose a native `state` reading, without an automatically configured `stateFormat` attribute: `online` for server-reported `available=true`, `offline` for `available=false`, `unknown` when no fresh reachability report is available or the MATTER IO loses its connection, and `removed` when the server removes a node or omits it from a complete node list. `online` is not inferred from mere node-list membership. The module does not introduce reachability polling. Only root `state` changes; endpoint device states remain independent and `available` retains the last raw server report, even during connection loss.
 
@@ -203,9 +193,7 @@ cover every currently named type. Hardware behavior of these new displays is
 and FHEMWEB, including live longpoll and statefile restoration.
 
 
-**Upgrade from V0.15:** At FHEM `INITIALIZED` / `REREADCFG`, roots that still have the old exact `stateFormat available` setting but no new-style `state` reading have that attribute removed automatically. Custom `stateFormat` values are preserved. Because V0.15 did not mark attributes as auto-created, an intentionally manually configured, identical `stateFormat available` cannot be distinguished from the old automatic default. Once migrated and a new `state` reading exists, that value can be deliberately configured again. Save the FHEM configuration after the update/restart to persist the migration.
-
-Matter `Descriptor.DeviceTypeList` is stored per endpoint in the **`deviceTypeIds` reading** as canonical comma-separated hexadecimal IDs (for example `0x0011,0x0076`). Both the root detail's endpoint type labels and automatic device-type groups use this reading rather than temporary helper metadata. Once a valid DeviceTypeList has been received, FHEM restores the IDs after restart through its normal statefile or configDB handling, even when the Matter server is still disconnected. Repeated identical values do not produce additional reading events. Invalid Descriptor responses do not erase previously known IDs. For endpoints that have **never** supplied a valid DeviceTypeList, the existing cluster-based fallback is still based on currently observed runtime clusters; the fix does not invent an authoritative device type or add polling. The runtime capabilities/command metadata remains transient and is not treated as a persisted reading.
+Matter `Descriptor.DeviceTypeList`Matter `Descriptor.DeviceTypeList` is stored per endpoint in the **`deviceTypeIds` reading** as canonical comma-separated hexadecimal IDs (for example `0x0011,0x0076`). Both the root detail's endpoint type labels and automatic device-type groups use this reading rather than temporary helper metadata. Once a valid DeviceTypeList has been received, FHEM restores the IDs after restart through its normal statefile or configDB handling, even when the Matter server is still disconnected. Repeated identical values do not produce additional reading events. Invalid Descriptor responses do not erase previously known IDs. For endpoints that have **never** supplied a valid DeviceTypeList, the existing cluster-based fallback is still based on currently observed runtime clusters; the fix does not invent an authoritative device type or add polling. The runtime capabilities/command metadata remains transient and is not treated as a persisted reading.
 
 `matterStatus=present` / `removed` indicates membership in the server's node list, **not** physical availability. `available=true` / `false` indicates reachability only if reported by the server. Node-wide `model` and `available` values are mirrored from the root to endpoints when known. No recurring availability poll is introduced.
 
@@ -255,31 +243,13 @@ otherwise normal online synchronization resumes later. No polling or command
 replay is added. The attribute defaults to `0`, is rejected on roots, and does
 not change `readOnly`. No Matter radio traffic reduction is promised.
 
-**V0.21 transition: device limits are readings.** The ten names
+Device-reported endpoint limits are readings, not configurable attributes:
 `minBrightness`, `maxBrightness`, `minFrequency`, `maxFrequency`,
-`colorTempMin`, `colorTempMax`, `minPinCodeLength`, `maxPinCodeLength`,
-`minRfidCodeLength` and `maxRfidCodeLength` are populated from received
-device data and updated as ordinary endpoint readings. No old attribute value
-is copied into a reading. The ten attribute declarations are removed entirely;
-there is no compatibility or automatic migration. Review automations using
-`AttrVal` and retain any old settings needed for reference: manual overrides
-no longer affect controls or scaling.
+`colorTempMin`, `colorTempMax`, `minPinCodeLength`,
+`maxPinCodeLength`, `minRfidCodeLength` and `maxRfidCodeLength`.
+They reflect accepted Matter reports and do not act as local command overrides.
 
-**Before restarting into V0.21**, remove saved limit attributes and save the
-configuration. Otherwise FHEM may reject their lines while restoring
-`fhem.cfg` or configDB. Execute each line separately in the **FHEM command
-line**, not in the DEF editor or a shell:
-
-```text
-deleteattr TYPE=MATTERDevice (color_temp_(min|max)|(min|max)_(brightness|frequency|pin_code_length|rfid_code_length))
-save
-```
-
-This removes only the ten retired attributes from MATTERDevice devices;
-readings and other attributes remain unchanged. The module does not delete
-user configuration automatically.
-
-CT and levelFrequency controls use valid reported boundaries; when boundaries are
+CT and levelFrequency controlsCT and levelFrequency controls use valid reported boundaries; when boundaries are
 missing, undefined, reversed or excluded by metadata, their supported command
 remains available with a text field instead of a colorpicker/slider. No 153–500
 or 50–60 device range is assumed. Lighting uses the Matter maximum level 254;

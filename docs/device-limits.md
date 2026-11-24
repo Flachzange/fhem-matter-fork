@@ -1,32 +1,7 @@
-# Device limits: protocol evidence and V0.21 transition
+# Device limits: protocol evidence
 
-Inspected 2026-11-19. This change covers ten previously auto-created FHEM
-attributes, not Matter capability/command overrides. All ten declarations are
-removed from AttrList without compatibility or automatic migration. No existing
-values are copied to readings or deleted by the module. Review manual overrides
-and AttrVal automation before updating.
-
-## Configuration cleanup before restart
-
-Before restarting into V0.21, save any old settings needed for reference, remove
-the ten attributes and save the configuration. FHEM may reject saved attribute
-lines during startup otherwise. Execute each line separately in the **FHEM
-command line**, not in the DEF editor or a shell:
-
-```text
-deleteattr TYPE=MATTERDevice (color_temp_(min|max)|(min|max)_(brightness|frequency|pin_code_length|rfid_code_length))
-save
-```
-
-The native `deleteattr` command accepts a device specification and an attribute
-regular expression. This expression matches exactly the ten retired names on
-MATTERDevice devices; it does not remove readings or other attributes. Verified
-against `fhem/fhem-mirror` `fhem/fhem.pl`, blob
-`07b16fbc7fc14fe95553b1b365f5bdb398220817`, inspected 2026-11-19:
-`CommandDeleteAttr` expands `devspec2array`, invokes `AttrFn` before deletion,
-anchors the attribute expression and emits the normal configuration-change
-events. `save` persists the cleanup for file-based configuration or configDB.
-There is no module-side loading alias, copying or automatic deletion.
+Endpoint limit readings come from validated Matter reports and snapshots.
+They are not local command permissions or configurable device-limit overrides.
 
 ## Protocol evidence
 
@@ -67,7 +42,7 @@ Reading persistence is modeled by retaining READINGS while rebuilding helper
 metadata; no actual FHEM restart, configDB, browser or device hardware test is
 claimed. The change adds no polling, recovery timer or automatic physical read.
 
-Since V0.42, the controlled frequency reading/setter is `levelFrequency` in native
+The controlled frequency reading/setter is `levelFrequency` in native
 units. `frequency` is reserved for the electrical measurement in Hz. Dimmer
 percent uses `level` on mixed illuminance endpoints and `brightness` otherwise;
 `dimmerPct` separates dim percent from covering percent. See

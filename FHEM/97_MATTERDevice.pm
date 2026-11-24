@@ -1037,9 +1037,7 @@ sub MATTERDevice_LookupRoot {
     return undef;
 }
 
-# Config and statefile restoration complete before INITIALIZED/REREADCFG.
-# The former module created exactly 'stateFormat available' automatically.
-# Migrate that legacy default once, without altering other user formatting.
+# Root and endpoint lifecycle notifications run after configuration restoration.
 sub MATTERDevice_Notify($$) {
     my ($hash, $dev) = @_;
     return unless ($dev->{NAME} // '') eq 'global';
@@ -1080,11 +1078,6 @@ sub MATTERDevice_Notify($$) {
         $index->{$key} = $hash unless $owner;
     }
     MATTERDevice_InvalidateAvailability($hash) if $startup;
-    if ($startup && AttrVal($name, 'stateFormat', '') eq 'available' &&
-        ReadingsVal($name, 'state', '') !~ /\A(?:online|offline|unknown|removed)\z/) {
-        my $error = CommandDeleteAttr(undef, "$name stateFormat");
-        Log3 $name, 3, "MATTERDevice: Cannot remove legacy stateFormat on $name: $error" if $error;
-    }
     MATTERDevice_SetRootState($hash, 'unknown');
 }
 
@@ -1092,11 +1085,8 @@ sub MATTERDevice_Define($$) {
     my ($hash, $def) = @_;
     my @a = split("[ \t]+", $def);
 
-    # Upgrade existing endpoint definitions in place. The old root name is a
-    # mutable FHEM label, not part of the Matter node/endpoint identity.
-    my $legacy_def = @a == 5 && ($a[4] // '') =~ /^[A-Za-z0-9_.-]+$/;
     return "wrong syntax: define <name> MATTERDevice <node_id> [<endpoint_id>]"
-        unless (@a == 3 || @a == 4 || $legacy_def)
+        unless (@a == 3 || @a == 4)
             && ($a[2] // '') =~ /^\d+$/
             && (@a == 3 || ($a[3] // '') =~ /^[1-9]\d*$/);
 
@@ -1112,11 +1102,6 @@ sub MATTERDevice_Define($$) {
             if $owner && $owner ne $hash;
     }
     MATTERDevice_InvalidateIdentity($hash) if $changed;
-
-    if ($legacy_def) {
-        $hash->{DEF} = "$node_id $endpoint_id";
-        Log3 $name, 3, "MATTERDevice: Migrated endpoint DEF to '$hash->{DEF}'; use save to persist";
-    }
 
     # CommandModify can reuse a root hash for a different identity.
     if (($hash->{endpoint_id} // -1) == 0 && defined $hash->{node_id}) {
@@ -2947,7 +2932,7 @@ sub MATTERDevice_DeviceTypeIds($) {
 
 # Root endpoints share one administrative FHEMWEB group; functional
 # endpoints use their single non-utility Matter Descriptor device type.
-# Replace only legacy node groups or uncustomized type groups.
+# Maintain type groups without overriding user-defined group names.
 sub MATTERDevice_EnsureTypeGroup($) {
     my ($device) = @_;
     return unless $device && defined($device->{NAME});
@@ -2972,10 +2957,9 @@ sub MATTERDevice_EnsureTypeGroup($) {
 
     my $current = AttrVal($name, 'group', undef);
     return if defined($current) && $current eq $group;
-    my $legacy = "Node $node_id ($io_name)";
-    if (defined($current) && $current ne $legacy) {
-        # Previously generated type labels can change when the Descriptor
-        # changes. Other existing group values remain user-owned.
+    if (defined($current)) {
+        # An existing device-type group may follow a changed Descriptor.
+        # Other existing groups remain user-owned.
         my %type_labels = map { $_ => 1 } (values %MATTER_DEVICE_TYPE_LABELS, 'Matter Infrastruktur');
         return if $root || (!$type_labels{$current} && $current !~ /^0x[0-9A-F]{4,8}$/);
     }
@@ -2984,7 +2968,7 @@ sub MATTERDevice_EnsureTypeGroup($) {
     Log3 $name, 3, "MATTERDevice: Cannot set type group for $name: $error" if $error;
 }
 
-# Resolve an existing root's children for both navigation and group migration.
+# Resolve existing root children for navigation and node-wide synchronization.
 sub MATTERDevice_NodeChildren($) {
     my ($root) = @_;
     return () unless $root && ($root->{TYPE} // '') eq 'MATTERDevice'
@@ -3212,19 +3196,14 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
   <li><b>Define:</b>
       <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id]</code>.
       The endpoint's IODev attribute identifies the Matter server; the root
-      name is not part of the DEF. On first load, legacy definitions with a
-      root name are normalized automatically; save the FHEM configuration once
-      after restarting to persist the shorter DEF.</li>
+      name is not part of the DEF.</li>
   <li><b>Set:</b> Depending on the reported capabilities:
       <code>on</code>, <code>off</code>, <code>brightness</code>, <code>ct</code>,
       <code>rgb</code>, <code>getConfig</code> and supported device-specific commands.</li>
   <li><b>Attributes:</b> <code>IODev</code>, endpoint <code>readOnly</code> / <code>disable</code>, opt-in
       <code>diagnostics</code> / <code>rawReadings</code>, dimming
       <code>dimRate</code>. Physical limits are reported readings.
-      Retired <code>has_*</code> settings are ignored; they are neither
-      generated nor automatically removed from stored FHEM configurations.
-      Remove saved legacy flags manually before restarting with this version:
-      FHEM may reject undeclared attribute lines when restoring a configuration.</li>
+      Set commands depend on reported Matter capabilities, not local capability flags.</li>
   <li><b>Offline attribute protection:</b> Device attributes and
 <code>getConfig</code> require valid current-session <code>available=true</code>.
 While offline or availability is unknown, preserve saved values and local
@@ -3266,13 +3245,7 @@ existing sensor lifecycle suite models restoration.</p></li>
       and correlated replies (including errors) count as server reception,
       not proof of recent physical device contact. These internals generate no
       additional reading events and are not restored after a FHEM restart.</li>
-  <li><b>Legacy display migration:</b> On <code>INITIALIZED</code> or
-      <code>REREADCFG</code>, the old autogenerated exact attribute
-      <code>stateFormat available</code> is removed if the root has no
-      new-style state reading yet. Other user-defined formats are retained.
-      An identical, manually configured old value cannot be distinguished from
-      that previous default; save the FHEM configuration after migration.</li>
-  <li><b>Reading matterStatus:</b> <code>present</code> means the node exists on
+  <li><b>Reading matterStatus:  <li><b>Reading matterStatus:</b> <code>present</code> means the node exists on
       the Matter server; <code>removed</code> means it was decommissioned or is
       missing from a complete server snapshot. Neither value is a reachability
       or availability indication.</li>
@@ -3297,8 +3270,7 @@ existing sensor lifecycle suite models restoration.</p></li>
       <code>FeatureMap</code> constraints. The module records the reported <code>ClusterRevision</code> as metadata.
       A malformed ID list preserves its last valid entries. An explicit empty list clears them. Missing paths in a partial getConfig reply retain metadata; a valid endpoint Descriptor.ServerList revokes absent clusters and is included in getConfig.
       Until command metadata arrives, controls are not inferred from values,
-      cluster presence or retired <code>has_*</code> settings. A saved
-      <code>has_*=0</code> no longer disables a reported command.</li>
+      cluster presence or local attribute flags.</li>
   <li><b>New readings:</b> PowerSource, SmokeCO alarm, CO concentration, electrical
       power and cumulative energy clusters, where the server supplies the
       corresponding attributes.</li>
@@ -3308,8 +3280,7 @@ existing sensor lifecycle suite models restoration.</p></li>
 <p>Select an attribute in FHEMWEB to show its description. Active device
 settings are <code>IODev</code>, <code>readOnly</code>, <code>disable</code>, <code>dimRate</code>, <code>diagnostics</code>
 and <code>rawReadings</code>. Device limits are readings, not configurable
-attributes. Remove saved limit attributes before restarting into V0.21,
-as described below.</p>
+attributes.</p>
 <ul>
   <li><a id="MATTERDevice-attr-IODev"></a><b>IODev:</b> Name of the
       <code>MATTER</code> IO device providing the server connection for this
@@ -3456,7 +3427,7 @@ cause/severity; a normal source cannot hide another warning. No cross-endpoint
 aggregation, polling or extra reads. See
 <a href="https://github.com/Flachzange/fhem-matter-fork/blob/testing/docs/reading-conventions.md">functional names, source evidence and test scope</a>.</p>
 
-<h4>Device-limit readings and upgrade from V0.20</h4>
+<h4>Device-limit readings</h4>
 <p>The following ordinary readings are populated from accepted device reports
 or snapshots, independently for each endpoint. They survive normal FHEM
 statefile/configDB restoration. No extra reads or polling are introduced.</p>
@@ -3481,22 +3452,10 @@ brightness and cannot produce a derived percentage.
 While offline or availability is unknown, reports cannot update limits or
 derived percentages. Once online, accepted level, limit and metadata updates
 may recalculate percentage from the reported brightness. Command availability still requires advertised Matter commands/features.</p>
-<p><b>Transition:</b> These ten attribute names are removed from
-<code>AttrList</code> in V0.21; there is no compatibility or automatic migration.
-Review automation using <code>AttrVal</code> and save any old settings needed
-for reference. Old overrides no longer affect controls or scaling. Before
-restarting into V0.21, remove these attributes and save the configuration;
-otherwise FHEM may reject saved attribute lines during startup. Execute each
-line separately in the <b>FHEM command line</b>:</p>
-<pre>deleteattr TYPE=MATTERDevice (color_temp_(min|max)|(min|max)_(brightness|frequency|pin_code_length|rfid_code_length))
-save</pre>
-<p>The command removes only these ten attributes from MATTERDevice devices,
-not their readings. No values are automatically copied or deleted by the
-module. Readings appear only when corresponding data is received. Invalid/null
-reports preserve the last valid reading; offline protection also
-applies to limits. Restored readings are cached information, not proof of
-current reachability. Device-class hardware status remains
-<strong>untested</strong>.</p>
+<p>Limit readings appear only after accepted device data. Invalid/null reports
+preserve the last valid value; offline protection applies to limits.
+Restored values are cached information, not proof of reachability.
+Device-class hardware validation remains <strong>untested</strong>.</p>
 <p>The energy reading accepts the inner EnergyMeasurementStruct field (named or TLV tag 0) only as an integer from 0 to 2^62 mWh, converted to kWh. Invalid/null data preserves the last reading; numeric zero remains valid.</p>
 <h4>Hardware validation status</h4>
 <p>The following classes are implemented but have no class-wide hardware validation
@@ -3681,9 +3640,8 @@ Aggregator and Bridged Node) use <code>Matter Infrastruktur</code>.
 Additional structural types such as Power Source and OTA Requestor are ignored
 when a functional type is present. Unknown IDs use hexadecimal labels.
 Multiple distinct functional types do not cause an arbitrary group choice.
-Old generated <code>Node &lt;node_id&gt; (&lt;IODev&gt;)</code> groups are migrated;
-custom groups are preserved. The root detail view links to its endpoints,
-even after renaming.</p>
+Existing custom groups are preserved. The root detail view links to its
+endpoints, even after renaming.</p>
 <p>Only newly autocreated nodes/endpoints are assigned to room <code>Matter</code>.
 Decommissioned devices are retained in FHEM rather than automatically deleted.</p>
 
@@ -3704,20 +3662,15 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
   <li><b>Definition:</b>
       <code>define &lt;name&gt; MATTERDevice &lt;node_id&gt; [endpoint_id]</code>.
       Das IODev-Attribut bestimmt den Matter-Server; der Root-Name gehört nicht
-      in die DEF. Bisherige dreiteilige Endpoint-Definitionen werden beim
-      ersten Laden automatisch gekürzt. Anschließend die FHEM-Konfiguration
-      einmal speichern, um die neue DEF dauerhaft zu übernehmen.</li>
+      in die DEF.</li>
   <li><b>Set:</b> Abhängig von den Fähigkeiten z. B. <code>on</code>,
       <code>off</code>, <code>brightness</code>, <code>ct</code>,
       <code>rgb</code>, <code>getConfig</code> und weitere Gerätebefehle.</li>
   <li><b>Attribute:</b> <code>IODev</code>, Endpunkt-<code>readOnly</code> / <code>disable</code>, optionale
       <code>diagnostics</code> / <code>rawReadings</code>,
       <code>dimRate</code>. Gerätegrenzwerte werden als Readings gemeldet.
-      Alte <code>has_*</code>-Attribute werden ignoriert, nicht mehr erzeugt
-      und nicht automatisch aus gespeicherten FHEM-Konfigurationen gelöscht.
-      Vor dem Neustart mit dieser Version sollten gespeicherte Legacy-Attribute
-      manuell entfernt werden, da FHEM unbekannte Attribute beim Laden der
-      Konfiguration ablehnen kann.</li>
+      Set-Befehle richten sich nach gemeldeten Matter-Fähigkeiten,
+      nicht nach lokalen Fähigkeits-Attributen.</li>
   <li><b>Offline-Attributsperre:</b> Geräteattribute und
 <code>getConfig</code> erfordern ein gültiges aktuelles <code>available=true</code>.
 Bei Offline-Status oder unbekannter Availability bleiben gespeicherte Werte
@@ -3760,13 +3713,7 @@ modelliert die Wiederherstellung.</p></li>
       Antworten einschließlich Fehlern zählen als Serverempfang; sie beweisen
       keinen aktuellen Kontakt zum physischen Gerät. Die Internals erzeugen keine
       zusätzlichen Reading-Events und werden beim FHEM-Neustart nicht wiederhergestellt.</li>
-  <li><b>Migration der alten Anzeige:</b> Nach <code>INITIALIZED</code> oder
-      <code>REREADCFG</code> wird das bisher automatisch angelegte Attribut
-      <code>stateFormat available</code> entfernt, sofern noch kein neuer
-      Root-Status gespeichert ist. Andere benutzerdefinierte Formate bleiben
-      erhalten. Ein absichtlich identisch gesetzter Altwert ist vom früheren
-      Standard nicht unterscheidbar. Nach der Migration die Konfiguration speichern.</li>
-  <li><b>Reading matterStatus:</b> <code>present</code> bedeutet, dass der Knoten
+  <li><b>Reading matterStatus:  <li><b>Reading matterStatus:</b> <code>present</code> bedeutet, dass der Knoten
       auf dem Matter-Server vorhanden ist; <code>removed</code> bedeutet, dass er
       dort entfernt wurde oder in einer vollständigen Node-Liste fehlt. Das Reading
       zeigt nicht die physische Erreichbarkeit oder Verfügbarkeit an.</li>
@@ -3792,9 +3739,8 @@ modelliert die Wiederherstellung.</p></li>
       gegebenenfalls die in der <code>FeatureMap</code> geforderten Features.
       Das Modul erfasst die gemeldete <code>ClusterRevision</code> als Metadatum. Bei einer fehlerhaften ID-Liste bleiben die
       letzten gültigen Einträge erhalten. Eine ausdrücklich leere Liste löscht sie. Fehlende Pfade einer getConfig-Teilantwort erhalten Metadaten; eine gültige Descriptor.ServerList des Endpunkts widerruft fehlende Cluster und wird mit getConfig gelesen. Solange die Metadaten fehlen,
-      werden keine Befehle aus Einzelwerten oder alten <code>has_*</code>-
-      Einstellungen abgeleitet. Gespeicherte <code>has_*=0</code>-Werte
-      sperren keine gemeldeten Befehle mehr.</li>
+      werden keine Befehle aus Einzelwerten, bloßer Clusterpräsenz
+      oder lokalen Fähigkeits-Attributen abgeleitet.</li>
   <li><b>Weitere Readings:</b> PowerSource, SmokeCO-Alarm,
       Kohlenmonoxidkonzentration, elektrische Leistung und kumulierte Energie,
       soweit die Geräte die jeweiligen Attribute liefern.</li>
@@ -3804,8 +3750,7 @@ modelliert die Wiederherstellung.</p></li>
 <p>Bei Auswahl eines Attributs in FHEMWEB erscheint dessen Beschreibung.
 Aktive Geräteeinstellungen sind <code>IODev</code>, <code>readOnly</code>, <code>disable</code>, <code>dimRate</code>,
 <code>diagnostics</code> und <code>rawReadings</code>. Gerätegrenzen sind
-Readings und keine konfigurierbaren Attribute. Gespeicherte Grenzwertattribute
-vor dem Neustart mit V0.21 wie unten beschrieben entfernen.</p>
+Readings und keine konfigurierbaren Attribute.</p>
 <ul>
   <li><a id="MATTERDevice-attr-IODev"></a><b>IODev:</b> Name des
       <code>MATTER</code>-IO-Devices mit der Serververbindung für diesen
@@ -3962,7 +3907,7 @@ behalten Ursache/Schweregrad; normale Quellen verdecken keine andere Warnung.
 Keine endpunktübergreifende Zusammenführung, Polling oder zusätzlichen Abfragen.
 Siehe <a href="https://github.com/Flachzange/fhem-matter-fork/blob/testing/docs/reading-conventions.md">funktionale Namen, Quellen und Testumfang</a>.</p>
 
-<h4>Gerätegrenzen als Readings und Umstieg von V0.20</h4>
+<h4>Gerätegrenzen als Readings</h4>
 <p>Die folgenden normalen Readings entstehen aus akzeptierten Gerätemeldungen
 oder Snapshots, getrennt je Endpunkt. Sie überstehen die normale FHEM-
 Wiederherstellung über Statefile/configDB. Es entstehen keine zusätzlichen
@@ -3990,24 +3935,11 @@ die angekündigten Matter-Befehle und Features. Bei unbekannter oder negativer
 Availability werden Grenzen und abgeleitete Prozentwerte nicht aktualisiert.
 Online dürfen akzeptierte Level-, Grenzwert- und Metadatenmeldungen den
 Prozentwert aus der gemeldeten Helligkeit neu berechnen.</p>
-<p><b>Übergang:</b> Diese zehn Attributnamen sind ab V0.21 aus der
-<code>AttrList</code> entfernt; es gibt keine Kompatibilitäts- oder
-Migrationslogik. Automationen mit <code>AttrVal</code> prüfen und noch benötigte
-Altwerte sichern. Alte Übersteuerungen beeinflussen Bedienelemente und
-Skalierung nicht mehr. Vor dem Neustart mit V0.21 die Attribute entfernen und
-die Konfiguration speichern; andernfalls kann FHEM gespeicherte Attributzeilen
-beim Start zurückweisen. Jede Zeile einzeln in der <b>FHEM-Kommandozeile</b>
-ausführen:</p>
-<pre>deleteattr TYPE=MATTERDevice (color_temp_(min|max)|(min|max)_(brightness|frequency|pin_code_length|rfid_code_length))
-save</pre>
-<p>Der Befehl entfernt nur diese zehn Attribute an MATTERDevice-Geräten,
-keine Readings. Das Modul kopiert oder löscht keine Altwerte automatisch.
-Readings entstehen erst beim Empfang passender Daten. Ungültige/null Meldungen
-erhalten den letzten gültigen Reading-Wert;
-Availability-Sperre und Antwortreihenfolge gelten auch für Grenzen. Wiederhergestellte
-Readings sind gespeicherte Informationen und kein Beleg aktueller
-Erreichbarkeit. Hardwarestatus der Geräteklassen weiterhin
-<strong>ungetestet</strong>.</p>
+<p>Readings entstehen erst aus gültigen Gerätedaten. Ungültige oder null-Meldungen
+erhalten den letzten gültigen Wert; die Availability-Sperre gilt auch für
+Grenzwerte. Wiederhergestellte Readings sind gespeicherte Informationen,
+kein Beleg aktueller Erreichbarkeit. Geräteklassen ohne physischen
+Nachweis bleiben <strong>ungetestet</strong>.</p>
 <p>Das energy-Reading übernimmt das innere EnergyMeasurementStruct-Feld (benannt oder TLV-Tag 0) nur als Ganzzahl von 0 bis 2^62 mWh, umgerechnet in kWh. Ungültige/null Daten erhalten das letzte Reading; die Zahl null bleibt gültig.</p>
 <h4>Hardware-Teststatus</h4>
 <p>Die folgenden Geräteklassen sind implementiert, aber es liegt im Repository

@@ -66,4 +66,4 @@ German/English commandref. This acceptance check needs no further runtime
 logic and makes no new guarantee about the freshness of the server's data.
 
 V0.42 renames the illuminance reading to brightness; mixed dimmer sources use level.
-See [reading-conventions.md](reading-conventions.md) for source provenance and upgrade behavior.
+See [reading-conventions.md](reading-conventions.md) for the current source and unit contract.
