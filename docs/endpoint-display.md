@@ -30,7 +30,7 @@ source readings are absent. Invalid/null reports retain last-valid readings.
 | Device type IDs | Display source and format |
 | --- | --- |
 | Smoke CO Alarm 0x0076 | alarmExpressedState: normal, smoke_alarm, co_alarm, battery_alert, testing, hardware_fault, end_of_service, interconnect_smoke, interconnect_co. No locally synthesized alarm priority. |
-| Water leak 0x0043 | Existing state: leak/dry. |
+| Water leak 0x0043 | Existing state: wet/dry. |
 | Rain 0x0044 | Existing state: rain/dry. |
 | Door lock 0x000A | state: not_fully_locked/locked/unlocked/unlatched. Door contact is a separate value. |
 | Window covering 0x0202 | Reported lift pct (100=open, 0=closed) and tilt (native 0..100), preferring fine reports over integer percentages. Both axes appear if supplied. If only absolute positions exist they are explicitly labelled raw; otherwise the readable wcOperationalStatus reading is used directly, e.g. global: opening / lift: opening / tilt: stopped. No target-position echo. The same inverted lift convention is used by the pct setter; targets are never echoed. |

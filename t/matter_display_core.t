@@ -89,7 +89,7 @@ is($cmd->('define io MATTER 127.0.0.1 9; attr io disable 1'), '', 'local synthet
 # only a type label and no functional parser. Values go through real parsers.
 my @cases = (
     [0x0076, {'92/0' => 5}, 'hardware_fault'],
-    [0x0043, {'69/0' => JSON::true}, 'leak'],
+    [0x0043, {'69/0' => JSON::true}, 'wet'],
     [0x0044, {'69/0' => JSON::false}, 'dry'],
     [0x000A, {'257/0' => 1}, 'locked'],
     [0x0202, {'258/14' => 6543}, 'lift: 34.57 %'],

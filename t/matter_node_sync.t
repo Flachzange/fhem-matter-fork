@@ -2285,8 +2285,8 @@ is(ReadingsVal('MATTER_SensorProbe_EP4', 'brightness', ''), 1000,
    'logarithmic Matter illuminance becomes lux');
 is(ReadingsVal('MATTER_SensorProbe_EP5', 'motion', ''), 'motion',
    'occupancy bitmask sets motion');
-is(ReadingsVal('MATTER_SensorProbe_EP6', 'water_leak', ''), 'leak',
-   'water-leak type maps true to leak');
+is(ReadingsVal('MATTER_SensorProbe_EP6', 'waterSensor', ''), 'wet',
+   'water-leak type maps true to wet');
 is(ReadingsVal('MATTER_SensorProbe_EP7', 'rain', ''), 'dry',
    'rain type maps false to dry');
 MATTERDevice_Parse($defs{MATTER_SensorProbe}, encode_json({
@@ -4234,7 +4234,7 @@ subtest 'Issue 30: persisted sensors follow the shared availability lifecycle' =
         [3, 0x0307, 1029, 'humidity', 4350, 43.5, 40, 5150, 51.5, 0, 0, 65535],
         [4, 0x0106, 1024, 'brightness', 30001, 1000, 10, 20001, 100, 0, 0, 65535],
         [5, 0x0107, 1030, 'motion', 3, 'motion', 'nomotion', 5, 'motion', 2, 'nomotion', 256],
-        [6, 0x0043, 69, 'water_leak', JSON::true, 'leak', 'dry', JSON::true, 'leak', JSON::false, 'dry', 7],
+        [6, 0x0043, 69, 'waterSensor', JSON::true, 'wet', 'dry', JSON::true, 'wet', JSON::false, 'dry', 7],
         [7, 0x0044, 69, 'rain', JSON::false, 'dry', 'rain', JSON::false, 'dry', JSON::true, 'rain', -1],
         [8, 0xFFF0, 69, 'booleanState', JSON::true, 1, 0, JSON::true, 1, JSON::false, 0, 'unknown'],
     );
@@ -4255,7 +4255,7 @@ subtest 'Issue 30: persisted sensors follow the shared availability lifecycle' =
     my $other_root = $modules{MATTERDevice}{defptr}{'ioSensorsOther:6300'};
     my %devices = map { $_->{endpoint_id} => $_ } MATTERDevice_NodeChildren($root);
     my %other_devices = map { $_->{endpoint_id} => $_ } MATTERDevice_NodeChildren($other_root);
-    my $binary = sub { return $_[0] =~ /\A(?:contact|water_leak|rain|motion)\z/; };
+    my $binary = sub { return $_[0] =~ /\A(?:contact|waterSensor|rain|motion)\z/; };
     # Include saved timestamps AND write counters: the general test stub's
     # fixed clock alone cannot detect a repeated write of an unchanged value.
     my $capture = sub {

@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-24  MATTER V0.46: Rename water_leak to waterSensor. Water detection now reports wet (previously leak). The clear value remains dry. Endpoint state uses the same wet/dry values.
+
 - 2026-11-24  MATTER V0.45 (#93): Remove three historical configuration migrations (extra endpoint DEF root-name field, root stateFormat=available auto-deletion, and old node group rewriting). Reject obsolete endpoint DEF syntax; preserve explicitly configured display formats and groups. Remove upgrade instructions from README, DE/EN commandref and current rules while retaining historical changelog, startup lifecycle, identity protection, device-type grouping, current lowerCamelCase readings and source provenance. Extend regression tests. Hardware untested.
 
 - 2026-11-24  MATTER V0.44: Apply lowerCamelCase to all module-specific public readings, including batteries, device metadata, limits, alarm details, commissioning, firmware/ICD and network diagnostics. Keep native FHEM thermostat names and wire/API fields unchanged; align reading-backed fan setters and all consumers. No stored-reading conversion or aliases. Hardware untested.
