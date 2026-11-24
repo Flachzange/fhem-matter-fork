@@ -5,6 +5,7 @@ use warnings;
 
 use HttpUtils;
 use Time::Piece;
+use Encode qw(encode_utf8);
 use JSON;
 use IO::Socket::INET;
 use Socket qw(SOL_SOCKET SO_ERROR);
@@ -13,7 +14,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.42 23.11.2026";
+my $MATTER_version = "V0.44 24.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -298,11 +299,11 @@ sub MATTER_Set {
 sub MATTER_CommissioningReadings {
     my ($hash, $status, $mode, $node_id, $duration, $error) = @_;
     readingsBeginUpdate($hash);
-    readingsBulkUpdate($hash, 'commissioning_status', $status);
-    readingsBulkUpdate($hash, 'commissioning_mode', $mode);
-    readingsBulkUpdate($hash, 'commissioning_node_id', $node_id);
-    readingsBulkUpdate($hash, 'commissioning_duration', $duration);
-    readingsBulkUpdate($hash, 'commissioning_error', $error);
+    readingsBulkUpdate($hash, 'commissioningStatus', $status);
+    readingsBulkUpdate($hash, 'commissioningMode', $mode);
+    readingsBulkUpdate($hash, 'commissioningNodeId', $node_id);
+    readingsBulkUpdate($hash, 'commissioningDuration', $duration);
+    readingsBulkUpdate($hash, 'commissioningError', $error);
     readingsEndUpdate($hash, 1);
 }
 
@@ -486,7 +487,7 @@ sub MATTER_Close($) {
     for my $dev (@roots) {
         my $offer = delete $dev->{helper}{firmware_available};
         my $target = delete $dev->{helper}{firmware_update_in_flight};
-        readingsSingleUpdate($dev, 'firmware_update', 'unknown (server disconnected)', 1)
+        readingsSingleUpdate($dev, 'firmwareUpdate', 'unknown (server disconnected)', 1)
             if defined($offer) || defined($target);
     }
     MATTERDevice_CompleteRequest($hash, $_, undef,
@@ -773,8 +774,8 @@ sub MATTER_SetNodeStatus($$$) {
     }
     foreach my $device (@devices) {
         next if MATTERDevice_IsDisabled($device);
-        MATTERDevice_ReadingsSingleUpdate($device, 'matter_status', $status, 1)
-            if ReadingsVal($device->{NAME}, 'matter_status', '') ne $status;
+        MATTERDevice_ReadingsSingleUpdate($device, 'matterStatus', $status, 1)
+            if ReadingsVal($device->{NAME}, 'matterStatus', '') ne $status;
         next unless ($device->{endpoint_id} // 0) == 0;
         if ($status eq 'removed') {
             MATTERDevice_SetRootState($device, 'removed');
@@ -1007,6 +1008,15 @@ sub MATTER_ProcessNodeList($$$;$) {
     Log3 $io_name, 3, 'MATTER: Synchronized ' . scalar(keys %present) . " nodes from $source";
 }
 
+# Credential IDs form one reading-name component. Numeric IDs remain readable;
+# arbitrary scalar IDs use an injective ASCII encoding rather than separators.
+sub MATTER_CredentialReadingId {
+    my ($id) = @_;
+    return 'Default' unless defined $id;
+    return $id if $id =~ /\A[0-9]+\z/;
+    return 'Id' . unpack('H*', encode_utf8("$id"));
+}
+
 sub MATTER_ParseMessage($$) {
     my ($hash, $payload) = @_;
     my $name    = $hash->{NAME}; # Name des IO-Moduls (z.B. MATTER_Server1)
@@ -1034,10 +1044,10 @@ sub MATTER_ParseMessage($$) {
             (($js && $schema >= 11) || ($python_sdk && $schema >= 10));
         readingsBeginUpdate($hash);
         readingsBulkUpdate($hash, "state", "connected");
-        readingsBulkUpdate($hash, "schema_version", $decoded->{schema_version});
-        readingsBulkUpdate($hash, "sdk_version", $decoded->{sdk_version});
-        readingsBulkUpdate($hash, "fabric_id", $decoded->{fabric_id});
-        readingsBulkUpdate($hash, "bluetooth_enabled", $decoded->{bluetooth_enabled} ? "true" : "false");
+        readingsBulkUpdate($hash, "schemaVersion", $decoded->{schema_version});
+        readingsBulkUpdate($hash, "sdkVersion", $decoded->{sdk_version});
+        readingsBulkUpdate($hash, "fabricId", $decoded->{fabric_id});
+        readingsBulkUpdate($hash, "bluetoothEnabled", $decoded->{bluetooth_enabled} ? "true" : "false");
         readingsEndUpdate($hash, 1);
         return;
     }
@@ -1276,7 +1286,7 @@ sub MATTER_ParseMessage($$) {
                 # A rejected or malformed response must not erase the
                 # last known credential inventory.
                 foreach my $key (keys %{$hash->{READINGS} // {}}) {
-                    readingsDelete($hash, $key) if $key =~ /^(?:wifi|thread)_/;
+                    readingsDelete($hash, $key) if $key =~ /\A(?:wifi(?:[0-9]+|Default|Id[0-9a-f]*)Ssid|thread(?:[0-9]+|Default|Id[0-9a-f]*)(?:Name|ExtPanId))\z/;
                 }
                 
                 readingsBeginUpdate($hash);
@@ -1286,9 +1296,9 @@ sub MATTER_ParseMessage($$) {
                     my @wifi_credentials = @{$result->{wifi}};
                     foreach my $wifi (@wifi_credentials) {
                         next unless ref($wifi) eq 'HASH';
-                        my $id   = $wifi->{id} // 'default';
+                        my $id   = MATTER_CredentialReadingId($wifi->{id});
                         my $ssid = $wifi->{ssid} // 'unknown';
-                        readingsBulkUpdate($hash, "wifi_${id}_ssid", $ssid);
+                        readingsBulkUpdate($hash, "wifi${id}Ssid", $ssid);
                     }
                 }
                 
@@ -1297,12 +1307,12 @@ sub MATTER_ParseMessage($$) {
                     my @thread_credentials = @{$result->{thread}};
                     foreach my $thread (@thread_credentials) {
                         next unless ref($thread) eq 'HASH';
-                        my $id          = $thread->{id} // 'default';
+                        my $id          = MATTER_CredentialReadingId($thread->{id});
                         my $net_name    = $thread->{networkName} // 'unknown';
                         my $ext_pan_id  = $thread->{extPanId} // '';
                         
-                        readingsBulkUpdate($hash, "thread_${id}_name", $net_name);
-                        readingsBulkUpdate($hash, "thread_${id}_extPanId", $ext_pan_id);
+                        readingsBulkUpdate($hash, "thread${id}Name", $net_name);
+                        readingsBulkUpdate($hash, "thread${id}ExtPanId", $ext_pan_id);
                     }
                 }
                 
@@ -1327,6 +1337,7 @@ sub MATTER_ParseMessage($$) {
 
 <a id="MATTER" name="MATTER"></a>
 <h3>MATTER</h3>
+<p>Module-defined readings use lowerCamelCase, including commissioningStatus, schemaVersion and credential families wifi&lt;id&gt;Ssid / thread&lt;id&gt;Name / thread&lt;id&gt;ExtPanId. Protocol JSON field names remain unchanged.</p>
 <p>The MATTER IO device communicates with an external Matter server over WebSocket.
 After connecting, <code>start_listening</code> supplies the complete node list.
 Subsequent <code>node_added</code>, <code>node_updated</code> and <code>node_removed</code>
@@ -1348,9 +1359,9 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
       and uses its stored Thread/Wi-Fi credentials.
       The setup code is not written to module logs; the synthetic FHEM
       set event is suppressed. Command input/history remains sensitive.
-      The IO reports <code>commissioning_status</code> (running/success/failed/interrupted),
-      <code>commissioning_mode</code>, <code>commissioning_node_id</code>,
-      <code>commissioning_duration</code> (seconds) and <code>commissioning_error</code>.
+      The IO reports <code>commissioningStatus</code> (running/success/failed/interrupted),
+      <code>commissioningMode</code>, <code>commissioningNodeId</code>,
+      <code>commissioningDuration</code> (seconds) and <code>commissioningError</code>.
       One commissioning request can be active per IO. On connection loss
       the result is unknown; no BLE/PASE intermediate progress is exposed.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Configure or inspect available
@@ -1381,7 +1392,7 @@ commissioning path has separately documented hardware evidence. Automated
 WebSocket tests do not replace end-to-end hardware verification.</p>
 <p>Newly created logical devices default to room <code>Matter</code>; existing FHEM
 names, rooms and user attributes are retained. A removed node is marked with
-<code>matter_status=removed</code> rather than deleted. This status describes node
+<code>matterStatus=removed</code> rather than deleted. This status describes node
 membership on the server, not physical device availability. The root and its endpoints mirror
 <code>available</code> when the server reports a valid node-wide boolean.
 The root <code>state</code> displays <code>online/offline</code> for confirmed
@@ -1403,6 +1414,7 @@ Incoming WebSocket frames larger than 32 MiB are rejected and trigger a reconnec
 
 <a id="MATTER" name="MATTER"></a>
 <h3>MATTER</h3>
+<p>Moduleigene Readings verwenden lowerCamelCase, einschließlich commissioningStatus, schemaVersion und den Credential-Familien wifi&lt;id&gt;Ssid / thread&lt;id&gt;Name / thread&lt;id&gt;ExtPanId. JSON-Feldnamen des Protokolls bleiben unverändert.</p>
 <p>Das MATTER-IO-Device verbindet FHEM per WebSocket mit einem externen Matter-Server.
 Beim Verbindungsaufbau liefert <code>start_listening</code> die vollständige Node-Liste.
 Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
@@ -1425,9 +1437,9 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
       verwendet seine gespeicherten Thread-/WLAN-Zugangsdaten. Der Setup-Code wird nicht im Modul-Log
       ausgegeben; das automatische FHEM-set-Event wird unterdrückt.
       Kommandoeingabe und -verlauf bleiben vertraulich zu behandeln.
-      Der IO meldet <code>commissioning_status</code> (running/success/failed/interrupted),
-      <code>commissioning_mode</code>, <code>commissioning_node_id</code>,
-      <code>commissioning_duration</code> (Sekunden) und <code>commissioning_error</code>.
+      Der IO meldet <code>commissioningStatus</code> (running/success/failed/interrupted),
+      <code>commissioningMode</code>, <code>commissioningNodeId</code>,
+      <code>commissioningDuration</code> (Sekunden) und <code>commissioningError</code>.
       Pro IO ist nur ein Vorgang gleichzeitig aktiv. Bei Verbindungsabbruch
       ist das Ergebnis unbekannt; einzelne BLE-/PASE-Phasen meldet der Server nicht.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Netzwerkzugangsdaten
@@ -1462,7 +1474,7 @@ Availability-Meldung in der aktuellen Verbindung erforderlich. Die
 MATTERDevice-Offline-Sperre schützt auch den Wiederanlauf nach FHEM-Neustart.</p>
 <p>Neue logische Geräte erhalten standardmäßig den Raum <code>Matter</code>.
 Vorhandene Namen, Räume und Benutzerattribute bleiben unverändert. Entfernte
-Nodes werden mit <code>matter_status=removed</code> markiert und nicht automatisch
+Nodes werden mit <code>matterStatus=removed</code> markiert und nicht automatisch
 gelöscht. Dieses Reading beschreibt die Mitgliedschaft auf dem Matter-Server,
 nicht die physische Erreichbarkeit des Geräts. Das am Root und seinen Endpunkten geführte Reading
 <code>available</code> bildet die letzte ausdrücklich gemeldete knotenweite

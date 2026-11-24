@@ -1,1 +1,1 @@
-2026-11-23  MATTER V0.42 (#91): Standardize functional readings; sensor brightness in lux, covering pct as percent open, batteryState and textual lock state. Separate electrical Hz from native levelFrequency.
+2026-11-24  MATTER V0.44: Consistent lowerCamelCase for module-specific readings, including metadata/status/diagnostics and reading-backed fan setters; native FHEM thermostat names retained.

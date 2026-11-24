@@ -78,9 +78,9 @@ my @MATTER_DISPLAY_TYPES = (
 
 # Matter 1.4 enum labels; raw readings retain their numeric protocol values.
 my %MATTER_DISPLAY_ENUMS = (
-    alarm_expressed_state => [qw(normal smoke_alarm co_alarm battery_alert testing
+    alarmExpressedState => [qw(normal smoke_alarm co_alarm battery_alert testing
                                 hardware_fault end_of_service interconnect_smoke interconnect_co)],
-    air_quality => [qw(unknown good fair moderate poor very_poor extremely_poor)],
+    airQuality => [qw(unknown good fair moderate poor very_poor extremely_poor)],
 );
 
 # Pure presentation of this endpoint's persisted readings. Never infer a
@@ -113,14 +113,14 @@ sub MATTERDevice_DefaultState {
     $kind //= 'state';
     return $value->('state') if $kind eq 'state' || ($hash->{endpoint_id} // 0) == 0;
     return 'unknown' if $kind eq 'unsupported';
-    return $enum->('alarm_expressed_state') if $kind eq 'alarm';
+    return $enum->('alarmExpressedState') if $kind eq 'alarm';
     if ($kind eq 'lock') {
         my $v = $value->('state');
         return $v =~ /\A(?:not_fully_locked|locked|unlocked|unlatched)\z/ ? $v : 'unknown';
     }
     if ($kind eq 'boolean') {
         return $value->('state') if exists $hash->{READINGS}{state};
-        my $v = $value->('boolean_state');
+        my $v = $value->('booleanState');
         return $v =~ /\A[01]\z/ ? $v : 'unknown';
     }
     if ($kind eq 'button') {
@@ -136,12 +136,12 @@ sub MATTERDevice_DefaultState {
             my $v = $sources->{$axis} ? $number->($axis eq 'lift' ? 'pct' : 'tilt') : undef;
             if (defined($v) && $v >= 0 && $v <= 100) {
                 push @positions, "$axis: $v %";
-            } elsif (defined(my $raw = $number->("current_position_$axis"))) {
+            } elsif (defined(my $raw = $number->("currentPosition" . ucfirst($axis)))) {
                 push @positions, "$axis: $raw (raw)" if $raw >= 0 && $raw < 65535;
             }
         }
         return join(' / ', @positions) if @positions;
-        my $status = $number->('wc_operational_status');
+        my $status = $number->('wcOperationalStatus');
         return 'unknown' unless defined($status) && $status =~ /\A\d+\z/ && $status <= 63;
         return (qw(stopped opening closing unknown))[$status & 3];
     }
@@ -156,18 +156,18 @@ sub MATTERDevice_DefaultState {
         return join('; ', @parts);
     }
     if ($kind eq 'fan') {
-        my $mode = $value->('fan_mode');
+        my $mode = $value->('fanMode');
         $mode = 'unknown' unless $mode =~ /\A(?:off|low|medium|high|on|auto)\z/;
-        my $pct = $number->('fan_pct');
+        my $pct = $number->('fanPct');
         return defined($pct) && $pct >= 0 && $pct <= 100 ? "$mode; $pct %" : $mode;
     }
     if ($kind eq 'air') {
-        return $enum->('air_quality') if exists $hash->{READINGS}{air_quality};
+        return $enum->('airQuality') if exists $hash->{READINGS}{airQuality};
         my @parts;
         for my $r (qw(co2 pm25 tvoc)) {
             my $v = $number->($r);
             next unless defined($v) && $v >= 0;
-            my $unit = $value->("${r}_unit");
+            my $unit = $value->("${r}Unit");
             # Only the units already recognized by the protocol converter.
             $unit = 'unknown' unless grep { $unit eq $_ }
                 map { MATTERDevice_ConcentrationUnit($_) } (0..9);
@@ -228,7 +228,7 @@ sub MATTERDevice_ReadingsSingleUpdate {
 sub MATTERDevice_ReadingSources {
     my ($hash) = @_;
     return { map { $_ => 1 } grep {
-        /\A(?:level|light|cover|lift|tilt|liftFine|tiltFine|battery_charge_level|battery_replacement_needed|alarm_battery)\z/
+        /\A(?:level|light|cover|lift|tilt|liftFine|tiltFine|batteryChargeLevel|batteryReplacementNeeded|batteryAlert)\z/
     } split(/ /, ReadingsVal($hash->{NAME}, '.matterReadingSources', '')) };
 }
 
@@ -266,10 +266,10 @@ sub MATTERDevice_UpdateBatteryState {
     my ($hash) = @_;
     my $sources = MATTERDevice_ReadingSources($hash);
     my @warnings;
-    for my $reading (qw(battery_charge_level battery_replacement_needed alarm_battery)) {
+    for my $reading (qw(batteryChargeLevel batteryReplacementNeeded batteryAlert)) {
         next unless $sources->{$reading};
         my $v = ReadingsVal($hash->{NAME}, $reading, '');
-        my $max = $reading eq 'battery_replacement_needed' ? 1 : 2;
+        my $max = $reading eq 'batteryReplacementNeeded' ? 1 : 2;
         push @warnings, $v if $v =~ /\A[0-2]\z/ && $v <= $max;
     }
     return unless @warnings;
@@ -324,12 +324,12 @@ my %MATTER_CLUSTERS = (
         },
         attributes => {
             0x0000 => { name => "brightness", is_reading => 1 },
-            0x0002 => { name => "min_brightness", is_reading => 1, limit_range => [0, 254] },
-            0x0003 => { name => "max_brightness", is_reading => 1, limit_range => [0, 254] },
+            0x0002 => { name => "minBrightness", is_reading => 1, limit_range => [0, 254] },
+            0x0003 => { name => "maxBrightness", is_reading => 1, limit_range => [0, 254] },
             0x0004 => { name => "levelFrequency", is_reading => 1, value_range => [0, 65535], required_features => ["frequency"] },
-            0x0005 => { name => "min_frequency", is_reading => 1, limit_range => [0, 65535], required_features => ["frequency"] },
-            0x0006 => { name => "max_frequency", is_reading => 1, limit_range => [0, 65535], required_features => ["frequency"] },
-            0x4000 => { name => "startup_current_level", is_reading => 1, required_features => ["lighting"] },
+            0x0005 => { name => "minFrequency", is_reading => 1, limit_range => [0, 65535], required_features => ["frequency"] },
+            0x0006 => { name => "maxFrequency", is_reading => 1, limit_range => [0, 65535], required_features => ["frequency"] },
+            0x4000 => { name => "startupCurrentLevel", is_reading => 1, required_features => ["lighting"] },
         },
         commands   => {
             0x00   => { name => "MoveToLevel" },
@@ -347,52 +347,52 @@ my %MATTER_CLUSTERS = (
         name       => "BasicInformation",
         attributes => {
             0x0001 => { name => "producer", is_reading => 1 },
-            0x0002 => { name => "vendor_id", is_reading => 1 },
+            0x0002 => { name => "vendorId", is_reading => 1 },
             0x0003 => { name => "model", is_reading => 1 },
-            0x0008 => { name => "hardware_version", is_reading => 1 },
-            0x000A => { name => "firmware_version", is_reading => 1 },
-            0x0009 => { name => "software_version", is_reading => 1 },
-            0x000F => { name => "serial_number", is_reading => 1 },
-            0x0015 => { name => "specification_version", is_reading => 1 },
+            0x0008 => { name => "hardwareVersion", is_reading => 1 },
+            0x000A => { name => "firmwareVersion", is_reading => 1 },
+            0x0009 => { name => "softwareVersion", is_reading => 1 },
+            0x000F => { name => "serialNumber", is_reading => 1 },
+            0x0015 => { name => "specificationVersion", is_reading => 1 },
         },
     },
     0x002F => {
         name       => "PowerSource",
         attributes => {
-            0x0000 => { name => "power_source_status", is_reading => 1 },
-            0x0002 => { name => "power_source_description", is_reading => 1 },
+            0x0000 => { name => "powerSourceStatus", is_reading => 1 },
+            0x0002 => { name => "powerSourceDescription", is_reading => 1 },
             0x000B => { name => "batteryVoltage", is_reading => 1, value_range => [0, 4294967295],
                         transform => sub { $_[0] / 1000 } },
             0x000C => { name => "batteryPercent", is_reading => 1, value_range => [0, 200],
                         transform => sub { int($_[0] / 2 + 0.5) } },
-            0x000D => { name => "battery_time_remaining_s", is_reading => 1 },
-            0x000E => { name => "battery_charge_level", is_reading => 1, value_range => [0, 2] },
-            0x000F => { name => "battery_replacement_needed", is_reading => 1 },
-            0x0010 => { name => "battery_replaceability", is_reading => 1 },
-            0x0013 => { name => "battery_replacement_description", is_reading => 1 },
-            0x0014 => { name => "battery_common_designation", is_reading => 1 },
-            0x0018 => { name => "battery_capacity_mAh", is_reading => 1 },
-            0x0019 => { name => "battery_quantity", is_reading => 1 },
+            0x000D => { name => "batteryTimeRemaining", is_reading => 1 },
+            0x000E => { name => "batteryChargeLevel", is_reading => 1, value_range => [0, 2] },
+            0x000F => { name => "batteryReplacementNeeded", is_reading => 1 },
+            0x0010 => { name => "batteryReplaceability", is_reading => 1 },
+            0x0013 => { name => "batteryReplacementDescription", is_reading => 1 },
+            0x0014 => { name => "batteryCommonDesignation", is_reading => 1 },
+            0x0018 => { name => "batteryCapacity", is_reading => 1 },
+            0x0019 => { name => "batteryQuantity", is_reading => 1 },
         },
     },
     0x002A => {
         name       => "OtaSoftwareUpdateRequestor",
         attributes => {
-            0x0002 => { name => "ota_update_state", is_reading => 0, value_range => [0, 8] },
-            0x0003 => { name => "ota_update_progress", is_reading => 1, value_range => [0, 100] },
+            0x0002 => { name => "otaUpdateState", is_reading => 0, value_range => [0, 8] },
+            0x0003 => { name => "otaUpdateProgress", is_reading => 1, value_range => [0, 100] },
         },
     },
     0x0046 => {
         name       => "IcdManagement",
         attributes => {
-            0x0000 => { name => "icd_idle_mode_duration", is_reading => 1, value_range => [0, 4294967295] },
-            0x0008 => { name => "icd_operating_mode", is_reading => 0, value_range => [0, 1] },
+            0x0000 => { name => "icdIdleModeDuration", is_reading => 1, value_range => [0, 4294967295] },
+            0x0008 => { name => "icdOperatingMode", is_reading => 0, value_range => [0, 1] },
         },
     },
     0x0045 => {
         name       => "BooleanState",
         attributes => {
-            0x0000 => { name => "boolean_state", is_reading => 1 },
+            0x0000 => { name => "booleanState", is_reading => 1 },
         },
     },
     0x0400 => {
@@ -456,54 +456,54 @@ my %MATTER_CLUSTERS = (
     0x005B => {
         name       => "Air Quality",
         attributes => {
-            0x0000 => { name => "air_quality", is_reading => 1, value_range => [0, 6] },
+            0x0000 => { name => "airQuality", is_reading => 1, value_range => [0, 6] },
         },
     },
     0x005C => {
         name       => "SmokeCoAlarm",
         attributes => {
-            0x0000 => { name => "alarm_expressed_state", is_reading => 1, value_range => [0, 8] },
-            0x0001 => { name => "smoke_state", is_reading => 1 },
-            0x0002 => { name => "co_state", is_reading => 1 },
-            0x0003 => { name => "alarm_battery", is_reading => 1, value_range => [0, 2] },
-            0x0004 => { name => "device_muted", is_reading => 1 },
-            0x0005 => { name => "test_in_progress", is_reading => 1 },
-            0x0006 => { name => "hardware_fault", is_reading => 1 },
-            0x0007 => { name => "end_of_service", is_reading => 1 },
-            0x0008 => { name => "interconnect_smoke_alarm", is_reading => 1 },
-            0x0009 => { name => "interconnect_co_alarm", is_reading => 1 },
+            0x0000 => { name => "alarmExpressedState", is_reading => 1, value_range => [0, 8] },
+            0x0001 => { name => "smokeState", is_reading => 1 },
+            0x0002 => { name => "coState", is_reading => 1 },
+            0x0003 => { name => "batteryAlert", is_reading => 1, value_range => [0, 2] },
+            0x0004 => { name => "deviceMuted", is_reading => 1 },
+            0x0005 => { name => "testInProgress", is_reading => 1 },
+            0x0006 => { name => "hardwareFault", is_reading => 1 },
+            0x0007 => { name => "endOfService", is_reading => 1 },
+            0x0008 => { name => "interconnectSmokeAlarm", is_reading => 1 },
+            0x0009 => { name => "interconnectCoAlarm", is_reading => 1 },
         },
     },
     0x0090 => {
         name       => "ElectricalPowerMeasurement",
         attributes => {
-            0x0000 => { name => "power_mode", is_reading => 1 },
-            0x0001 => { name => "number_of_measurement_types", is_reading => 1 },
+            0x0000 => { name => "powerMode", is_reading => 1 },
+            0x0001 => { name => "numberOfMeasurementTypes", is_reading => 1 },
             0x0004 => { name => "voltage", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
             0x0005 => { name => "current", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x0006 => { name => "reactive_current", is_reading => 1,
+            0x0006 => { name => "reactiveCurrent", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x0007 => { name => "apparent_current", is_reading => 1,
+            0x0007 => { name => "apparentCurrent", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
             0x0008 => { name => "power", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x0009 => { name => "reactive_power", is_reading => 1,
+            0x0009 => { name => "reactivePower", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x000A => { name => "apparent_power", is_reading => 1,
+            0x000A => { name => "apparentPower", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x000B => { name => "rms_voltage", is_reading => 1,
+            0x000B => { name => "rmsVoltage", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x000C => { name => "rms_current", is_reading => 1,
+            0x000C => { name => "rmsCurrent", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
-            0x000D => { name => "rms_power", is_reading => 1,
+            0x000D => { name => "rmsPower", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
             0x000E => { name => "frequency", is_reading => 1, value_range => [0, 1000000],
                         transform => sub { $_[0] / 1000 } },
-            0x0011 => { name => "power_factor", is_reading => 1,
+            0x0011 => { name => "powerFactor", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 10000 : undef } },
-            0x0012 => { name => "neutral_current", is_reading => 1,
+            0x0012 => { name => "neutralCurrent", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
         },
     },
@@ -530,11 +530,11 @@ my %MATTER_CLUSTERS = (
     0x040C => {
         name       => "CarbonMonoxideConcentrationMeasurement",
         attributes => {
-            0x0000 => { name => "co_concentration", is_reading => 1 },
-            0x0001 => { name => "co_minimum", is_reading => 1 },
-            0x0002 => { name => "co_maximum", is_reading => 1 },
-            0x0008 => { name => "co_unit", is_reading => 1 },
-            0x0009 => { name => "co_medium", is_reading => 1 },
+            0x0000 => { name => "coConcentration", is_reading => 1 },
+            0x0001 => { name => "coMinimum", is_reading => 1 },
+            0x0002 => { name => "coMaximum", is_reading => 1 },
+            0x0008 => { name => "coUnit", is_reading => 1 },
+            0x0009 => { name => "coMedium", is_reading => 1 },
         },
     },
     0x040D => {
@@ -542,7 +542,7 @@ my %MATTER_CLUSTERS = (
         attributes => {
             0x0000 => { name => "co2", is_reading => 1,
                         transform => sub { return $_[0] >= 0 ? $_[0] : undef; } },
-            0x0008 => { name => "co2_unit", is_reading => 1,
+            0x0008 => { name => "co2Unit", is_reading => 1,
                         transform => \&MATTERDevice_ConcentrationUnit },
         },
     },
@@ -551,7 +551,7 @@ my %MATTER_CLUSTERS = (
         attributes => {
             0x0000 => { name => "pm25", is_reading => 1,
                         transform => sub { return $_[0] >= 0 ? $_[0] : undef; } },
-            0x0008 => { name => "pm25_unit", is_reading => 1,
+            0x0008 => { name => "pm25Unit", is_reading => 1,
                         transform => \&MATTERDevice_ConcentrationUnit },
         },
     },
@@ -560,7 +560,7 @@ my %MATTER_CLUSTERS = (
         attributes => {
             0x0000 => { name => "tvoc", is_reading => 1,
                         transform => sub { return $_[0] >= 0 ? $_[0] : undef; } },
-            0x0008 => { name => "tvoc_unit", is_reading => 1,
+            0x0008 => { name => "tvocUnit", is_reading => 1,
                         transform => \&MATTERDevice_ConcentrationUnit },
         },
     },
@@ -569,24 +569,24 @@ my %MATTER_CLUSTERS = (
         attributes => {
             0x0000 => { name => "state", is_reading => 1, value_range => [0, 3],
                         transform => sub { (qw(not_fully_locked locked unlocked unlatched))[$_[0]] } },
-            0x0001 => { name => "lock_type", is_reading => 1 },
-            0x0002 => { name => "actuator_enabled", is_reading => 1},
-            0x0003 => { name => "door_state", is_reading => 1 },
-            0x0004 => { name => "door_open_events", is_reading => 1 },
-            0x0005 => { name => "door_close_events", is_reading => 1 },
-            0x0006 => { name => "open_period", is_reading => 1 },
-            0x0011 => { name => "num_total_users_supported", is_reading => 1 },
-            0x0012 => { name => "num_pin_users_supported", is_reading => 1 },
-            0x0013 => { name => "num_rfid_users_supported", is_reading => 1 },
-            0x0014 => { name => "num_week_day_schedule_per_user", is_reading => 1 },
-            0x0015 => { name => "num_year_day_schedule_per_user", is_reading => 1 },
-            0x0016 => { name => "num_holiday_schedules", is_reading => 1 },
-            0x0017 => { name => "max_pin_code_length", is_reading => 1, limit_range => [0, 255] },
-            0x0018 => { name => "min_pin_code_length", is_reading => 1, limit_range => [0, 255] },
-            0x0019 => { name => "max_rfid_code_length", is_reading => 1, limit_range => [0, 255] },
-            0x001A => { name => "min_rfid_code_length", is_reading => 1, limit_range => [0, 255] },
-            0x001B => { name => "credential_rules_support", is_reading => 1 },
-            0x001C => { name => "num_credentials_per_user", is_reading => 1 },
+            0x0001 => { name => "lockType", is_reading => 1 },
+            0x0002 => { name => "actuatorEnabled", is_reading => 1},
+            0x0003 => { name => "doorState", is_reading => 1 },
+            0x0004 => { name => "doorOpenEvents", is_reading => 1 },
+            0x0005 => { name => "doorCloseEvents", is_reading => 1 },
+            0x0006 => { name => "openPeriod", is_reading => 1 },
+            0x0011 => { name => "numTotalUsersSupported", is_reading => 1 },
+            0x0012 => { name => "numPinUsersSupported", is_reading => 1 },
+            0x0013 => { name => "numRfidUsersSupported", is_reading => 1 },
+            0x0014 => { name => "numWeekDaySchedulePerUser", is_reading => 1 },
+            0x0015 => { name => "numYearDaySchedulePerUser", is_reading => 1 },
+            0x0016 => { name => "numHolidaySchedules", is_reading => 1 },
+            0x0017 => { name => "maxPinCodeLength", is_reading => 1, limit_range => [0, 255] },
+            0x0018 => { name => "minPinCodeLength", is_reading => 1, limit_range => [0, 255] },
+            0x0019 => { name => "maxRfidCodeLength", is_reading => 1, limit_range => [0, 255] },
+            0x001A => { name => "minRfidCodeLength", is_reading => 1, limit_range => [0, 255] },
+            0x001B => { name => "credentialRulesSupport", is_reading => 1 },
+            0x001C => { name => "numCredentialsPerUser", is_reading => 1 },
             0x0021 => { name => "language", is_reading => 1 },
         },
         commands   => {
@@ -604,29 +604,29 @@ my %MATTER_CLUSTERS = (
             position_aware_tilt => 4,
         },
         attributes => {
-            0x0000 => { name => "wc_type", is_reading => 1 },
-            0x0001 => { name => "physical_closed_limit_lift", is_reading => 1, limit_range => [0, 65535], required_features => ["lift", "position_aware_lift", "absolute_position"] },
-            0x0002 => { name => "physical_closed_limit_tilt", is_reading => 1, limit_range => [0, 65535], required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
-            0x0003 => { name => "current_position_lift", is_reading => 1, value_range => [0, 65534], required_features => ["lift", "position_aware_lift", "absolute_position"] },
-            0x0004 => { name => "current_position_tilt", is_reading => 1, value_range => [0, 65534], required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
-            0x0005 => { name => "number_of_actuations_lift", is_reading => 1 },
-            0x0006 => { name => "number_of_actuations_tilt", is_reading => 1},
-            0x0007 => { name => "ws_config_status", is_reading => 1},
+            0x0000 => { name => "wcType", is_reading => 1 },
+            0x0001 => { name => "physicalClosedLimitLift", is_reading => 1, limit_range => [0, 65535], required_features => ["lift", "position_aware_lift", "absolute_position"] },
+            0x0002 => { name => "physicalClosedLimitTilt", is_reading => 1, limit_range => [0, 65535], required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
+            0x0003 => { name => "currentPositionLift", is_reading => 1, value_range => [0, 65534], required_features => ["lift", "position_aware_lift", "absolute_position"] },
+            0x0004 => { name => "currentPositionTilt", is_reading => 1, value_range => [0, 65534], required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
+            0x0005 => { name => "numberOfActuationsLift", is_reading => 1 },
+            0x0006 => { name => "numberOfActuationsTilt", is_reading => 1},
+            0x0007 => { name => "wsConfigStatus", is_reading => 1},
             0x0008 => { name => "pct", is_reading => 1, value_range => [0, 100] },
             0x0009 => { name => "tilt", is_reading => 1, value_range => [0, 100] },
-            0x000A => { name => "wc_operational_status", is_reading => 1, value_range => [0, 63],
+            0x000A => { name => "wcOperationalStatus", is_reading => 1, value_range => [0, 63],
                          transform => sub { return undef if grep { (($_[0] >> $_) & 3) == 3 } (0, 2, 4); return $_[0]; } },
-            0x000B => { name => "target_position_lift_percent_100_ths", is_reading => 1 },
-            0x000C => { name => "target_position_tilt_percent_100_ths", is_reading => 1 },
-            0x000D => { name => "wc_end_product_type", is_reading => 1},
+            0x000B => { name => "targetPositionLiftPercent100Ths", is_reading => 1 },
+            0x000C => { name => "targetPositionTiltPercent100Ths", is_reading => 1 },
+            0x000D => { name => "wcEndProductType", is_reading => 1},
             0x000E => { name => "pct", is_reading => 1, value_range => [0, 10000] },
             0x000F => { name => "tilt", is_reading => 1, value_range => [0, 10000] },
-            0x0010 => { name => "installed_open_limit_lift", is_reading => 1, required_features => ["lift", "position_aware_lift", "absolute_position"] },
-            0x0011 => { name => "installed_closed_limit_lift", is_reading => 1, required_features => ["lift", "position_aware_lift", "absolute_position"] },
-            0x0012 => { name => "installed_open_limit_tilt", is_reading => 1, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
-            0x0013 => { name => "installed_closed_limit_tilt", is_reading => 1, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
-            0x0017 => { name => "wc_mode", is_reading => 1 },
-            0x001A => { name => "wc_safety_status", is_reading => 1 },
+            0x0010 => { name => "installedOpenLimitLift", is_reading => 1, required_features => ["lift", "position_aware_lift", "absolute_position"] },
+            0x0011 => { name => "installedClosedLimitLift", is_reading => 1, required_features => ["lift", "position_aware_lift", "absolute_position"] },
+            0x0012 => { name => "installedOpenLimitTilt", is_reading => 1, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
+            0x0013 => { name => "installedClosedLimitTilt", is_reading => 1, required_features => ["tilt", "position_aware_tilt", "absolute_position"] },
+            0x0017 => { name => "wcMode", is_reading => 1 },
+            0x001A => { name => "wcSafetyStatus", is_reading => 1 },
 
         },
         commands => {
@@ -674,21 +674,21 @@ my %MATTER_CLUSTERS = (
         name       => "FanControl",
         features   => { auto_mode => 1 },
         attributes => {
-            0x0000 => { name => "fan_mode", is_reading => 1,
+            0x0000 => { name => "fanMode", is_reading => 1,
                         writable => 1,
                         transform => sub {
                             my %modes = (0 => 'off', 1 => 'low', 2 => 'medium',
                                          3 => 'high', 4 => 'on', 5 => 'auto');
                             return $modes{$_[0]};
                         } },
-            0x0002 => { name => "fan_pct_setting", is_reading => 1,
+            0x0002 => { name => "fanPctSetting", is_reading => 1,
                         writable => 1,
                         transform => sub {
                             return undef if $_[0] != int($_[0]) ||
                                             $_[0] < 0 || $_[0] > 100;
                             return $_[0];
                         } },
-            0x0003 => { name => "fan_pct", is_reading => 1,
+            0x0003 => { name => "fanPct", is_reading => 1,
                         transform => sub {
                             return undef if $_[0] != int($_[0]) ||
                                             $_[0] < 0 || $_[0] > 100;
@@ -708,12 +708,12 @@ my %MATTER_CLUSTERS = (
         attributes => {
             0x0000 => { name => "hue", is_reading => 1, value_range => [0, 254], required_features => ["hue_saturation"] },
             0x0001 => { name => "sat", is_reading => 1, value_range => [0, 254], required_features => ["hue_saturation"] },
-            0x0003 => { name => "current_x", is_reading => 1, required_features => ["xy"] },
-            0x0004 => { name => "current_y", is_reading => 1, required_features => ["xy"] },
+            0x0003 => { name => "currentX", is_reading => 1, required_features => ["xy"] },
+            0x0004 => { name => "currentY", is_reading => 1, required_features => ["xy"] },
             0x0007 => { name => "ct", is_reading => 1, value_range => [1, 65279], required_features => ["color_temperature"] },
-            0x0008 => { name => "color_mode", is_reading => 1 },
-            0x400B => { name => "color_temp_min", is_reading => 1, limit_range => [1, 65279], required_features => ["color_temperature"] },
-            0x400C => { name => "color_temp_max", is_reading => 1, limit_range => [0, 65279], required_features => ["color_temperature"] },
+            0x0008 => { name => "colorMode", is_reading => 1 },
+            0x400B => { name => "colorTempMin", is_reading => 1, limit_range => [1, 65279], required_features => ["color_temperature"] },
+            0x400C => { name => "colorTempMax", is_reading => 1, limit_range => [0, 65279], required_features => ["color_temperature"] },
         },
         commands => {
             0x06 => { name => "MoveToHueAndSaturation", required_features => ["hue_saturation"] },
@@ -775,8 +775,8 @@ sub MATTERDevice_InvalidateIdentity {
     delete @{$hash}{grep { /^endpoint_\d+$/ } keys %$hash};
     # These saved metadata values also authorize controls, scaling or device
     # interpretation. They cannot describe a different Matter identity.
-    readingsDelete($hash, $_) for qw(.matterReadingSources device_type_ids icd_supported
-        icd_lit_supported software_version specification_version);
+    readingsDelete($hash, $_) for qw(.matterReadingSources deviceTypeIds icdSupported
+        icdLitSupported softwareVersion specificationVersion);
     for my $cluster (values %MATTER_CLUSTERS) {
         for my $attribute (values %{$cluster->{attributes} // {}}) {
             readingsDelete($hash, $attribute->{name}) if $attribute->{limit_range};
@@ -1063,10 +1063,10 @@ sub MATTERDevice_Notify($$) {
         if ($root && $root->{helper}{available} && $io->{CD} &&
             $io->{websocket} && ($io->{ws_status} // '') eq 'connected') {
             MATTERDevice_SyncNodeReadings($root, $hash);
-            my $status = ReadingsVal($root->{NAME}, 'matter_status', undef);
-            MATTERDevice_ReadingsSingleUpdate($hash, 'matter_status', $status, 1)
+            my $status = ReadingsVal($root->{NAME}, 'matterStatus', undef);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'matterStatus', $status, 1)
                 if defined($status) && !MATTERDevice_IsDisabled($hash) &&
-                   ReadingsVal($hash->{NAME}, 'matter_status', '') ne $status;
+                   ReadingsVal($hash->{NAME}, 'matterStatus', '') ne $status;
             my $error = MATTERDevice_Set($hash, $hash->{NAME}, 'getConfig');
             Log3 $hash->{NAME}, 3, "MATTERDevice: Enable synchronization failed: $error"
                 if defined $error;
@@ -1558,7 +1558,7 @@ sub MATTERDevice_Set($$@) {
     if ($cmd =~ /^(?:icdRegister|icdUnregister|icdResync)$/) {
         return 'ICD administrative operation only allowed on an ICD root'
             unless ($hash->{endpoint_id} // 0) == 0 &&
-                ReadingsVal($name, 'icd_supported', '') eq 'true';
+                ReadingsVal($name, 'icdSupported', '') eq 'true';
         my %operations = (
             icdRegister => 'register_icd',
             icdUnregister => 'unregister_icd',
@@ -1775,7 +1775,7 @@ sub MATTERDevice_Set($$@) {
         $payload = MATTERDevice_CommandRequest($hash, 0x0003, 'Identify',
             { identifyTime => 15 });
     }
-    elsif ($cmd =~ /^(?:desired-temp(?:-cool)?|mode|fan_mode|fan_pct)$/) {
+    elsif ($cmd =~ /^(?:desired-temp(?:-cool)?|mode|fanMode|fanPct)$/) {
         my ($cluster_id, $attr_id, $write_value);
         return "Usage: set $name $cmd <value>" if @args != 1 || !defined($args[0]);
         my $value = $args[0];
@@ -1792,14 +1792,14 @@ sub MATTERDevice_Set($$@) {
             my %modes = (off => 0, auto => 1, cool => 3, heat => 4,
                          emergency_heat => 5);
             ($cluster_id, $attr_id, $write_value) = (0x0201, 0x001C, $modes{$value});
-        } elsif ($cmd eq 'fan_mode') {
+        } elsif ($cmd eq 'fanMode') {
             my @allowed = MATTERDevice_HvacModes($hash, 0x0202);
-            return 'fan_mode must be one of ' . join(', ', @allowed)
+            return 'fanMode must be one of ' . join(', ', @allowed)
                 unless grep { $_ eq $value } @allowed;
             my %modes = (off => 0, low => 1, medium => 2, high => 3, auto => 5);
             ($cluster_id, $attr_id, $write_value) = (0x0202, 0x0000, $modes{$value});
         } else {
-            return 'fan_pct must be between 0 and 100'
+            return 'fanPct must be between 0 and 100'
                 unless $value =~ /^\d+$/ && $value <= 100;
             ($cluster_id, $attr_id, $write_value) = (0x0202, 0x0002, int($value));
         }
@@ -1917,7 +1917,7 @@ sub MATTERDevice_Set($$@) {
 sub MATTERDevice_Get($$@) {
     my ($hash, $name, $cmd, @args) = @_;
     my $root = ($hash->{endpoint_id} // 0) == 0;
-    my $icd = $root && ReadingsVal($name, 'icd_supported', '') eq 'true';
+    my $icd = $root && ReadingsVal($name, 'icdSupported', '') eq 'true';
     my $io = $hash->{IODev};
     my $supported = $icd && $io && $io->{helper}{icd_api_supported};
     return 'Unknown argument, choose one of ' .
@@ -1927,7 +1927,7 @@ sub MATTERDevice_Get($$@) {
         unless $cmd eq 'icdState' && $supported && !@args;
     my $error = MATTERDevice_SendNodeOperation($hash, 'get_icd_state', {}, 120);
     return $error if defined $error;
-    return 'ICD state requested; result will appear in icd_* readings';
+    return 'ICD state requested; result will appear in icd readings';
 }
 
 # --- Zentraler Parser für alle Attribut-Updates ---
@@ -1964,22 +1964,22 @@ sub MATTERDevice_NetworkDiagnosticValues {
     if ($cluster == 53) {
         if ($attr == 0 && defined($value) && !ref($value) &&
             $value =~ /^\d+$/ && $value <= 255) {
-            $readings{thread_channel} = int($value);
+            $readings{threadChannel} = int($value);
         } elsif ($attr == 1 && defined($value) && !ref($value) &&
                  $value =~ /^\d+$/) {
             my %roles = (0 => 'unspecified', 1 => 'unassigned',
                          2 => 'sleepy_end_device', 3 => 'end_device',
                          4 => 'reed', 5 => 'router', 6 => 'leader');
-            $readings{thread_role} = $roles{$value} if exists $roles{$value};
+            $readings{threadRole} = $roles{$value} if exists $roles{$value};
             my %types = (2 => 'MTD', 3 => 'MTD or FTD',
                          4 => 'FTD', 5 => 'FTD', 6 => 'FTD');
-            $readings{thread_device_type} = $types{$value}
+            $readings{threadDeviceType} = $types{$value}
                 if exists $types{$value};
         } elsif ($attr == 2 && defined($value) && !ref($value) &&
                  length($value) <= 128) {
-            $readings{thread_network} = $value;
+            $readings{threadNetwork} = $value;
         } elsif ($attr == 7 && ref($value) eq 'ARRAY' && @$value <= 256) {
-            $readings{thread_neighbors} = scalar(@$value);
+            $readings{threadNeighbors} = scalar(@$value);
             my @neighbors;
             my ($best_rssi, $best_lqi);
             foreach my $n (@$value) {
@@ -2003,13 +2003,13 @@ sub MATTERDevice_NetworkDiagnosticValues {
                                !ref($best_lqi) && $best_lqi =~ /^[0-3]$/;
             @neighbors = sort { $b->[0] <=> $a->[0] } @neighbors;
             splice(@neighbors, 16) if @neighbors > 16;
-            $readings{thread_neighbor_list} = @neighbors ?
+            $readings{threadNeighborList} = @neighbors ?
                 substr(join(', ', map { $_->[1] } @neighbors), 0, 600) : 'none';
         }
     } elsif ($cluster == 54 && $attr == 4 && defined($value) &&
              !ref($value) && $value =~ /^-?\d+$/ &&
              $value >= -128 && $value <= 0) {
-        $readings{wifi_rssi} = $value;
+        $readings{wifiRssi} = $value;
     }
     return keys(%readings) ? \%readings : undef;
 }
@@ -2031,8 +2031,8 @@ sub MATTERDevice_RawDiagnostic {
     return if $cluster =~ /^(?:31|48|49|60|62|63|64|65)$/;
     my $str = ref($value) ? eval { encode_json($value) } : "$value";
     return if !defined($str) || length($str) > 512;
-    my $reading = 'raw_' . ($hash->{endpoint_id} // 0) .
-                  '_' . $cluster . '_' . $attr;
+    my $reading = 'rawEp' . ($hash->{endpoint_id} // 0) .
+                  'Cluster' . $cluster . 'Attribute' . $attr;
     MATTERDevice_ReadingsSingleUpdate($hash, $reading, $str, 1)
         if ReadingsVal($hash->{NAME}, $reading, '') ne $str;
 }
@@ -2045,14 +2045,14 @@ sub MATTERDevice_RefreshIcdCapability {
     my ($hash) = @_;
     return unless ($hash->{endpoint_id} // 0) == 0;
     my $features = $hash->{helper}{capabilities}{70}{feature_map};
-    my $spec = ReadingsVal($hash->{NAME}, 'specification_version', undef);
+    my $spec = ReadingsVal($hash->{NAME}, 'specificationVersion', undef);
     return unless defined($features) && !ref($features) &&
                   $features =~ /^\d+$/ &&
                   defined($spec) && !ref($spec) && $spec =~ /^\d+$/;
     my $supported = ($features & 0x04) && $spec >= 0x01040000 ?
                     'true' : 'false';
-    MATTERDevice_ReadingsSingleUpdate($hash, 'icd_lit_supported', $supported, 1)
-        if ReadingsVal($hash->{NAME}, 'icd_lit_supported', '') ne $supported;
+    MATTERDevice_ReadingsSingleUpdate($hash, 'icdLitSupported', $supported, 1)
+        if ReadingsVal($hash->{NAME}, 'icdLitSupported', '') ne $supported;
 }
 sub MATTERDevice_RootCapabilityReport {
     my ($hash, $cluster, $attr, $value) = @_;
@@ -2069,37 +2069,37 @@ sub MATTERDevice_RootCapabilityReport {
             delete $hash->{helper}{firmware_available};
         }
         # Avoid adding negative ICD readings to every ordinary root.
-        return if !$supported && !exists($hash->{READINGS}{icd_supported});
+        return if !$supported && !exists($hash->{READINGS}{icdSupported});
         unless ($supported) {
             delete $hash->{helper}{capabilities}{70};
             delete $hash->{helper}{seen_clusters}{70};
         }
         my $reported = $supported ? 'true' : 'false';
-        MATTERDevice_ReadingsSingleUpdate($hash, 'icd_supported', $reported, 1)
-            if ReadingsVal($hash->{NAME}, 'icd_supported', '') ne $reported;
-        if (!$supported && exists($hash->{READINGS}{icd_lit_supported})) {
-            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_lit_supported', 'false', 1)
-                if ReadingsVal($hash->{NAME}, 'icd_lit_supported', '') ne 'false';
+        MATTERDevice_ReadingsSingleUpdate($hash, 'icdSupported', $reported, 1)
+            if ReadingsVal($hash->{NAME}, 'icdSupported', '') ne $reported;
+        if (!$supported && exists($hash->{READINGS}{icdLitSupported})) {
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icdLitSupported', 'false', 1)
+                if ReadingsVal($hash->{NAME}, 'icdLitSupported', '') ne 'false';
         }
     } elsif ($cluster == 70 && defined($value) && !ref($value)) {
         if ($attr == 65532 && $value =~ /^\d+$/) {
-            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_supported', 'true', 1)
-                if ReadingsVal($hash->{NAME}, 'icd_supported', '') ne 'true';
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icdSupported', 'true', 1)
+                if ReadingsVal($hash->{NAME}, 'icdSupported', '') ne 'true';
             MATTERDevice_RefreshIcdCapability($hash);
         } elsif ($attr == 8 && $value =~ /^(?:0|1)$/) {
             my $mode = $value == 1 ? 'LIT' : 'SIT';
-            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_operating_mode', $mode, 1)
-                if ReadingsVal($hash->{NAME}, 'icd_operating_mode', '') ne $mode;
-            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_supported', 'true', 1)
-                if ReadingsVal($hash->{NAME}, 'icd_supported', '') ne 'true';
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icdOperatingMode', $mode, 1)
+                if ReadingsVal($hash->{NAME}, 'icdOperatingMode', '') ne $mode;
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icdSupported', 'true', 1)
+                if ReadingsVal($hash->{NAME}, 'icdSupported', '') ne 'true';
         } elsif ($attr == 0 && $value =~ /^\d+$/ && $value <= 4294967295) {
-            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_idle_mode_duration', $value, 1)
-                if ReadingsVal($hash->{NAME}, 'icd_idle_mode_duration', '') ne "$value";
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icdIdleModeDuration', $value, 1)
+                if ReadingsVal($hash->{NAME}, 'icdIdleModeDuration', '') ne "$value";
         }
     } elsif ($cluster == 40 && $attr == 21 &&
              defined($value) && !ref($value) && $value =~ /^\d+$/) {
-        MATTERDevice_ReadingsSingleUpdate($hash, 'specification_version', $value, 1)
-            if ReadingsVal($hash->{NAME}, 'specification_version', '') ne "$value";
+        MATTERDevice_ReadingsSingleUpdate($hash, 'specificationVersion', $value, 1)
+            if ReadingsVal($hash->{NAME}, 'specificationVersion', '') ne "$value";
         MATTERDevice_RefreshIcdCapability($hash);
     }
 }
@@ -2235,8 +2235,8 @@ sub MATTERDevice_SendNodeOperation {
             if ($pending->{fuuid} // '') eq ($hash->{FUUID} // '') &&
                ($pending->{node_id} // '') eq $hash->{node_id};
     }
-    my $reading = $command =~ /icd/ ? 'icd_request' : 'firmware_update';
-    if ($reading eq 'firmware_update') {
+    my $reading = $command =~ /icd/ ? 'icdRequest' : 'firmwareUpdate';
+    if ($reading eq 'firmwareUpdate') {
         delete $hash->{helper}{firmware_available};
         $hash->{helper}{firmware_update_in_flight} = $args->{software_version}
             if $command eq 'update_node';
@@ -2302,7 +2302,7 @@ sub MATTERDevice_HandleNodeOperation {
         delete $hash->{helper}{firmware_update_in_flight} if $cmd eq 'update_node';
         if ($cmd eq 'check_node_update') {
             delete $hash->{helper}{firmware_available};
-            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmwareUpdateVersion', 'none', 1);
         }
         MATTERDevice_ReadingsSingleUpdate($hash, $reading, $error, 1);
         return;
@@ -2310,20 +2310,20 @@ sub MATTERDevice_HandleNodeOperation {
     if ($cmd =~ /icd/) {
         if ($cmd eq 'resync_icd' && exists($reply->{result}) &&
             !defined($reply->{result})) {
-            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_request', 'resync accepted', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icdRequest', 'resync accepted', 1);
             return;
         }
         my $value = $reply->{result};
         unless (ref($value) eq 'HASH' && exists($value->{supported})) {
-            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_request', 'invalid response', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icdRequest', 'invalid response', 1);
             return;
         }
         my %fields = (
-            supported => 'icd_controller_supported',
-            lit_supported => 'icd_controller_lit_supported',
-            registered => 'icd_registered',
-            awake => 'icd_awake',
-            available => 'icd_controller_available',
+            supported => 'icdControllerSupported',
+            lit_supported => 'icdControllerLitSupported',
+            registered => 'icdRegistered',
+            awake => 'icdAwake',
+            available => 'icdControllerAvailable',
         );
         for my $key (keys %fields) {
             next unless exists($value->{$key});
@@ -2334,42 +2334,42 @@ sub MATTERDevice_HandleNodeOperation {
         }
         if (defined($value->{operating_mode}) && !ref($value->{operating_mode}) &&
             $value->{operating_mode} =~ /^(?:SIT|LIT)$/) {
-            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_controller_mode',
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icdControllerMode',
                                  $value->{operating_mode}, 1);
         }
         if (defined($value->{next_expected_checkin}) &&
             !ref($value->{next_expected_checkin}) &&
             $value->{next_expected_checkin} =~ /^\d+$/) {
-            MATTERDevice_ReadingsSingleUpdate($hash, 'icd_next_expected_checkin_ms',
+            MATTERDevice_ReadingsSingleUpdate($hash, 'icdNextExpectedCheckinMs',
                                  $value->{next_expected_checkin}, 1);
         }
-        MATTERDevice_ReadingsSingleUpdate($hash, 'icd_request', 'completed', 1);
+        MATTERDevice_ReadingsSingleUpdate($hash, 'icdRequest', 'completed', 1);
     } elsif ($cmd eq 'check_node_update') {
         my $update = $reply->{result};
         if (!defined($update) && exists($reply->{result})) {
             delete $hash->{helper}{firmware_available};
-            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
-            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', 'none reported', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmwareUpdateVersion', 'none', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmwareUpdate', 'none reported', 1);
         } elsif ($hash->{helper}{seen_clusters}{42} &&
                  defined(MATTERDevice_OtaVersion($update))) {
-            my $current = ReadingsVal($hash->{NAME}, 'software_version', undef);
+            my $current = ReadingsVal($hash->{NAME}, 'softwareVersion', undef);
             if (defined($current) && $current =~ /^\d+$/ &&
                 $update->{software_version} <= $current) {
                 delete $hash->{helper}{firmware_available};
-                MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
-                MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', 'up to date', 1);
+                MATTERDevice_ReadingsSingleUpdate($hash, 'firmwareUpdateVersion', 'none', 1);
+                MATTERDevice_ReadingsSingleUpdate($hash, 'firmwareUpdate', 'up to date', 1);
                 return;
             }
             $hash->{helper}{firmware_available} = $update->{software_version};
             my $label = $update->{software_version_string};
             $label = $update->{software_version}
                 unless defined($label) && !ref($label) && length($label) <= 80;
-            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update_version', $label, 1);
-            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', 'available', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmwareUpdateVersion', $label, 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmwareUpdate', 'available', 1);
         } else {
             delete $hash->{helper}{firmware_available};
-            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update_version', 'none', 1);
-            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmwareUpdateVersion', 'none', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmwareUpdate', 'invalid response', 1);
         }
     } elsif ($cmd eq 'update_node') {
         my $result = $reply->{result};
@@ -2377,12 +2377,12 @@ sub MATTERDevice_HandleNodeOperation {
         my $version = MATTERDevice_OtaVersion($result);
         if (defined($target) && exists($reply->{result}) &&
             (!defined($result) || (defined($version) && $version == $target))) {
-            my $status = ReadingsVal($hash->{NAME}, 'firmware_update', '');
-            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', 'update requested', 1)
+            my $status = ReadingsVal($hash->{NAME}, 'firmwareUpdate', '');
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmwareUpdate', 'update requested', 1)
                 if $status eq 'requested' || $status eq 'available';
         } else {
             delete $hash->{helper}{firmware_update_in_flight};
-            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', 'invalid response', 1);
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmwareUpdate', 'invalid response', 1);
         }
     }
 }
@@ -2439,9 +2439,9 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
                      6 => 'waiting to install', 7 => 'rolling back',
                      8 => 'waiting for confirmation');
         if (exists($state{$value})) {
-            MATTERDevice_ReadingsSingleUpdate($hash, 'ota_update_state', $state{$value}, 1)
-                if ReadingsVal($name, 'ota_update_state', '') ne $state{$value};
-            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', $state{$value}, 1)
+            MATTERDevice_ReadingsSingleUpdate($hash, 'otaUpdateState', $state{$value}, 1)
+                if ReadingsVal($name, 'otaUpdateState', '') ne $state{$value};
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmwareUpdate', $state{$value}, 1)
                 if defined($hash->{helper}{firmware_update_in_flight}) && $value >= 2;
         }
     }
@@ -2453,8 +2453,8 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
             delete $hash->{helper}{firmware_update_in_flight};
             # Keep correlation, but a later server reply must not overwrite
             # the physical confirmation for this installation.
-            delete $hash->{helper}{latest_request}{firmware_update};
-            MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update', 'installed', 1);
+            delete $hash->{helper}{latest_request}{firmwareUpdate};
+            MATTERDevice_ReadingsSingleUpdate($hash, 'firmwareUpdate', 'installed', 1);
         }
     }
 
@@ -2463,8 +2463,8 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         defined($value) && !ref($value) &&
         $value =~ /^\d+$/ && $value <= 100 &&
         defined($hash->{helper}{firmware_update_in_flight})) {
-        my $state = ReadingsVal($name, 'ota_update_state', '');
-        MATTERDevice_ReadingsSingleUpdate($hash, 'firmware_update',
+        my $state = ReadingsVal($name, 'otaUpdateState', '');
+        MATTERDevice_ReadingsSingleUpdate($hash, 'firmwareUpdate',
                              "$state $value%", 1)
             if $state eq 'downloading' || $state eq 'installing';
     }
@@ -2482,8 +2482,8 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     # Persist the advertised IDs as a canonical reading. Unlike helper data,
     # regular FHEM readings survive a restart through the statefile/configDB.
     if ($cluster_id == 0x001D && $attr_id == 0x0000) {
-        if (ReadingsVal($name, 'device_type_ids', '') ne $value) {
-            MATTERDevice_ReadingsSingleUpdate($hash, 'device_type_ids', $value, 1);
+        if (ReadingsVal($name, 'deviceTypeIds', '') ne $value) {
+            MATTERDevice_ReadingsSingleUpdate($hash, 'deviceTypeIds', $value, 1);
             MATTERDevice_EnsureTypeGroup($hash);
         }
         return;
@@ -2518,7 +2518,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         } elsif ($types{0x0044}) {
             ($attr_name, $value) = ('rain', $active ? 'rain' : 'dry');
         } else {
-            ($attr_name, $value) = ('boolean_state', $active);
+            ($attr_name, $value) = ('booleanState', $active);
         }
         $is_reading = 1;
     }
@@ -2832,12 +2832,12 @@ sub MATTERDevice_GetSetList($) {
         !defined($hash->{helper}{firmware_update_in_flight})) {
         $add->("checkFirmwareUpdate:noArg");
         my $offer = $hash->{helper}{firmware_available};
-        my $current = ReadingsVal($name, 'software_version', undef);
+        my $current = ReadingsVal($name, 'softwareVersion', undef);
         $add->("updateFirmware:noArg") if defined($offer) &&
             (!defined($current) || $current !~ /\A[0-9]+\z/ || $offer > $current);
     }
     if (($hash->{endpoint_id} // 0) == 0 &&
-        ReadingsVal($name, 'icd_supported', '') eq 'true') {
+        ReadingsVal($name, 'icdSupported', '') eq 'true') {
         my $io = $hash->{IODev};
         my $features = $hash->{helper}{capabilities}{70}{feature_map};
         if ($io && $io->{helper}{icd_api_supported} &&
@@ -2857,8 +2857,8 @@ sub MATTERDevice_GetSetList($) {
     my @modes = MATTERDevice_HvacModes($hash, 0x0201);
     $add->('mode:' . join(',', @modes)) if @modes;
     my @fan_modes = MATTERDevice_HvacModes($hash, 0x0202);
-    $add->('fan_mode:' . join(',', @fan_modes)) if @fan_modes;
-    $add->("fan_pct:slider,0,1,100")
+    $add->('fanMode:' . join(',', @fan_modes)) if @fan_modes;
+    $add->("fanPct:slider,0,1,100")
         if MATTERDevice_AttributeWritable($hash, 0x0202, 0x0002);
 
     $add->("on:noArg") if (
@@ -2946,7 +2946,7 @@ sub MATTERDevice_GetSetList($) {
 # Malformed or missing readings must never be interpreted as a valid device type.
 sub MATTERDevice_DeviceTypeIds($) {
     my ($hash) = @_;
-    my $ids = ReadingsVal($hash->{NAME}, 'device_type_ids', '');
+    my $ids = ReadingsVal($hash->{NAME}, 'deviceTypeIds', '');
     return () unless defined($ids)
         && $ids =~ /^0x[0-9A-Fa-f]{1,8}(?:,0x[0-9A-Fa-f]{1,8})*$/;
     return map { hex($_) } split(/,/, $ids);
@@ -3279,11 +3279,11 @@ existing sensor lifecycle suite models restoration.</p></li>
       new-style state reading yet. Other user-defined formats are retained.
       An identical, manually configured old value cannot be distinguished from
       that previous default; save the FHEM configuration after migration.</li>
-  <li><b>Reading matter_status:</b> <code>present</code> means the node exists on
+  <li><b>Reading matterStatus:</b> <code>present</code> means the node exists on
       the Matter server; <code>removed</code> means it was decommissioned or is
       missing from a complete server snapshot. Neither value is a reachability
       or availability indication.</li>
-  <li><b>Reading device_type_ids:</b> The validated IDs from Matter
+  <li><b>Reading deviceTypeIds:</b> The validated IDs from Matter
       <code>Descriptor.DeviceTypeList</code> are stored as comma-separated
       hexadecimal IDs (for example <code>0x010A</code>). FHEM restores this
       reading after a restart, so endpoint type labels and automatic grouping
@@ -3372,7 +3372,7 @@ as described below.</p>
   <li><a id="MATTERDevice-attr-rawReadings"></a><b>rawReadings (0/1):</b>
       Default <code>0</code>. Set <code>1</code> on the receiving root or
       endpoint to expose otherwise unmapped attributes as
-      <code>raw_&lt;endpoint&gt;_&lt;cluster&gt;_&lt;attribute&gt;</code> readings.
+      <code>rawEp&lt;endpoint&gt;Cluster&lt;cluster&gt;Attribute&lt;attribute&gt;</code> readings.
       Null values, attribute IDs from 0xFFF0 upwards and clusters
       31, 48, 49, 60, 62, 63, 64 and 65 (decimal) are skipped.
       The limit per value is 512 characters for scalar text or 512 bytes
@@ -3383,7 +3383,7 @@ as described below.</p>
 </ul>
 <h4>Default endpoint display (hardware untested)</h4>
 <p>Endpoints greater than 0 derive their <code>STATE</code> display from
-persisted <code>device_type_ids</code> and their own existing readings. No
+persisted <code>deviceTypeIds</code> and their own existing readings. No
 <code>stateFormat</code> attribute or redundant <code>state</code> reading is
 created. An explicit <code>stateFormat</code> always wins; deleting it restores
 the default. The default is recomputed after statefile restoration and on
@@ -3404,7 +3404,7 @@ then raw absolute positions explicitly labelled raw if necessary, otherwise
 reported stopped/opening/closing status. Targets are not current positions.</li>
 <li>Thermostats show reported mode, measured temperature and the heating/cooling
 setpoints appropriate to that mode; auto shows both. Fans show reported
-fan_mode and actual fan_pct, never the requested percent as an actual value.</li>
+fanMode and actual fanPct, never the requested percent as an actual value.</li>
 <li>Smoke/CO alarms display the reported ExpressedState, including testing,
 battery/fault/end-of-service and interconnect states. Air-quality sensors use
 the reported qualitative value or CO2/PM2.5/TVOC readings with their reported
@@ -3425,6 +3425,7 @@ to a lower-priority type. All new display classes remain <strong>hardware
 untested</strong>; actual local FHEM/FHEMWEB tests use synthetic reports.</p>
 
 <h4>Functional readings (hardware untested)</h4>
+<p>All module-specific public readings use lowerCamelCase, including metadata, limits, alarms, maintenance and diagnostics. Native FHEM names measured-temp, desired-temp and desired-temp-cool retain their spelling. Reading-backed fan setters are fanMode and fanPct; protocol fields and enum values remain unchanged.</p>
 <table>
 <tr><th>Reading</th><th>Meaning</th></tr>
 <tr><td>batteryPercent / batteryVoltage</td><td>Integer 0..100 % (native half-percent rounded half up) / volts (mV divided by 1000).</td></tr>
@@ -3435,7 +3436,7 @@ untested</strong>; actual local FHEM/FHEMWEB tests use synthetic reports.</p>
 <tr><td>pct / tilt for coverings</td><td>Lift percent open (100=open, 0=closed) / native tilt percent. Fine reports take precedence.</td></tr>
 <tr><td>state for locks</td><td>not_fully_locked / locked / unlocked / unlatched; native state events. Door contact is separate.</td></tr>
 <tr><td>frequency</td><td>Measured electrical frequency in Hz (native mHz divided by 1000).</td></tr>
-<tr><td>levelFrequency</td><td>Independent LevelControl frequency in native units, with matching setter; min_frequency/max_frequency are its limits.</td></tr>
+<tr><td>levelFrequency</td><td>Independent LevelControl frequency in native units, with matching setter; minFrequency/maxFrequency are its limits.</td></tr>
 </table>
 <p>The covering pct setter uses percent open as well: 25 sends native
 liftPercent100thsValue=7500. Tilt uses its native direction. Commands and target
@@ -3453,7 +3454,7 @@ Identity changes clear provenance; rename preserves it.</p>
 <p>Any known same-endpoint charge warning/critical level, replacement request
 or SmokeCoAlarm battery warning means low. At least one valid source and no known
 warning are required for ok. Missing/null data never means all-clear. Detailed
-battery_charge_level, battery_replacement_needed and alarm_battery preserve
+batteryChargeLevel, batteryReplacementNeeded and batteryAlert preserve
 cause/severity; a normal source cannot hide another warning. No cross-endpoint
 aggregation, polling or extra reads. See
 <a href="https://github.com/Flachzange/fhem-matter-fork/blob/testing/docs/reading-conventions.md">functional names, source evidence and test scope</a>.</p>
@@ -3464,18 +3465,18 @@ or snapshots, independently for each endpoint. They survive normal FHEM
 statefile/configDB restoration. No extra reads or polling are introduced.</p>
 <table>
 <tr><th>Readings</th><th>Source / unit</th></tr>
-<tr><td><code>min_brightness</code>, <code>max_brightness</code></td><td>LevelControl MinLevel / MaxLevel, native level units.</td></tr>
-<tr><td><code>min_frequency</code>, <code>max_frequency</code></td><td>LevelControl MinFrequency / MaxFrequency, unchanged Matter values. Zero means undefined.</td></tr>
-<tr><td><code>color_temp_min</code>, <code>color_temp_max</code></td><td>ColorControl ColorTempPhysicalMinMireds / ColorTempPhysicalMaxMireds, mireds. Lower mireds mean higher Kelvin.</td></tr>
-<tr><td><code>min_pin_code_length</code>, <code>max_pin_code_length</code></td><td>DoorLock MinPINCodeLength / MaxPINCodeLength, bytes. Informational; no PIN management is added.</td></tr>
-<tr><td><code>min_rfid_code_length</code>, <code>max_rfid_code_length</code></td><td>DoorLock MinRFIDCodeLength / MaxRFIDCodeLength, bytes. Informational; no RFID management is added.</td></tr>
+<tr><td><code>minBrightness</code>, <code>maxBrightness</code></td><td>LevelControl MinLevel / MaxLevel, native level units.</td></tr>
+<tr><td><code>minFrequency</code>, <code>maxFrequency</code></td><td>LevelControl MinFrequency / MaxFrequency, unchanged Matter values. Zero means undefined.</td></tr>
+<tr><td><code>colorTempMin</code>, <code>colorTempMax</code></td><td>ColorControl ColorTempPhysicalMinMireds / ColorTempPhysicalMaxMireds, mireds. Lower mireds mean higher Kelvin.</td></tr>
+<tr><td><code>minPinCodeLength</code>, <code>maxPinCodeLength</code></td><td>DoorLock MinPINCodeLength / MaxPINCodeLength, bytes. Informational; no PIN management is added.</td></tr>
+<tr><td><code>minRfidCodeLength</code>, <code>maxRfidCodeLength</code></td><td>DoorLock MinRFIDCodeLength / MaxRFIDCodeLength, bytes. Informational; no RFID management is added.</td></tr>
 </table>
 <p>Valid CT limits determine the colorpicker range. Valid positive frequency
 limits determine the levelFrequency slider range. Missing, undefined, reversed or
 metadata-excluded boundaries leave the advertised command available with a
 text field instead; no 153&ndash;500 or 50&ndash;60 device range is invented.
 The Lighting feature uses the standardized level maximum 254. Other
-LevelControl endpoints use a usable reported <code>max_brightness</code>,
+LevelControl endpoints use a usable reported <code>maxBrightness</code>,
 otherwise the protocol fallback 254. The same maximum is used by the
 brightness slider, command validation, percentage and RGB scaling.
 A reported generic maximum of zero is retained; it permits no positive
@@ -3508,7 +3509,7 @@ one model cannot establish support for all models sharing the cluster.</p>
 <table><tr><th>Device class</th><th>Matter cluster</th><th>Hardware status</th></tr>
 <tr><td>OnOff lights / on-off plugs</td><td>OnOff, LevelControl</td><td><strong>untested</strong></td></tr>
 <tr><td>Color / color-temperature lights</td><td>ColorControl</td><td><strong>untested</strong></td></tr>
-<tr><td>Window coverings / blinds</td><td>WindowCovering. Physical lift and tilt limits: <code>physical_closed_limit_lift</code>, <code>physical_closed_limit_tilt</code></td><td><strong>untested</strong></td></tr>
+<tr><td>Window coverings / blinds</td><td>WindowCovering. Physical lift and tilt limits: <code>physicalClosedLimitLift</code>, <code>physicalClosedLimitTilt</code></td><td><strong>untested</strong></td></tr>
 <tr><td>Thermostats / fans / Identify</td><td>Thermostat, FanControl, Identify</td><td><strong>untested</strong></td></tr>
 <tr><td>Contact / water leak / rain sensors</td><td>BooleanState</td><td><strong>untested</strong></td></tr>
 <tr><td>Temperature / humidity / pressure / illumination</td><td>TemperatureMeasurement, RelativeHumidityMeasurement, PressureMeasurement, IlluminanceMeasurement</td><td><strong>untested</strong></td></tr>
@@ -3527,15 +3528,15 @@ with at most two decimals. Each requires its advertised attribute and the
 corresponding Heating/Cooling feature. Text inputs replace the arbitrary
 5–30 °C slider; the device validates its own setpoint limits.</p>
 <p><code>mode</code> choices follow Heating/Cooling/AutoMode and
-ControlSequenceOfOperation. <code>fan_mode</code> follows FanModeSequence and
+ControlSequenceOfOperation. <code>fanMode</code> follows FanModeSequence and
 the Auto feature; the deprecated On mode is not offered. Mode controls require
 AttributeList, FeatureMap and valid sequence metadata; missing metadata does
 not get guessed from a current mode. Normal snapshots or the endpoint's explicit
 <code>getConfig</code> supply this data, without extra probing. These are
 standard-compatible choices, not a guarantee of optional enum support or ACL
 permission. The server/device remains authoritative.</p>
-<p><code>fan_pct</code> writes PercentSetting (0–100); readings
-<code>fan_pct_setting</code> and <code>fan_pct</code> distinguish the target
+<p><code>fanPct</code> writes PercentSetting (0–100); readings
+<code>fanPctSetting</code> and <code>fanPct</code> distinguish the target
 from PercentCurrent. Only explicitly mapped writable standard attributes
 authorize these setters. Identify (15 seconds) still requires its accepted
 command. Correlated write status lists must match the requested path and report
@@ -3555,14 +3556,14 @@ offer, <code>updateFirmware</code> requests the offered version once.
 SoftwareVersion confirms installation, even without progress reports.
 After timeout or server disconnect, check again before installing.
 The server handles image delivery. Hardware <strong>untested</strong>.</p>
-<p>ICD Management: passive <code>icd_supported</code>,
-<code>icd_lit_supported</code>, <code>icd_operating_mode</code> and
-<code>icd_idle_mode_duration</code> readings. Positively recognized ICD
+<p>ICD Management: passive <code>icdSupported</code>,
+<code>icdLitSupported</code>, <code>icdOperatingMode</code> and
+<code>icdIdleModeDuration</code> readings. Positively recognized ICD
 roots on compatible servers offer asynchronous <code>get icdState</code>,
 plus conservative <code>icdRegister</code>, <code>icdUnregister</code> and
 <code>icdResync</code> where Check-In support is advertised. These server
 operations require the current connection's OHF matterjs-server identification
-(<code>sdk_version=matter-server/... (matter.js/...)</code>) and schema 12 or
+(<code>sdkVersion=matter-server/... (matter.js/...)</code>) and schema 12 or
 newer. Saved server readings alone do not enable them; other/unknown backends
 retain passive ICD detection without these operations.</p>
 <p>A valid root <code>Descriptor.ServerList</code> (<code>0/29/1</code>) without
@@ -3606,15 +3607,15 @@ They are not mirrored to child endpoints; setting <code>diagnostics</code>
 on a child endpoint has no effect.</p>
 <table>
 <tr><th>Reading</th><th>Meaning / unit</th></tr>
-<tr><td><code>thread_channel</code></td><td>Reported Thread radio channel.</td></tr>
-<tr><td><code>thread_role</code></td><td>Reported routing role: <code>unspecified</code>, <code>unassigned</code>, <code>sleepy_end_device</code>, <code>end_device</code>, <code>reed</code>, <code>router</code> or <code>leader</code>.</td></tr>
-<tr><td><code>thread_device_type</code></td><td>Derived from the role: <code>MTD</code> (Minimal Thread Device) for sleepy end devices; <code>MTD or FTD</code> for end devices; <code>FTD</code> (Full Thread Device) for REED, router and leader. This is not a separate device-type report.</td></tr>
-<tr><td><code>thread_network</code></td><td>Reported Thread network name.</td></tr>
-<tr><td><code>thread_neighbors</code></td><td>Number of entries in the reported neighbor table, including children. The displayed list can contain fewer entries.</td></tr>
-<tr><td><code>thread_neighbor_list</code></td><td>Up to 16 neighbors with usable RSSI, strongest first, with extended address, child/router label and RSSI in dBm; at most 600 characters. <code>none</code> means no usable entries in that report. The module labels every non-child as <code>router</code>.</td></tr>
+<tr><td><code>threadChannel</code></td><td>Reported Thread radio channel.</td></tr>
+<tr><td><code>threadRole</code></td><td>Reported routing role: <code>unspecified</code>, <code>unassigned</code>, <code>sleepy_end_device</code>, <code>end_device</code>, <code>reed</code>, <code>router</code> or <code>leader</code>.</td></tr>
+<tr><td><code>threadDeviceType</code></td><td>Derived from the role: <code>MTD</code> (Minimal Thread Device) for sleepy end devices; <code>MTD or FTD</code> for end devices; <code>FTD</code> (Full Thread Device) for REED, router and leader. This is not a separate device-type report.</td></tr>
+<tr><td><code>threadNetwork</code></td><td>Reported Thread network name.</td></tr>
+<tr><td><code>threadNeighbors</code></td><td>Number of entries in the reported neighbor table, including children. The displayed list can contain fewer entries.</td></tr>
+<tr><td><code>threadNeighborList</code></td><td>Up to 16 neighbors with usable RSSI, strongest first, with extended address, child/router label and RSSI in dBm; at most 600 characters. <code>none</code> means no usable entries in that report. The module labels every non-child as <code>router</code>.</td></tr>
 <tr><td><code>rssi</code></td><td>Strongest usable RSSI among neighbors not marked as children, in dBm. For each neighbor, average RSSI is preferred; last RSSI is used only if the average is absent/null. This does not identify the selected parent or the route used by a command.</td></tr>
 <tr><td><code>lqi</code></td><td>Reported link quality of the same neighbor selected for <code>rssi</code>, if supplied as 0&ndash;3; higher values indicate better quality. It is not selected independently from the strongest RSSI.</td></tr>
-<tr><td><code>wifi_rssi</code></td><td>Reported Wi-Fi RSSI in dBm, when Wi-Fi diagnostics are available.</td></tr>
+<tr><td><code>wifiRssi</code></td><td>Reported Wi-Fi RSSI in dBm, when Wi-Fi diagnostics are available.</td></tr>
 </table>
 <p>Enabling the attribute sends no request and does not replay previously
 received data. Updates use subsequent accepted server reports or snapshots;
@@ -3768,11 +3769,11 @@ modelliert die Wiederherstellung.</p></li>
       Root-Status gespeichert ist. Andere benutzerdefinierte Formate bleiben
       erhalten. Ein absichtlich identisch gesetzter Altwert ist vom früheren
       Standard nicht unterscheidbar. Nach der Migration die Konfiguration speichern.</li>
-  <li><b>Reading matter_status:</b> <code>present</code> bedeutet, dass der Knoten
+  <li><b>Reading matterStatus:</b> <code>present</code> bedeutet, dass der Knoten
       auf dem Matter-Server vorhanden ist; <code>removed</code> bedeutet, dass er
       dort entfernt wurde oder in einer vollständigen Node-Liste fehlt. Das Reading
       zeigt nicht die physische Erreichbarkeit oder Verfügbarkeit an.</li>
-  <li><b>Reading device_type_ids:</b> Die validierten IDs aus
+  <li><b>Reading deviceTypeIds:</b> Die validierten IDs aus
       <code>Descriptor.DeviceTypeList</code> werden als kommaseparierte
       Hexadezimalwerte (z. B. <code>0x010A</code>) gespeichert. FHEM stellt
       das Reading beim Neustart wieder her; die Typanzeige und die automatische
@@ -3867,7 +3868,7 @@ vor dem Neustart mit V0.21 wie unten beschrieben entfernen.</p>
   <li><a id="MATTERDevice-attr-rawReadings"></a><b>rawReadings (0/1):</b>
       Standard <code>0</code>. Mit <code>1</code> am empfangenden Root oder
       Endpunkt sonst nicht zugeordnete Attribute als
-      <code>raw_&lt;Endpunkt&gt;_&lt;Cluster&gt;_&lt;Attribut&gt;</code>-Readings
+      <code>rawEp&lt;Endpunkt&gt;Cluster&lt;Cluster&gt;Attribute&lt;Attribut&gt;</code>-Readings
       ausgeben. Null-Werte, Attribut-IDs ab 0xFFF0 und die Cluster
       31, 48, 49, 60, 62, 63, 64 und 65 (dezimal) werden übersprungen.
       Pro Wert gilt eine Grenze von 512 Zeichen für skalaren Text bzw.
@@ -3878,7 +3879,7 @@ vor dem Neustart mit V0.21 wie unten beschrieben entfernen.</p>
 </ul>
 <h4>Standardanzeige der Endpunkte (Hardware ungetestet)</h4>
 <p>Endpunkte größer 0 leiten ihre <code>STATE</code>-Anzeige aus den gespeicherten
-<code>device_type_ids</code> und ihren eigenen vorhandenen Readings ab. Es werden
+<code>deviceTypeIds</code> und ihren eigenen vorhandenen Readings ab. Es werden
 weder ein <code>stateFormat</code>-Attribut noch redundante <code>state</code>-
 Readings angelegt. Ein ausdrücklich gesetztes <code>stateFormat</code> hat
 Vorrang; Löschen stellt den Standard wieder her. Die Anzeige wird nach der
@@ -3900,8 +3901,8 @@ aktuelle Lift-<code>pct</code> (100 offen, 0 geschlossen) und native <code>tilt<
 ersatzweise absolute Rohpositionen ausdrücklich mit raw, sonst den gemeldeten
 Status stopped/opening/closing. Zielpositionen sind keine Istpositionen.</li>
 <li>Thermostate zeigen gemeldeten Modus, Isttemperatur und die zum Modus passenden
-Heiz-/Kühlsollwerte, bei auto beide. Lüfter zeigen fan_mode und gemeldetes
-fan_pct; der angeforderte Soll-Prozentwert ersetzt keinen Istwert.</li>
+Heiz-/Kühlsollwerte, bei auto beide. Lüfter zeigen fanMode und gemeldetes
+fanPct; der angeforderte Soll-Prozentwert ersetzt keinen Istwert.</li>
 <li>Rauch-/CO-Melder zeigen den gemeldeten ExpressedState einschließlich Test,
 Batterie-/Fehler-/Lebensdauer- und Interconnect-Zuständen. Luftqualität verwendet
 den gemeldeten qualitativen Wert, ersatzweise CO2/PM2.5/TVOC mit den gemeldeten
@@ -3924,6 +3925,7 @@ Anzeigeklassen sind <strong>Hardware-ungetestet</strong>; die lokale Prüfung
 mit echtem FHEM/FHEMWEB verwendet synthetische Meldungen.</p>
 
 <h4>Funktionale Readings (Hardware ungetestet)</h4>
+<p>Alle moduleigenen öffentlichen Readings verwenden lowerCamelCase, einschließlich Metadaten, Grenzen, Alarmen, Wartung und Diagnosen. Native FHEM-Namen measured-temp, desired-temp und desired-temp-cool bleiben bestehen. Die Reading-bezogenen Lüftersetter heißen fanMode und fanPct; Protokollfelder und Enum-Werte bleiben unverändert.</p>
 <table>
 <tr><th>Reading</th><th>Bedeutung</th></tr>
 <tr><td>batteryPercent / batteryVoltage</td><td>Ganzzahlige 0..100 % (native Halbprozent kaufmännisch gerundet) / Volt (mV geteilt durch 1000).</td></tr>
@@ -3934,7 +3936,7 @@ mit echtem FHEM/FHEMWEB verwendet synthetische Meldungen.</p>
 <tr><td>pct / tilt bei Jalousien</td><td>Lift-Prozent offen (100=offen, 0=geschlossen) / native Tilt-Prozent. Feine Meldungen haben Vorrang.</td></tr>
 <tr><td>state bei Schlössern</td><td>not_fully_locked / locked / unlocked / unlatched; native state-Events. Türkontakt bleibt getrennt.</td></tr>
 <tr><td>frequency</td><td>Gemessene elektrische Frequenz in Hz (native mHz geteilt durch 1000).</td></tr>
-<tr><td>levelFrequency</td><td>Unabhängige LevelControl-Frequenz in nativer Einheit samt Setter; min_frequency/max_frequency sind ihre Grenzen.</td></tr>
+<tr><td>levelFrequency</td><td>Unabhängige LevelControl-Frequenz in nativer Einheit samt Setter; minFrequency/maxFrequency sind ihre Grenzen.</td></tr>
 </table>
 <p>Auch der Jalousie-pct-Setter verwendet Prozent offen: 25 sendet nativ
 liftPercent100thsValue=7500. Tilt verwendet seine native Richtung. Befehle und
@@ -3953,7 +3955,7 @@ neu zugeordnet. Identitätswechsel löschen die Herkunft; Rename erhält sie.</p
 <p>Jede bekannte Ladungswarnung/kritisch, Austauschbedarf oder SmokeCoAlarm-
 Batteriewarnung desselben Endpunkts bedeutet low. Für ok ist mindestens eine
 gültige Quelle und keine bekannte Warnung nötig. Fehlende/null Daten sind keine
-Entwarnung. battery_charge_level, battery_replacement_needed und alarm_battery
+Entwarnung. batteryChargeLevel, batteryReplacementNeeded und batteryAlert
 behalten Ursache/Schweregrad; normale Quellen verdecken keine andere Warnung.
 Keine endpunktübergreifende Zusammenführung, Polling oder zusätzlichen Abfragen.
 Siehe <a href="https://github.com/Flachzange/fhem-matter-fork/blob/testing/docs/reading-conventions.md">funktionale Namen, Quellen und Testumfang</a>.</p>
@@ -3965,11 +3967,11 @@ Wiederherstellung über Statefile/configDB. Es entstehen keine zusätzlichen
 Abfragen und kein Polling.</p>
 <table>
 <tr><th>Readings</th><th>Quelle / Einheit</th></tr>
-<tr><td><code>min_brightness</code>, <code>max_brightness</code></td><td>LevelControl MinLevel / MaxLevel, native Level-Einheiten.</td></tr>
-<tr><td><code>min_frequency</code>, <code>max_frequency</code></td><td>LevelControl MinFrequency / MaxFrequency, unveränderte Matter-Werte. Null als Zahlenwert bedeutet undefiniert.</td></tr>
-<tr><td><code>color_temp_min</code>, <code>color_temp_max</code></td><td>ColorControl ColorTempPhysicalMinMireds / ColorTempPhysicalMaxMireds, Mired. Kleinere Mired-Werte bedeuten höhere Kelvin-Werte.</td></tr>
-<tr><td><code>min_pin_code_length</code>, <code>max_pin_code_length</code></td><td>DoorLock MinPINCodeLength / MaxPINCodeLength, Byte. Rein informativ; keine neue PIN-Verwaltung.</td></tr>
-<tr><td><code>min_rfid_code_length</code>, <code>max_rfid_code_length</code></td><td>DoorLock MinRFIDCodeLength / MaxRFIDCodeLength, Byte. Rein informativ; keine neue RFID-Verwaltung.</td></tr>
+<tr><td><code>minBrightness</code>, <code>maxBrightness</code></td><td>LevelControl MinLevel / MaxLevel, native Level-Einheiten.</td></tr>
+<tr><td><code>minFrequency</code>, <code>maxFrequency</code></td><td>LevelControl MinFrequency / MaxFrequency, unveränderte Matter-Werte. Null als Zahlenwert bedeutet undefiniert.</td></tr>
+<tr><td><code>colorTempMin</code>, <code>colorTempMax</code></td><td>ColorControl ColorTempPhysicalMinMireds / ColorTempPhysicalMaxMireds, Mired. Kleinere Mired-Werte bedeuten höhere Kelvin-Werte.</td></tr>
+<tr><td><code>minPinCodeLength</code>, <code>maxPinCodeLength</code></td><td>DoorLock MinPINCodeLength / MaxPINCodeLength, Byte. Rein informativ; keine neue PIN-Verwaltung.</td></tr>
+<tr><td><code>minRfidCodeLength</code>, <code>maxRfidCodeLength</code></td><td>DoorLock MinRFIDCodeLength / MaxRFIDCodeLength, Byte. Rein informativ; keine neue RFID-Verwaltung.</td></tr>
 </table>
 <p>Gültige CT-Grenzen bestimmen den Farbwähler. Gültige positive
 Frequenzgrenzen bestimmen den Frequenz-Slider. Bei fehlenden, undefinierten,
@@ -3977,7 +3979,7 @@ vertauschten oder durch Metadaten ausgeschlossenen Grenzen bleibt der
 angebotene Befehl mit Texteingabe verfügbar. Es werden keine Gerätegrenzen
 153&ndash;500 oder 50&ndash;60 angenommen. Beim Lighting-Feature gilt die
 standardisierte maximale Level-Stufe 254. Andere LevelControl-Endpunkte
-verwenden ein nutzbares gemeldetes <code>max_brightness</code>, andernfalls
+verwenden ein nutzbares gemeldetes <code>maxBrightness</code>, andernfalls
 den Protokoll-Ersatzwert 254. Dasselbe Maximum gilt für Helligkeits-Slider,
 Befehlsprüfung sowie Prozent- und RGB-Skalierung. Ein gemeldetes generisches
 Maximum null als Zahlenwert bleibt erhalten; es erlaubt keine positive
@@ -4014,7 +4016,7 @@ mit demselben Matter-Cluster.</p>
 <table><tr><th>Geräteklasse</th><th>Matter-Cluster</th><th>Hardwarestatus</th></tr>
 <tr><td>Schaltbare Leuchten / Steckdosen</td><td>OnOff, LevelControl</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Farb-/Farbtemperaturleuchten</td><td>ColorControl</td><td><strong>ungetestet</strong></td></tr>
-<tr><td>Rollläden / Jalousien</td><td>WindowCovering. Physische Schließgrenzen für Hub und Neigung: <code>physical_closed_limit_lift</code>, <code>physical_closed_limit_tilt</code></td><td><strong>ungetestet</strong></td></tr>
+<tr><td>Rollläden / Jalousien</td><td>WindowCovering. Physische Schließgrenzen für Hub und Neigung: <code>physicalClosedLimitLift</code>, <code>physicalClosedLimitTilt</code></td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Thermostate / Lüfter / Identify</td><td>Thermostat, FanControl, Identify</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Kontakt-/Wasserleck-/Regensensoren</td><td>BooleanState</td><td><strong>ungetestet</strong></td></tr>
 <tr><td>Temperatur / Feuchte / Druck / Beleuchtungsstärke</td><td>TemperatureMeasurement, RelativeHumidityMeasurement, PressureMeasurement, IlluminanceMeasurement</td><td><strong>ungetestet</strong></td></tr>
@@ -4033,15 +4035,15 @@ höchstens zwei Nachkommastellen. Erforderlich sind jeweils das angekündigte
 Attribut und die passende Heating-/Cooling-Fähigkeit. Texteingaben ersetzen
 den pauschalen 5–30-°C-Slider; eigene Sollwertgrenzen prüft das Gerät.</p>
 <p>Die Auswahl für <code>mode</code> folgt Heating/Cooling/AutoMode und
-ControlSequenceOfOperation. <code>fan_mode</code> folgt FanModeSequence und dem
+ControlSequenceOfOperation. <code>fanMode</code> folgt FanModeSequence und dem
 Auto-Feature; der veraltete On-Modus wird nicht angeboten. Die Modusauswahl
 benötigt AttributeList, FeatureMap und gültige Sequenzmetadaten. Fehlende Daten
 werden nicht aus dem aktuellen Modus geraten. Normale Snapshots oder
 <code>getConfig</code> am betreffenden Endpunkt liefern diese Daten, ohne zusätzliche Probeabfragen.
 Die Auswahl ist standardkompatibel, garantiert aber weder optionale
 Enum-Unterstützung noch ACL-Berechtigung. Server/Gerät bleiben maßgeblich.</p>
-<p><code>fan_pct</code> schreibt PercentSetting (0–100); die Readings
-<code>fan_pct_setting</code> und <code>fan_pct</code> trennen Sollwert und
+<p><code>fanPct</code> schreibt PercentSetting (0–100); die Readings
+<code>fanPctSetting</code> und <code>fanPct</code> trennen Sollwert und
 PercentCurrent. Nur ausdrücklich als schreibbar abgebildete Standardattribute
 geben diese Setter frei. Identify (15 Sekunden) benötigt weiterhin seinen
 akzeptierten Befehl. Korrelierte Schreibstatuslisten müssen zum angefragten
@@ -4062,14 +4064,14 @@ bestätigt den Auftrag. Die passende SoftwareVersion vom Gerät bestätigt die
 Installation, auch ohne Fortschrittsmeldung. Nach Timeout oder Trennung vom
 Server ist vor einer Installation eine neue Prüfung erforderlich. Der
 Server übernimmt die Übertragung. An Hardware <strong>ungetestet</strong>.</p>
-<p>ICD Management: passive Readings <code>icd_supported</code>,
-<code>icd_lit_supported</code>, <code>icd_operating_mode</code> und
-<code>icd_idle_mode_duration</code>. Für bestätigte ICD-Root-Knoten am
+<p>ICD Management: passive Readings <code>icdSupported</code>,
+<code>icdLitSupported</code>, <code>icdOperatingMode</code> und
+<code>icdIdleModeDuration</code>. Für bestätigte ICD-Root-Knoten am
 kompatiblen Matter-Server stehen asynchrones <code>get icdState</code> und
 bei passender Check-In-Fähigkeit die konservativen Befehle
 <code>icdRegister</code>, <code>icdUnregister</code>, <code>icdResync</code>
 zur Verfügung. Diese Serverbefehle erfordern die OHF-matterjs-Serverkennung
-der aktuellen Verbindung (<code>sdk_version=matter-server/... (matter.js/...)</code>)
+der aktuellen Verbindung (<code>sdkVersion=matter-server/... (matter.js/...)</code>)
 und mindestens Schema 12. Gespeicherte Server-Readings allein geben sie nicht
 frei. Andere/unbekannte Backends behalten die passive ICD-Erkennung ohne
 diese Serverbefehle.</p>
@@ -4119,15 +4121,15 @@ Sie werden nicht an die Kind-Endpunkte gespiegelt; <code>diagnostics</code>
 an einem Kind-Endpunkt hat keine Wirkung.</p>
 <table>
 <tr><th>Reading</th><th>Bedeutung / Einheit</th></tr>
-<tr><td><code>thread_channel</code></td><td>Gemeldeter Thread-Funkkanal.</td></tr>
-<tr><td><code>thread_role</code></td><td>Gemeldete Routing-Rolle: <code>unspecified</code>, <code>unassigned</code>, <code>sleepy_end_device</code>, <code>end_device</code>, <code>reed</code>, <code>router</code> oder <code>leader</code>.</td></tr>
-<tr><td><code>thread_device_type</code></td><td>Aus der Rolle abgeleitet: <code>MTD</code> (Minimal Thread Device) für Sleepy End Devices; <code>MTD or FTD</code> für End Devices; <code>FTD</code> (Full Thread Device) für REED, Router und Leader. Keine separate Gerätetypmeldung.</td></tr>
-<tr><td><code>thread_network</code></td><td>Gemeldeter Name des Thread-Netzes.</td></tr>
-<tr><td><code>thread_neighbors</code></td><td>Anzahl der Einträge in der gemeldeten Nachbartabelle einschließlich Children. Die dargestellte Liste kann weniger Einträge enthalten.</td></tr>
-<tr><td><code>thread_neighbor_list</code></td><td>Bis zu 16 Nachbarn mit verwertbarem RSSI, absteigend nach Signalstärke, mit Extended Address, Child-/Router-Kennzeichnung und RSSI in dBm; höchstens 600 Zeichen. <code>none</code> bedeutet keine verwertbaren Einträge in dieser Meldung. Das Modul bezeichnet jeden Nicht-Child als <code>router</code>.</td></tr>
+<tr><td><code>threadChannel</code></td><td>Gemeldeter Thread-Funkkanal.</td></tr>
+<tr><td><code>threadRole</code></td><td>Gemeldete Routing-Rolle: <code>unspecified</code>, <code>unassigned</code>, <code>sleepy_end_device</code>, <code>end_device</code>, <code>reed</code>, <code>router</code> oder <code>leader</code>.</td></tr>
+<tr><td><code>threadDeviceType</code></td><td>Aus der Rolle abgeleitet: <code>MTD</code> (Minimal Thread Device) für Sleepy End Devices; <code>MTD or FTD</code> für End Devices; <code>FTD</code> (Full Thread Device) für REED, Router und Leader. Keine separate Gerätetypmeldung.</td></tr>
+<tr><td><code>threadNetwork</code></td><td>Gemeldeter Name des Thread-Netzes.</td></tr>
+<tr><td><code>threadNeighbors</code></td><td>Anzahl der Einträge in der gemeldeten Nachbartabelle einschließlich Children. Die dargestellte Liste kann weniger Einträge enthalten.</td></tr>
+<tr><td><code>threadNeighborList</code></td><td>Bis zu 16 Nachbarn mit verwertbarem RSSI, absteigend nach Signalstärke, mit Extended Address, Child-/Router-Kennzeichnung und RSSI in dBm; höchstens 600 Zeichen. <code>none</code> bedeutet keine verwertbaren Einträge in dieser Meldung. Das Modul bezeichnet jeden Nicht-Child als <code>router</code>.</td></tr>
 <tr><td><code>rssi</code></td><td>Stärkster verwertbarer RSSI unter den nicht als Child markierten Nachbarn, in dBm. Je Nachbar wird der Durchschnitts-RSSI bevorzugt; nur bei fehlendem/null Durchschnitt wird der letzte RSSI verwendet. Daraus lässt sich weder der gewählte Parent noch der Übertragungsweg eines Befehls bestimmen.</td></tr>
 <tr><td><code>lqi</code></td><td>Gemeldete Verbindungsqualität desselben für <code>rssi</code> gewählten Nachbarn, sofern als 0&ndash;3 geliefert; höhere Werte bedeuten bessere Qualität. Keine vom stärksten RSSI unabhängige Auswahl.</td></tr>
-<tr><td><code>wifi_rssi</code></td><td>Gemeldeter WLAN-RSSI in dBm, sofern WLAN-Diagnosedaten verfügbar sind.</td></tr>
+<tr><td><code>wifiRssi</code></td><td>Gemeldeter WLAN-RSSI in dBm, sofern WLAN-Diagnosedaten verfügbar sind.</td></tr>
 </table>
 <p>Das Einschalten sendet keine Abfrage und verarbeitet bereits empfangene
 Daten nicht erneut. Aktualisierungen nutzen anschließend akzeptierte

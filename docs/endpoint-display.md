@@ -29,21 +29,21 @@ source readings are absent. Invalid/null reports retain last-valid readings.
 
 | Device type IDs | Display source and format |
 | --- | --- |
-| Smoke CO Alarm 0x0076 | alarm_expressed_state: normal, smoke_alarm, co_alarm, battery_alert, testing, hardware_fault, end_of_service, interconnect_smoke, interconnect_co. No locally synthesized alarm priority. |
+| Smoke CO Alarm 0x0076 | alarmExpressedState: normal, smoke_alarm, co_alarm, battery_alert, testing, hardware_fault, end_of_service, interconnect_smoke, interconnect_co. No locally synthesized alarm priority. |
 | Water leak 0x0043 | Existing state: leak/dry. |
 | Rain 0x0044 | Existing state: rain/dry. |
 | Door lock 0x000A | state: not_fully_locked/locked/unlocked/unlatched. Door contact is a separate value. |
-| Window covering 0x0202 | Reported lift pct (100=open, 0=closed) and tilt (native 0..100), preferring fine reports over integer percentages. Both axes appear if supplied. If only absolute positions exist they are explicitly labelled raw; otherwise wc_operational_status supplies stopped/opening/closing. No target-position echo. The same inverted lift convention is used by the pct setter; targets are never echoed. |
+| Window covering 0x0202 | Reported lift pct (100=open, 0=closed) and tilt (native 0..100), preferring fine reports over integer percentages. Both axes appear if supplied. If only absolute positions exist they are explicitly labelled raw; otherwise wcOperationalStatus supplies stopped/opening/closing. No target-position echo. The same inverted lift convention is used by the pct setter; targets are never echoed. |
 | Thermostat 0x0301 | mode; measured: measured-temp °C; heat/cool: applicable desired-temp / desired-temp-cool °C. Auto shows both setpoints, off shows no setpoint. Missing components are unknown. |
-| Fan 0x002B | fan_mode; actual fan_pct %, if supplied. fan_pct_setting is never substituted for the actual percentage. |
+| Fan 0x002B | fanMode; actual fanPct %, if supplied. fanPctSetting is never substituted for the actual percentage. |
 | Lights 0x0100, 0x0101, 0x010C, 0x010D | Existing on/off state. |
 | Plugs 0x010A, 0x010B | Existing on/off state, even with an electrical-sensor companion type. |
 | Contact 0x0015 | Existing open/closed state. |
 | Occupancy 0x0107 | Existing motion/nomotion state. |
-| On/Off sensor 0x0850 | Existing own state, otherwise boolean_state as neutral 0/1. |
+| On/Off sensor 0x0850 | Existing own state, otherwise booleanState as neutral 0/1. |
 | Generic switch 0x000F | Own last button event, explicitly `last: short`, etc. No inferred steady actuator state. |
 | Controllers 0x0103, 0x0104, 0x0105 | Own state if actually supplied, otherwise own last button event or unknown. A client/controller type does not imply a server-side OnOff or Switch cluster. |
-| Air quality 0x002C | Reported air_quality enum: unknown/good/fair/moderate/poor/very_poor/extremely_poor. If no qualitative reading exists, supplied co2/pm25/tvoc values appear in that order with their reported units. Missing unit = unknown, never an implicit ppm. No local threshold classification. |
+| Air quality 0x002C | Reported airQuality enum: unknown/good/fair/moderate/poor/very_poor/extremely_poor. If no qualitative reading exists, supplied co2/pm25/tvoc values appear in that order with their reported units. Missing unit = unknown, never an implicit ppm. No local threshold classification. |
 | Electrical sensor 0x0510 | power W, otherwise energy kWh, voltage V, current A. Valid zero remains primary. Existing scaling is unchanged. |
 | Temperature 0x0302 | temperature °C. With 0x0307: temperature °C / humidity %, with unknown for a missing component. |
 | Humidity 0x0307 | humidity %. |

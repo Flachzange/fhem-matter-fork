@@ -208,8 +208,8 @@ close $poll;
 # a valid reading or refresh its timestamp. Lock state is the functional text API.
 for my $row (
     [0x000A,'257/0','state',[qw(not_fully_locked locked unlocked unlatched)]],
-    [0x0076,'92/0','alarm_expressed_state',[qw(normal smoke_alarm co_alarm battery_alert testing hardware_fault end_of_service interconnect_smoke interconnect_co)]],
-    [0x002C,'91/0','air_quality',[qw(unknown good fair moderate poor very_poor extremely_poor)]],
+    [0x0076,'92/0','alarmExpressedState',[qw(normal smoke_alarm co_alarm battery_alert testing hardware_fault end_of_service interconnect_smoke interconnect_co)]],
+    [0x002C,'91/0','airQuality',[qw(unknown good fair moderate poor very_poor extremely_poor)]],
 ) {
     my ($type,$path,$reading,$values)=@$row;
     my $name=$name_for{$type};
@@ -248,7 +248,7 @@ $report->(0x002B,'514/2',90);
 is($state->($name_for{0x002B}),'high; 45 %','fan setting cannot replace measured percent');
 # Air quality fallback: no manufactured unit; no local thresholds.
 my $air=$name_for{0x002C};
-$perl->('readingsDelete($defs{' . $air . '},q(air_quality))');
+$perl->('readingsDelete($defs{' . $air . '},q(airQuality))');
 $report->(0x002C,'1037/0',650);
 is($state->($air),'co2: 650 unknown','missing concentration unit stays unknown');
 $report->(0x002C,'1037/8',3);
@@ -394,8 +394,8 @@ is($cmd->('rereadcfg'),'','actual rereadcfg runs the loader');
 is($state->($humid),'restored 48','startup evaluates the configured override from restored readings');
 is($state->($temp),'15.5 °C / 48 %','saved readings/types restore the default without a server report');
 my $restored=$device->($temp)->{Readings};
-is_deeply({map { $_=>$restored->{$_} } qw(temperature humidity device_type_ids)},
-          {map { $_=>$saved->{$_} } qw(temperature humidity device_type_ids)},
+is_deeply({map { $_=>$restored->{$_} } qw(temperature humidity deviceTypeIds)},
+          {map { $_=>$saved->{$_} } qw(temperature humidity deviceTypeIds)},
           'actual loader preserves source values and timestamps');
 
 is($state->($mixed),'1000 lx','mixed lux display restores without fresh server data');

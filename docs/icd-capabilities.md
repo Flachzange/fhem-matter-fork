@@ -19,7 +19,7 @@
   `matter-server/<version> (matter.js/<version>)`. Administrative operations
   additionally require the Check-In feature. The same command-list checks
   govern explicit commands. Backend permission is cleared before disconnect
-  events; restored `schema_version`/`sdk_version` readings cannot enable it.
+  events; restored `schemaVersion`/`sdkVersion` readings cannot enable it.
 - This SDK-format check identifies the known backend; it is not an API
   command inventory or a guarantee about arbitrary compatible forks. Unknown
   identifiers keep passive device detection without these server operations.

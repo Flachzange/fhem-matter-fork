@@ -18,7 +18,7 @@ The table records modeled module output, not physical-device validation.
 | TemperatureMeasurement | temperature | 2234 -> 22.34; -550 -> -5.5 |
 | RelativeHumidityMeasurement | humidity | 4350 -> 43.5; 0 -> 0 |
 | IlluminanceMeasurement | brightness (lux) | 30001 -> 1000; 20001 -> 100; 0 -> 0 |
-| Unknown device type / BooleanState | boolean_state | Generic 1/0; no inferred contact reading |
+| Unknown device type / BooleanState | booleanState | Generic 1/0; no inferred contact reading |
 
 ## Lifecycle acceptance matrix
 
