@@ -269,7 +269,7 @@ See the embedded DE/EN commandref for per-reading details and
 
 ## Consistent reading names (V0.44)
 
-Module-specific readings follow lowerCamelCase except for the water-leak reading `water_leak`. These include device metadata,
+Module-specific readings follow lowerCamelCase. These include device metadata,
 limits, alarm details, commissioning, server status, firmware/ICD and network
 diagnostics. Examples are `batteryChargeLevel`, `batteryCapacity` (mAh),
 `batteryTimeRemaining` (s), `deviceTypeIds`, `firmwareUpdate`, `fanMode`,
@@ -349,7 +349,7 @@ uses the external Matter server. It does not install a server, export FHEM
 devices as a Matter bridge, upload firmware images or run a separate polling
 engine.
 
-- Common sensors use ordinary FHEM readings: `contact`, `water_leak`, `rain`,
+- Common sensors use ordinary FHEM readings: `contact`, `waterSensor`, `rain`,
   `motion`, `temperature` (°C), `humidity` (%), `brightness` (lux),
   `pressure` (hPa), `co2`, `pm25`, `tvoc` and explicit concentration
   unit readings. Native Switch events create one FHEM event per press,

@@ -2492,7 +2492,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
         if ($types{0x0015}) {
             ($attr_name, $value) = ('contact', $active ? 'closed' : 'open');
         } elsif ($types{0x0043}) {
-            ($attr_name, $value) = ('water_leak', $active ? 'leak' : 'dry');
+            ($attr_name, $value) = ('waterSensor', $active ? 'wet' : 'dry');
         } elsif ($types{0x0044}) {
             ($attr_name, $value) = ('rain', $active ? 'rain' : 'dry');
         } else {
@@ -2538,7 +2538,7 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
             # FHEM's native state also represents standard binary sensor
             # endpoints. This is device telemetry, never a command echo.
             if (($hash->{endpoint_id} // 0) > 0 &&
-                $attr_name =~ /^(?:contact|water_leak|rain|motion)$/) {
+                $attr_name =~ /^(?:contact|waterSensor|rain|motion)$/) {
                 readingsBulkUpdate($hash, 'state', $value);
             }
         }
@@ -3394,9 +3394,10 @@ to a lower-priority type. All new display classes remain <strong>hardware
 untested</strong>; actual local FHEM/FHEMWEB tests use synthetic reports.</p>
 
 <h4>Functional readings (hardware untested)</h4>
-<p>Module-specific public readings follow lowerCamelCase except for the water-leak reading <code>water_leak</code>. Native FHEM names measured-temp, desired-temp and desired-temp-cool retain their spelling. Reading-backed fan setters are fanMode and fanPct; protocol fields and enum values remain unchanged.</p>
+<p>Module-specific public readings follow lowerCamelCase. Native FHEM names measured-temp, desired-temp and desired-temp-cool retain their spelling. Reading-backed fan setters are fanMode and fanPct; protocol fields and enum values remain unchanged.</p>
 <table>
 <tr><th>Reading</th><th>Meaning</th></tr>
+<tr><td>waterSensor</td><td>Reports <code>wet</code> when water is detected and <code>dry</code> otherwise. The endpoint state uses the same value.</td></tr>
 <tr><td>batteryPercent / batteryVoltage</td><td>Integer 0..100 % (native half-percent rounded half up) / volts (mV divided by 1000).</td></tr>
 <tr><td>batteryState</td><td>ok/low from known same-endpoint warning sources, without percent/voltage thresholds.</td></tr>
 <tr><td>ct</td><td>Positive mireds 1..65279; matching setter.</td></tr>
@@ -3874,9 +3875,10 @@ Anzeigeklassen sind <strong>Hardware-ungetestet</strong>; die lokale Prüfung
 mit echtem FHEM/FHEMWEB verwendet synthetische Meldungen.</p>
 
 <h4>Funktionale Readings (Hardware ungetestet)</h4>
-<p>Moduleigene öffentliche Readings folgen lowerCamelCase. Das Wasserleck-Reading <code>water_leak</code> ist die Ausnahme. Native FHEM-Namen measured-temp, desired-temp und desired-temp-cool bleiben bestehen. Die Reading-bezogenen Lüftersetter heißen fanMode und fanPct; Protokollfelder und Enum-Werte bleiben unverändert.</p>
+<p>Moduleigene öffentliche Readings folgen lowerCamelCase. Native FHEM-Namen measured-temp, desired-temp und desired-temp-cool bleiben bestehen. Die Reading-bezogenen Lüftersetter heißen fanMode und fanPct; Protokollfelder und Enum-Werte bleiben unverändert.</p>
 <table>
 <tr><th>Reading</th><th>Bedeutung</th></tr>
+<tr><td>waterSensor</td><td>Meldet <code>wet</code> bei erkanntem Wasser, sonst <code>dry</code>. Der Endpunkt übernimmt denselben Wert in state.</td></tr>
 <tr><td>batteryPercent / batteryVoltage</td><td>Ganzzahlige 0..100 % (native Halbprozent kaufmännisch gerundet) / Volt (mV geteilt durch 1000).</td></tr>
 <tr><td>batteryState</td><td>ok/low aus bekannten Warnquellen desselben Endpunkts, ohne Prozent-/Spannungsschwellen.</td></tr>
 <tr><td>ct</td><td>Positive Mired 1..65279; gleicher Setter.</td></tr>

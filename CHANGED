@@ -1,1 +1,1 @@
-2026-11-24  MATTER V0.45 (#93): Remove historical DEF, root stateFormat and group migrations; retain explicit user formatting/groups and current Matter operation.
+2026-11-24  MATTER V0.46: Rename water_leak to waterSensor. Water detection now reports wet (previously leak). The clear value remains dry. Endpoint state uses the same wet/dry values.

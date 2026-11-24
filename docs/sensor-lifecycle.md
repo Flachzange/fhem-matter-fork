@@ -12,7 +12,7 @@ The table records modeled module output, not physical-device validation.
 | Device/cluster | Reading | Representative input and expected output |
 | --- | --- | --- |
 | Contact / BooleanState | contact and endpoint state | true -> closed; false -> open |
-| Water leak / BooleanState | water_leak and endpoint state | true -> leak; false -> dry |
+| Water leak / BooleanState | waterSensor and endpoint state | true -> wet; false -> dry |
 | Rain / BooleanState | rain and endpoint state | true -> rain; false -> dry |
 | OccupancySensing | motion and endpoint state | 3/5 -> motion; 2 -> nomotion (bit 0) |
 | TemperatureMeasurement | temperature | 2234 -> 22.34; -550 -> -5.5 |
