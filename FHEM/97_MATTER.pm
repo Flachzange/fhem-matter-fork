@@ -5,6 +5,7 @@ use warnings;
 
 use HttpUtils;
 use Time::Piece;
+use Encode qw(encode_utf8);
 use JSON;
 use IO::Socket::INET;
 use Socket qw(SOL_SOCKET SO_ERROR);
@@ -13,7 +14,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.16 15.11.2026";
+my $MATTER_version = "V0.45 24.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -28,16 +29,12 @@ my %MATTER_sets = (
     "getCredentials"  => "noArg",
 );
 
-my %MATTER_gets = (
-);
-
 sub MATTER_Initialize {
     my ($hash) = @_;
 
     $hash->{DefFn}      = \&MATTER_Define;
     $hash->{UndefFn}    = \&MATTER_Undef;
     $hash->{SetFn}      = \&MATTER_Set;
-    $hash->{GetFn}      = \&MATTER_Get;
     $hash->{AttrFn}     = \&MATTER_Attr;
     $hash->{RenameFn}   = \&MATTER_Rename;
     $hash->{ReadFn}     = \&MATTER_Read;
@@ -62,17 +59,6 @@ sub MATTER_Define {
     $hash->{STATE}    = "defined";
     $hash->{VERSION}  = $MATTER_version;
     
-    # Sendefunktion für WebSocket hinterlegen
-    $hash->{fhem}{helper}{sendWS} = sub {
-        my ($msg) = @_;
-        my $socket = $hash->{CD};
-        if ($socket && $hash->{websocket} && ($hash->{ws_status} // '') eq 'connected') {
-            MATTER_SendWebSocketText($hash, $msg);
-        } else {
-            Log3 $hash->{NAME}, 2, "MATTER: No active WebSocket connection for sending!";
-        }
-    };
-
     # A connection started during FHEM configuration loading cannot be
     # processed by the socket event loop yet. An already-expired handshake
     # timer would cause a needless 30-second reconnect delay after startup.
@@ -102,26 +88,26 @@ sub MATTER_Rename {
         next unless ($device->{TYPE} // '') eq 'MATTERDevice';
         my $configured = AttrVal($device->{NAME}, 'IODev', '');
         next unless (($device->{IODev} // '') eq $hash) || $configured eq $old;
+        if (($device->{endpoint_id} // 0) == 0 && ($device->{IODev} // '') eq $hash) {
+            my $node_id = $device->{node_id};
+            my $old_key = "$old:$node_id";
+            delete $modules{MATTERDevice}{defptr}{$old_key}
+                if ($modules{MATTERDevice}{defptr}{$old_key} // '') eq $device;
+            $modules{MATTERDevice}{defptr}{"$new:$node_id"} = $device;
+        }
         if ($configured eq $old || (!$configured && ($device->{IODev} // '') eq $hash)) {
             # A previously auto-assigned client needs an explicit new IODev
             # name so restart cannot silently select a different Matter IO.
             my $error = CommandAttr(undef, "$device->{NAME} IODev $new");
             Log3 $new, 2, "MATTER: Cannot update IODev for $device->{NAME}: $error" if $error;
         }
-        next unless ($device->{endpoint_id} // 0) == 0;
-        my $node_id = $device->{node_id};
-        next unless defined($node_id);
-        my $old_key = "$old:$node_id";
-        delete $modules{MATTERDevice}{defptr}{$old_key}
-            if ($modules{MATTERDevice}{defptr}{$old_key} // '') eq $device;
-        $modules{MATTERDevice}{defptr}{"$new:$node_id"} = $device
-            if ($device->{IODev} // '') eq $hash;
+
     }
     return undef;
 }
 
 # Shared, monotonic request IDs avoid collisions across discovery, reads,
-# commissioning and untracked device commands on the same WebSocket.
+# commissioning and device commands on the same WebSocket.
 sub MATTER_NextMessageId {
     my ($hash) = @_;
     return undef unless $hash;
@@ -134,13 +120,6 @@ sub MATTER_NextMessageId {
         return $id;
     }
     return undef;
-}
-
-sub MATTER_Get {
-    my ($hash, $name, $cmd, @args) = @_;
-    my @cList = keys %MATTER_gets;
-    return "Unknown argument $cmd, choose one of " . join(" ", @cList);
-
 }
 
 sub MATTER_Set {
@@ -320,11 +299,11 @@ sub MATTER_Set {
 sub MATTER_CommissioningReadings {
     my ($hash, $status, $mode, $node_id, $duration, $error) = @_;
     readingsBeginUpdate($hash);
-    readingsBulkUpdate($hash, 'commissioning_status', $status);
-    readingsBulkUpdate($hash, 'commissioning_mode', $mode);
-    readingsBulkUpdate($hash, 'commissioning_node_id', $node_id);
-    readingsBulkUpdate($hash, 'commissioning_duration', $duration);
-    readingsBulkUpdate($hash, 'commissioning_error', $error);
+    readingsBulkUpdate($hash, 'commissioningStatus', $status);
+    readingsBulkUpdate($hash, 'commissioningMode', $mode);
+    readingsBulkUpdate($hash, 'commissioningNodeId', $node_id);
+    readingsBulkUpdate($hash, 'commissioningDuration', $duration);
+    readingsBulkUpdate($hash, 'commissioningError', $error);
     readingsEndUpdate($hash, 1);
 }
 
@@ -479,26 +458,40 @@ sub MATTER_Close($) {
     delete $hash->{helper}{ws_expected_accept};
     delete $hash->{helper}{ws_fragment_opcode};
     delete $hash->{helper}{ws_fragment_buffer};
+    delete @{$hash->{helper}}{qw(icd_api_supported ota_api_supported)};
     $hash->{websocket} = 0;
     $hash->{ws_status} = 'disconnected';
     $hash->{BUF} = '';
+    my @incomplete_node_ops = grep {
+        ref($_) eq 'HASH' && ($_->{type} // '') eq 'node_operation'
+    } values %{$hash->{helper}{pending_command} // {}};
     delete $hash->{helper}{pending_command};
     delete $hash->{helper}{pending_config};
     delete $hash->{helper}{pending_snapshot_touched};
-    delete $hash->{fhem}{helper}{pending_config};
     Log3 $name, 4, "[$name] Connection closed (was $previous)" if defined($previous);
-    readingsSingleUpdate($hash, 'state', 'disconnected', 1)
-        if ReadingsVal($name, 'state', '') ne 'disconnected';
     # A lost IO connection invalidates current reachability, but not the last
     # server-reported 'available' reading or any endpoint's device state.
-    foreach my $device (values %defs) {
-        next unless ($device->{TYPE} // '') eq 'MATTERDevice' &&
-                    ($device->{endpoint_id} // 0) == 0;
-        my $owner = $device->{IODev};
-        next unless $owner ? $owner eq $hash
-                           : AttrVal($device->{NAME}, 'IODev', '') eq $name;
-        MATTERDevice_SetRootState($device, 'unknown');
+    # Invalidate all owned roots before publishing the first reading event.
+    my @roots = grep {
+        ($_->{TYPE} // '') eq 'MATTERDevice' &&
+        ($_->{endpoint_id} // 0) == 0 &&
+        ($_->{IODev} ? $_->{IODev} eq $hash
+                     : AttrVal($_->{NAME}, 'IODev', '') eq $name)
+    } values %defs;
+    MATTERDevice_InvalidateAvailability($_) for @roots;
+    readingsSingleUpdate($hash, 'state', 'disconnected', 1)
+        if ReadingsVal($name, 'state', '') ne 'disconnected';
+    MATTERDevice_SetRootState($_, 'unknown') for @roots;
+    # A server reconnect invalidates old OTA offers even if no update request
+    # was pending. Installing a version requires a fresh server check.
+    for my $dev (@roots) {
+        my $offer = delete $dev->{helper}{firmware_available};
+        my $target = delete $dev->{helper}{firmware_update_in_flight};
+        readingsSingleUpdate($dev, 'firmwareUpdate', 'unknown (server disconnected)', 1)
+            if defined($offer) || defined($target);
     }
+    MATTERDevice_CompleteRequest($hash, $_, undef,
+        'interrupted (outcome unknown)') for @incomplete_node_ops;
     if ($active) {
         MATTER_CommissioningReadings($hash, 'interrupted', $active->{mode}, '',
             MATTER_CommissioningDuration($active->{started_at}),
@@ -521,6 +514,17 @@ sub MATTER_Heartbeat($) {
     my ($hash) = @_;
     return unless $hash->{CD} && ($hash->{ws_status} // '') eq 'connected';
 
+    # Reject timed-out asynchronous node operations; late replies are ignored.
+    for my $id (keys %{$hash->{helper}{pending_command} // {}}) {
+        my $p = $hash->{helper}{pending_command}{$id};
+        next unless ref($p) eq 'HASH' &&
+                    ($p->{type} // '') eq 'node_operation';
+        next unless gettimeofday() - ($p->{started_at} // 0) >
+                    ($p->{timeout} // 120);
+        delete $hash->{helper}{pending_command}{$id};
+        MATTERDevice_CompleteRequest($hash, $p, undef,
+            'timeout (outcome unknown)');
+    }
     if (defined($hash->{helper}{pending_pong})) {
         Log3 $hash->{NAME}, 2, "[$hash->{NAME}] WebSocket pong timeout after $MATTER_pong_timeout seconds; reconnecting";
         MATTER_Reconnect($hash);
@@ -759,12 +763,19 @@ sub MATTER_SendWebSocketFrame($$$) {
 sub MATTER_SetNodeStatus($$$) {
     my ($hash, $node_id, $status) = @_;
     my $io_name = $hash->{NAME};
-    foreach my $device (values %defs) {
-        next unless ($device->{TYPE} // '') eq 'MATTERDevice';
-        next unless defined($device->{node_id}) && $device->{node_id} eq $node_id;
-        next unless $device->{IODev} && $device->{IODev}{NAME} eq $io_name;
-        readingsSingleUpdate($device, 'matter_status', $status, 1)
-            if ReadingsVal($device->{NAME}, 'matter_status', '') ne $status;
+    my @devices = grep {
+        ($_->{TYPE} // '') eq 'MATTERDevice' &&
+        defined($_->{node_id}) && $_->{node_id} eq $node_id &&
+        $_->{IODev} && $_->{IODev}{NAME} eq $io_name
+    } values %defs;
+    if ($status eq 'removed') {
+        MATTERDevice_InvalidateAvailability($_)
+            for grep { ($_->{endpoint_id} // 0) == 0 } @devices;
+    }
+    foreach my $device (@devices) {
+        next if MATTERDevice_IsDisabled($device);
+        MATTERDevice_ReadingsSingleUpdate($device, 'matterStatus', $status, 1)
+            if ReadingsVal($device->{NAME}, 'matterStatus', '') ne $status;
         next unless ($device->{endpoint_id} // 0) == 0;
         if ($status eq 'removed') {
             MATTERDevice_SetRootState($device, 'removed');
@@ -776,8 +787,8 @@ sub MATTER_SetNodeStatus($$$) {
     }
 }
 
-sub MATTER_ProcessNode($$) {
-    my ($hash, $node) = @_;
+sub MATTER_ProcessNode($$;$) {
+    my ($hash, $node, $partial) = @_;
     my $io_name = $hash->{NAME};
     return unless ref($node) eq 'HASH';
     my $node_id = $node->{node_id};
@@ -787,13 +798,8 @@ sub MATTER_ProcessNode($$) {
     }
 
     my $root_key = "$io_name:$node_id";
-    my $root = $modules{MATTERDevice}{defptr}{$root_key};
-    if ($root && (!$root->{NAME} || !$defs{$root->{NAME}} || $defs{$root->{NAME}} ne $root ||
-                  ($root->{node_id} // '') ne $node_id || ($root->{endpoint_id} // 0) != 0 ||
-                  !$root->{IODev} || $root->{IODev}{NAME} ne $io_name)) {
-        delete $modules{MATTERDevice}{defptr}{$root_key};
-        $root = undef;
-    }
+    my $root = MATTERDevice_LookupRoot($hash, $node_id);
+    my $reconcile = !$partial || !$root;
 
     unless ($root) {
         # Reuse renamed roots by identity, never by the server-provided label.
@@ -839,26 +845,11 @@ sub MATTER_ProcessNode($$) {
             }
         }
 
-        # MATTERDevice_Define uses AssignIoPort by default. Save other IO owners
-        # before defining, as the temporary automatic assignment may reuse their defptr key.
-        my %other_roots;
-        foreach my $existing (values %defs) {
-            next unless ($existing->{TYPE} // '') eq 'MATTERDevice';
-            next unless ($existing->{node_id} // '') eq $node_id && ($existing->{endpoint_id} // 0) == 0;
-            next unless $existing->{IODev};
-            my $existing_io = $existing->{IODev}{NAME};
-            next if $existing_io eq $io_name;
-            $other_roots{"$existing_io:$node_id"} = $existing;
-        }
-
         my $error = CommandDefine(undef, "$device_name MATTERDevice $node_id");
         $root = $defs{$device_name};
         if ($error || !$root || ($root->{TYPE} // '') ne 'MATTERDevice' ||
             ($root->{node_id} // '') ne $node_id || ($root->{endpoint_id} // 0) != 0) {
             Log3 $io_name, 2, "MATTER: Cannot create root $device_name: " . ($error // 'invalid result');
-            foreach my $key (keys %other_roots) {
-                $modules{MATTERDevice}{defptr}{$key} = $other_roots{$key};
-            }
             return;
         }
 
@@ -869,17 +860,11 @@ sub MATTER_ProcessNode($$) {
             Log3 $io_name, 2, "MATTER: IODev assignment failed for $device_name: " .
                 ($attr_error // 'wrong IODev after assignment');
             CommandDelete(undef, $device_name);
-            foreach my $key (keys %other_roots) {
-                $modules{MATTERDevice}{defptr}{$key} = $other_roots{$key};
-            }
             return;
         }
         if ($old_io ne $io_name &&
             ($modules{MATTERDevice}{defptr}{"$old_io:$node_id"} // '') eq $root) {
             delete $modules{MATTERDevice}{defptr}{"$old_io:$node_id"};
-        }
-        foreach my $key (keys %other_roots) {
-            $modules{MATTERDevice}{defptr}{$key} = $other_roots{$key};
         }
 
         my $room_error = CommandAttr(undef, "$device_name room Matter");
@@ -887,7 +872,7 @@ sub MATTER_ProcessNode($$) {
         Log3 $io_name, 3, "MATTER: Created root device $device_name for node $node_id";
     }
     $modules{MATTERDevice}{defptr}{$root_key} = $root;
-    MATTERDevice_EnsureTypeGroup($root);
+    MATTERDevice_EnsureTypeGroup($root) if $reconcile;
 
     # Parse node-wide availability and endpoint attributes through the same
     # device path. Missing availability never revives stale persisted values.
@@ -896,15 +881,18 @@ sub MATTER_ProcessNode($$) {
         $payload{available} = $node->{available} if exists($node->{available});
         $payload{attributes} = $node->{attributes}
             if ref($node->{attributes}) eq 'HASH';
-        MATTERDevice_Parse($root, encode_json(\%payload));
+        MATTERDevice_ProcessMessage($root, \%payload);
+    } else {
+        MATTERDevice_RecordReceive($root, {});
     }
-    # Synchronize already defined endpoints even without endpoint attributes.
-    foreach my $child (MATTERDevice_NodeChildren($root)) {
-        # Display-only parent name: always derive it from the current root.
-        $child->{device} = $root->{NAME};
-        MATTERDevice_EnsureTypeGroup($child);
+    # Full discovery also repairs endpoints omitted from the attribute map.
+    if ($reconcile) {
+        foreach my $child (MATTERDevice_NodeChildren($root)) {
+            $child->{device} = $root->{NAME};
+            MATTERDevice_EnsureTypeGroup($child);
+            MATTERDevice_SyncNodeReadings($root, $child);
+        }
     }
-    MATTERDevice_SyncNodeReadings($root);
     MATTER_SetNodeStatus($hash, $node_id, 'present');
     return 1;
 }
@@ -914,17 +902,24 @@ sub MATTER_ProcessNode($$) {
 sub MATTER_ValidLiveAttribute {
     my ($path, $value) = @_;
     return 0 unless defined($path) && !ref($path) &&
-        $path =~ m{^\d+/(\d+)/(\d+)$} && defined($value);
-    my ($cluster, $attribute) = ($1, $2);
-    return defined(MATTERDevice_NormalizeBoolean($value))
-        if $cluster == 6 && $attribute == 0;
-    return !ref($value) && $value =~ /^\d+$/ && $value <= 254
-        if $cluster == 8 && $attribute == 0;
-    return ref($value) eq 'ARRAY'
-        if $attribute >= 0xFFF8 && $attribute <= 0xFFFB;
-    return !ref($value) && $value =~ /^\d+$/
-        if $attribute == 0xFFFC || $attribute == 0xFFFD;
-    return 1;
+        $path =~ m{^(\d+)/(\d+)/(\d+)$} && defined($value);
+    return defined MATTERDevice_AttributeValue($2, $3, $value, $1);
+}
+
+# Keep newer reports with the reads whose endpoints they cover.
+sub MATTER_RecordPendingReadValues {
+    my ($hash, $node_id, $attributes) = @_;
+    return unless ref($attributes) eq 'HASH';
+    foreach my $pending (values %{$hash->{helper}{pending_config} // {}}) {
+        next unless $pending->{node_id} eq $node_id;
+        foreach my $path (keys %$attributes) {
+            next unless MATTER_ValidLiveAttribute($path, $attributes->{$path});
+            my ($endpoint) = split('/', $path);
+            next unless $pending->{all_endpoints} ||
+                (defined($pending->{endpoint_id}) && $pending->{endpoint_id} == $endpoint);
+            $pending->{live_values}{$path} = $attributes->{$path};
+        }
+    }
 }
 
 # Record only fields changed after a discovery request. Partial node_updated
@@ -947,8 +942,12 @@ sub MATTER_RecordSnapshotEvent {
                defined(MATTERDevice_NormalizeBoolean($data->{available}));
         if (ref($data->{attributes}) eq 'HASH') {
             foreach my $path (keys %{$data->{attributes}}) {
-                $changed->{attributes}{$path} = 1
-                    if MATTER_ValidLiveAttribute($path, $data->{attributes}{$path});
+                next unless MATTER_ValidLiveAttribute($path, $data->{attributes}{$path});
+                $changed->{attributes}{$path} = 1;
+                # Reapply the newer structural list after older cluster data,
+                # so an obsolete ICD FeatureMap cannot revive removed support.
+                $changed->{server_lists}{$path} = $data->{attributes}{$path}
+                    if $path =~ m{/29/1$};
             }
         }
     }
@@ -975,9 +974,17 @@ sub MATTER_ProcessNodeList($$$;$) {
         if ($updated) {
             my %filtered = %$node;
             delete $filtered{available} if $updated->{available};
-            if ($updated->{attributes} && ref($filtered{attributes}) eq 'HASH') {
+            if (ref($filtered{attributes}) eq 'HASH') {
                 my %attributes = %{$filtered{attributes}};
-                delete @attributes{keys %{$updated->{attributes}}};
+                delete @attributes{keys %{$updated->{attributes} // {}}};
+                @attributes{keys %{$updated->{server_lists} // {}}} =
+                    values %{$updated->{server_lists} // {}};
+                if ($updated->{excluded_endpoints}) {
+                    for my $path (keys %attributes) {
+                        my ($ep) = split('/', $path);
+                        delete $attributes{$path} if $updated->{excluded_endpoints}{$ep};
+                    }
+                }
                 $filtered{attributes} = \%attributes;
             }
             $to_apply = \%filtered;
@@ -993,10 +1000,21 @@ sub MATTER_ProcessNodeList($$$;$) {
         next if $present{$device->{node_id} // ''};
         # A later event for this same node wins; events on other nodes
         # must not suppress missing-node detection.
-        next if $touched && exists($touched->{$device->{node_id} // ''});
+        my $change = $touched ? $touched->{$device->{node_id} // ''} : undef;
+        # A local endpoint exclusion is not evidence that the node is present.
+        next if $change && (!exists($change->{excluded_endpoints}) || keys(%$change) > 1);
         MATTER_SetNodeStatus($hash, $device->{node_id}, 'removed');
     }
     Log3 $io_name, 3, 'MATTER: Synchronized ' . scalar(keys %present) . " nodes from $source";
+}
+
+# Credential IDs form one reading-name component. Numeric IDs remain readable;
+# arbitrary scalar IDs use an injective ASCII encoding rather than separators.
+sub MATTER_CredentialReadingId {
+    my ($id) = @_;
+    return 'Default' unless defined $id;
+    return $id if $id =~ /\A[0-9]+\z/;
+    return 'Id' . unpack('H*', encode_utf8("$id"));
 }
 
 sub MATTER_ParseMessage($$) {
@@ -1012,12 +1030,24 @@ sub MATTER_ParseMessage($$) {
     # A) Server-Informationen beim Connect
     if (exists $decoded->{schema_version} && exists $decoded->{sdk_version}) {
         Log3 $name, 3, "MATTER: Received server_info from Matter server.";
+        # ICD controller operations are an OHF matterjs-server extension.
+        # Establish support from this connection, never restored readings.
+        my ($schema, $sdk) = @{$decoded}{qw(schema_version sdk_version)};
+        my $js = defined($sdk) && !ref($sdk) &&
+            $sdk =~ /\Amatter-server\/[^\s()]+ \(matter\.js\/[^\s()]+\)\z/;
+        # Python Matter Server identifies its CHIP SDK by the package version.
+        my $python_sdk = defined($sdk) && !ref($sdk) &&
+            $sdk =~ /\A20[0-9]{2}\.[0-9]+\.[0-9]+(?:[a-z0-9.+-]*)\z/;
+        my $valid_schema = defined($schema) && !ref($schema) && $schema =~ /\A[0-9]+\z/;
+        $hash->{helper}{icd_api_supported} = $valid_schema && $js && $schema >= 12;
+        $hash->{helper}{ota_api_supported} = $valid_schema &&
+            (($js && $schema >= 11) || ($python_sdk && $schema >= 10));
         readingsBeginUpdate($hash);
         readingsBulkUpdate($hash, "state", "connected");
-        readingsBulkUpdate($hash, "schema_version", $decoded->{schema_version});
-        readingsBulkUpdate($hash, "sdk_version", $decoded->{sdk_version});
-        readingsBulkUpdate($hash, "fabric_id", $decoded->{fabric_id});
-        readingsBulkUpdate($hash, "bluetooth_enabled", $decoded->{bluetooth_enabled} ? "true" : "false");
+        readingsBulkUpdate($hash, "schemaVersion", $decoded->{schema_version});
+        readingsBulkUpdate($hash, "sdkVersion", $decoded->{sdk_version});
+        readingsBulkUpdate($hash, "fabricId", $decoded->{fabric_id});
+        readingsBulkUpdate($hash, "bluetoothEnabled", $decoded->{bluetooth_enabled} ? "true" : "false");
         readingsEndUpdate($hash, 1);
         return;
     }
@@ -1027,13 +1057,27 @@ sub MATTER_ParseMessage($$) {
         my $event = $decoded->{event};
         if (($event eq 'node_added' || $event eq 'node_updated') && ref($decoded->{data}) eq 'HASH') {
             my $node_id = $decoded->{data}{node_id};
-            MATTER_RecordSnapshotEvent($hash, $node_id, $event, $decoded->{data})
-                if defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/;
-            MATTER_ProcessNode($hash, $decoded->{data});
+            if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
+                MATTER_RecordSnapshotEvent($hash, $node_id, $event, $decoded->{data});
+                MATTER_RecordPendingReadValues($hash, $node_id, $decoded->{data}{attributes})
+                    if $event eq 'node_updated';
+            }
+            MATTER_ProcessNode($hash, $decoded->{data}, $event eq 'node_updated');
+            return;
+        }
+        if ($event eq 'node_event' && ref($decoded->{data}) eq 'HASH') {
+            my $node_id = $decoded->{data}{node_id};
+            if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
+                my $root = MATTERDevice_LookupRoot($hash, $node_id);
+                MATTERDevice_ProcessMessage($root, $decoded) if $root;
+            }
             return;
         }
         if ($event eq 'node_removed') {
             if (defined($decoded->{data}) && !ref($decoded->{data}) && $decoded->{data} =~ /^\d+$/) {
+                MATTERDevice_RecordReceive(
+                    MATTERDevice_LookupRoot($hash, $decoded->{data}), {}
+                );
                 MATTER_RecordSnapshotEvent($hash, $decoded->{data}, $event);
                 MATTER_SetNodeStatus($hash, $decoded->{data}, 'removed');
                 Log3 $name, 3, "MATTER: Node $decoded->{data} removed from server; FHEM devices retained";
@@ -1047,22 +1091,18 @@ sub MATTER_ParseMessage($$) {
         my ($node_id, undef, undef) = @{$decoded->{data}};
         if (defined($node_id) && !ref($node_id) && $node_id =~ /^\d+$/) {
             my $path = $decoded->{data}[1];
-            if (MATTER_ValidLiveAttribute($path, $decoded->{data}[2])) {
-                my ($endpoint) = split('/', $path);
-                foreach my $pending (values %{$hash->{helper}{pending_config} // {}}) {
-                    next unless ref($pending) eq 'HASH' &&
-                        $pending->{node_id} eq $node_id &&
-                        $pending->{endpoint_id} == $endpoint;
-                    $pending->{live_values}{$path} = $decoded->{data}[2];
-                }
+            if (defined($path) && !ref($path) && $path =~ m{^\d+/\d+/\d+$}) {
+                my $attributes = { $path => $decoded->{data}[2] };
+                MATTER_RecordSnapshotEvent($hash, $node_id, $decoded->{event},
+                    { attributes => $attributes });
+                MATTER_RecordPendingReadValues($hash, $node_id, $attributes);
             }
             # Wir suchen das Root-Device (Endpoint 0) exakt passend zu DIESEM IO und DIESER Node!
-            my $root_key  = "$name:$node_id";
-            my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
+            my $root_hash = MATTERDevice_LookupRoot($hash, $node_id);
             
             if ($root_hash) {
                 # Das Root-Device verarbeitet das Event (und reicht es an den Endpoint weiter)
-                MATTERDevice_Parse($root_hash, $payload);
+                MATTERDevice_ProcessMessage($root_hash, $decoded);
             } else {
                 Log3 $name, 3, "MATTER: Received event for unknown root node $node_id on IO $name";
             }
@@ -1073,24 +1113,86 @@ sub MATTER_ParseMessage($$) {
     # C) Antworten auf spezifische Befehle (getConfig / get_nodes)
     if (my $msg_id = $decoded->{message_id}) {
         # Antwort auf read_attribute (getConfig)
-        if (my $pending = delete $hash->{helper}{pending_config}{$msg_id}) {
-            my $node_id = ref($pending) eq 'HASH' ? $pending->{node_id} : $pending;
-            if (ref($decoded->{result}) eq 'HASH') {
-                my $root_key = "$name:$node_id";
-                my $root_hash = $modules{MATTERDevice}{defptr}{$root_key};
-                if ($root_hash) {
-                    my %fresh = %{$decoded->{result}};
-                    if (ref($pending) eq 'HASH' && $pending->{live_values}) {
-                        # Merge exactly the paths updated by a newer event.
-                        # Parsing one complete result also rebuilds the current
-                        # capability cache without losing the live metadata.
-                        for my $path (keys %{$pending->{live_values}}) {
-                            $fresh{$path} = $pending->{live_values}{$path};
-                        }
+        if (my $pending = $hash->{helper}{pending_config}{$msg_id}) {
+            return if $pending->{processing}; # Ignore a reentrant duplicate.
+            delete $hash->{helper}{pending_config}{$msg_id};
+            # Keep this reply cancellable during synchronous reading events.
+            # local restores the absent entry on every exit, including errors.
+            local $hash->{helper}{pending_config}{$msg_id} = $pending;
+            local $pending->{processing} = 1;
+            my $node_id = $pending->{node_id};
+            my $received = {};
+            my $owner = MATTERDevice_LookupRoot($hash, $node_id);
+            my $target = exists($pending->{owner})
+                ? MATTERDevice_RequestOwner($hash, $pending) : undef;
+            # Correlated replies (including errors/empty results) are received
+            # messages even when their device values are blocked or stale.
+            # A replacement device must never inherit an old request's traffic.
+            if ($owner && (!defined($pending->{root_fuuid}) ||
+                ($owner->{FUUID} // '') eq $pending->{root_fuuid})) {
+                MATTERDevice_RecordReceive($owner, $received);
+                return if exists($pending->{owner}) && !$target;
+                my %endpoints;
+                $endpoints{$pending->{endpoint_id}} = 1
+                    if defined($pending->{endpoint_id}) && $pending->{endpoint_id} > 0;
+                if (ref($decoded->{result}) eq 'HASH') {
+                    for my $path (keys %{$decoded->{result}}) {
+                        next unless $path =~ m{^(\d+)/\d+/\d+$};
+                        $endpoints{0 + $1} = 1 if !$target || $1 == $pending->{endpoint_id};
                     }
-                    MATTERDevice_Parse($root_hash, encode_json({
+                }
+                # Later freshness reconciliation can inject previous live
+                # values. Those are not new endpoint traffic in this reply.
+                $received->{endpoints} = \%endpoints;
+                for my $child (MATTERDevice_NodeChildren($owner)) {
+                    MATTERDevice_RecordReceive($child, $received)
+                        if $endpoints{$child->{endpoint_id}};
+                }
+            }
+            if ($owner && ref($decoded->{result}) eq 'HASH') {
+                # Replies from another availability generation or a
+                # replaced root cannot revive obsolete metadata.
+                return if defined($pending->{root_fuuid}) &&
+                    ($owner->{FUUID} // '') ne $pending->{root_fuuid};
+                return if defined($pending->{availability_epoch}) &&
+                    ($owner->{helper}{availability_epoch} // 0) !=
+                    $pending->{availability_epoch};
+                # A newer manual read or live report can complete command
+                # discovery while this automatic read is still pending.
+                # Never let its older reply replace already usable metadata.
+                return if $pending->{capability_only} &&
+                    !MATTERDevice_NeedsCapabilityRefresh($owner);
+                my %fresh = %{$decoded->{result}};
+                if ($pending->{live_values}) {
+                    # A later live report supersedes the matching read path.
+                    for my $path (keys %{$pending->{live_values}}) {
+                        $fresh{$path} = $pending->{live_values}{$path};
+                    }
+                }
+                if ($pending->{excluded_endpoints}) {
+                    for my $path (keys %fresh) {
+                        my ($ep) = split('/', $path);
+                        delete $fresh{$path} if $pending->{excluded_endpoints}{$ep};
+                    }
+                }
+                if ($target) {
+                    for my $path (keys %fresh) {
+                        my ($ep) = split('/', $path);
+                        delete $fresh{$path} if $ep ne $pending->{endpoint_id};
+                    }
+                    $received->{request} = [$hash, $pending];
+                }
+                if ($pending->{capability_only}) {
+                    # Automatic recovery requested global metadata only.
+                    MATTERDevice_ApplyCapabilityMetadata(
+                        $owner, \%fresh,
+                        $pending->{all_endpoints} ? undef :
+                            $pending->{endpoint_id}
+                    ) if keys %fresh;
+                } else {
+                    MATTERDevice_ProcessMessage($target // $owner, {
                         message_id => $msg_id, result => \%fresh
-                    })) if keys %fresh;
+                    }, $received) if keys %fresh;
                 }
             }
             return;
@@ -1098,6 +1200,11 @@ sub MATTER_ParseMessage($$) {
         
         # start_listening and get_nodes both return a complete node list.
         my $cmd_type = delete $hash->{helper}{pending_command}{$msg_id};
+        if (ref($cmd_type) eq 'HASH' &&
+            ($cmd_type->{type} // '') eq 'node_operation') {
+            MATTERDevice_CompleteRequest($hash, $cmd_type, $decoded);
+            return;
+        }
         if ($cmd_type && ($cmd_type eq "get_nodes" || $cmd_type eq "start_listening")) {
             my $touched = delete $hash->{helper}{pending_snapshot_touched}{$msg_id};
             if (ref($decoded->{result}) eq 'ARRAY') {
@@ -1179,7 +1286,7 @@ sub MATTER_ParseMessage($$) {
                 # A rejected or malformed response must not erase the
                 # last known credential inventory.
                 foreach my $key (keys %{$hash->{READINGS} // {}}) {
-                    readingsDelete($hash, $key) if $key =~ /^(?:wifi|thread)_/;
+                    readingsDelete($hash, $key) if $key =~ /\A(?:wifi(?:[0-9]+|Default|Id[0-9a-f]*)Ssid|thread(?:[0-9]+|Default|Id[0-9a-f]*)(?:Name|ExtPanId))\z/;
                 }
                 
                 readingsBeginUpdate($hash);
@@ -1189,9 +1296,9 @@ sub MATTER_ParseMessage($$) {
                     my @wifi_credentials = @{$result->{wifi}};
                     foreach my $wifi (@wifi_credentials) {
                         next unless ref($wifi) eq 'HASH';
-                        my $id   = $wifi->{id} // 'default';
+                        my $id   = MATTER_CredentialReadingId($wifi->{id});
                         my $ssid = $wifi->{ssid} // 'unknown';
-                        readingsBulkUpdate($hash, "wifi_${id}_ssid", $ssid);
+                        readingsBulkUpdate($hash, "wifi${id}Ssid", $ssid);
                     }
                 }
                 
@@ -1200,12 +1307,12 @@ sub MATTER_ParseMessage($$) {
                     my @thread_credentials = @{$result->{thread}};
                     foreach my $thread (@thread_credentials) {
                         next unless ref($thread) eq 'HASH';
-                        my $id          = $thread->{id} // 'default';
+                        my $id          = MATTER_CredentialReadingId($thread->{id});
                         my $net_name    = $thread->{networkName} // 'unknown';
                         my $ext_pan_id  = $thread->{extPanId} // '';
                         
-                        readingsBulkUpdate($hash, "thread_${id}_name", $net_name);
-                        readingsBulkUpdate($hash, "thread_${id}_extPanId", $ext_pan_id);
+                        readingsBulkUpdate($hash, "thread${id}Name", $net_name);
+                        readingsBulkUpdate($hash, "thread${id}ExtPanId", $ext_pan_id);
                     }
                 }
                 
@@ -1228,8 +1335,9 @@ sub MATTER_ParseMessage($$) {
 
 =begin html
 
-<a name="MATTER"></a>
+<a id="MATTER" name="MATTER"></a>
 <h3>MATTER</h3>
+<p>Module-defined readings use lowerCamelCase, including commissioningStatus, schemaVersion and credential families wifi&lt;id&gt;Ssid / thread&lt;id&gt;Name / thread&lt;id&gt;ExtPanId. Protocol JSON field names remain unchanged.</p>
 <p>The MATTER IO device communicates with an external Matter server over WebSocket.
 After connecting, <code>start_listening</code> supplies the complete node list.
 Subsequent <code>node_added</code>, <code>node_updated</code> and <code>node_removed</code>
@@ -1251,37 +1359,49 @@ events synchronize logical MATTERDevice nodes and their endpoints automatically.
       and uses its stored Thread/Wi-Fi credentials.
       The setup code is not written to module logs; the synthetic FHEM
       set event is suppressed. Command input/history remains sensitive.
-      The IO reports <code>commissioning_status</code> (running/success/failed/interrupted),
-      <code>commissioning_mode</code>, <code>commissioning_node_id</code>,
-      <code>commissioning_duration</code> (seconds) and <code>commissioning_error</code>.
+      The IO reports <code>commissioningStatus</code> (running/success/failed/interrupted),
+      <code>commissioningMode</code>, <code>commissioningNodeId</code>,
+      <code>commissioningDuration</code> (seconds) and <code>commissioningError</code>.
       One commissioning request can be active per IO. On connection loss
       the result is unknown; no BLE/PASE intermediate progress is exposed.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Configure or inspect available
       network credentials. The synthetic FHEM set event is suppressed for
       Wi-Fi credentials; FHEM command history and plaintext WebSocket traffic
       remain sensitive.</li>
-  <li><b>Attribute commissionMode (network/auto):</b> Persistent default
+  <li><a id="MATTER-attr-commissionMode"></a><b>Attribute commissionMode (network/auto):</b> Persistent default
       for <code>commissionCode</code> when no mode argument is supplied.
-      Defaults to <code>network</code>. Explicit mode arguments take priority.</li>
-  <li><b>Attribute disable:</b> Disable or enable the IO connection. Setting
+      <code>network</code> uses IP discovery only; <code>auto</code> also
+      allows BLE through a connected proxy when enabled on the server.
+      Without the attribute, <code>network</code> applies. Explicit mode
+      arguments take priority.</li>
+  <li><a id="MATTER-attr-disable"></a><b>Attribute disable (0/1):</b> Default <code>0</code> (enabled).
+      Disable or enable the IO connection. Setting
       <code>1</code> immediately closes the socket and cancels all pending timers;
       setting <code>0</code> or removing the attribute reconnects.</li>
-  <li><b>Attribute autocreate (0/1):</b> Default <code>1</code>. Set to
+  <li><a id="MATTER-attr-autocreate"></a><b>Attribute autocreate (0/1):</b> Default <code>1</code>. Set to
       <code>0</code> to suppress automatic creation of new FHEM root and endpoint
       devices from node discovery, commissioning events and attribute updates.
       Existing devices remain synchronized; the Matter server keeps its nodes.
       Re-enabling autocreate allows missing devices to be created on subsequent
       discovery/events.</li>
 </ul>
+<p><b>Hardware test status:</b> IP / BLE-assisted commissioning and credential
+operations depend on the external Matter server and BLE proxy. Their variants
+are <strong>untested</strong> in this repository unless a specific real-device
+commissioning path has separately documented hardware evidence. Automated
+WebSocket tests do not replace end-to-end hardware verification.</p>
 <p>Newly created logical devices default to room <code>Matter</code>; existing FHEM
 names, rooms and user attributes are retained. A removed node is marked with
-<code>matter_status=removed</code> rather than deleted. This status describes node
+<code>matterStatus=removed</code> rather than deleted. This status describes node
 membership on the server, not physical device availability. The root and its endpoints mirror
 <code>available</code> when the server reports a valid node-wide boolean.
 The root <code>state</code> displays <code>online/offline</code> for confirmed
 availability, <code>removed</code> for absent server membership, and
 <code>unknown</code> after IO disconnect until a new server report arrives;
 endpoint states and last reported <code>available</code> values are preserved.
+The retained reading never authorizes device updates after a disconnect;
+current-session availability must be reported again. See MATTERDevice's
+offline protection for restart and normal online synchronization.
 There is no polling. The TCP/WebSocket handshake has a 10-second deadline;
 while connected, WebSocket Ping/Pong checks run every 30 seconds with a 15-second
 Pong deadline. Any connection failure triggers a new attempt after 30 seconds,
@@ -1292,8 +1412,9 @@ Incoming WebSocket frames larger than 32 MiB are rejected and trigger a reconnec
 
 =begin html_DE
 
-<a name="MATTER"></a>
+<a id="MATTER" name="MATTER"></a>
 <h3>MATTER</h3>
+<p>Moduleigene Readings verwenden lowerCamelCase, einschließlich commissioningStatus, schemaVersion und den Credential-Familien wifi&lt;id&gt;Ssid / thread&lt;id&gt;Name / thread&lt;id&gt;ExtPanId. JSON-Feldnamen des Protokolls bleiben unverändert.</p>
 <p>Das MATTER-IO-Device verbindet FHEM per WebSocket mit einem externen Matter-Server.
 Beim Verbindungsaufbau liefert <code>start_listening</code> die vollständige Node-Liste.
 Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
@@ -1316,32 +1437,44 @@ Danach synchronisieren <code>node_added</code>, <code>node_updated</code> und
       verwendet seine gespeicherten Thread-/WLAN-Zugangsdaten. Der Setup-Code wird nicht im Modul-Log
       ausgegeben; das automatische FHEM-set-Event wird unterdrückt.
       Kommandoeingabe und -verlauf bleiben vertraulich zu behandeln.
-      Der IO meldet <code>commissioning_status</code> (running/success/failed/interrupted),
-      <code>commissioning_mode</code>, <code>commissioning_node_id</code>,
-      <code>commissioning_duration</code> (Sekunden) und <code>commissioning_error</code>.
+      Der IO meldet <code>commissioningStatus</code> (running/success/failed/interrupted),
+      <code>commissioningMode</code>, <code>commissioningNodeId</code>,
+      <code>commissioningDuration</code> (Sekunden) und <code>commissioningError</code>.
       Pro IO ist nur ein Vorgang gleichzeitig aktiv. Bei Verbindungsabbruch
       ist das Ergebnis unbekannt; einzelne BLE-/PASE-Phasen meldet der Server nicht.</li>
   <li><b>Set setWifiCredentials / getCredentials:</b> Netzwerkzugangsdaten
       konfigurieren bzw. auslesen. Das synthetische FHEM-set-Event für WLAN-
       Zugangsdaten wird unterdrückt; Eingabeverlauf und unverschlüsselter
       WebSocket-Verkehr bleiben vertraulich zu behandeln.</li>
-  <li><b>Attribut commissionMode (network/auto):</b> Dauerhafter
+  <li><a id="MATTER-attr-commissionMode"></a><b>Attribut commissionMode (network/auto):</b> Dauerhafter
       Standard für <code>commissionCode</code> ohne Modusangabe.
+      <code>network</code> nutzt nur IP-Discovery; <code>auto</code> erlaubt
+      zusätzlich BLE über einen verbundenen Proxy, sofern am Server aktiviert.
       Ohne Attribut gilt <code>network</code>. Eine explizite Modusangabe
       im Befehl hat Vorrang.</li>
-  <li><b>Attribut disable:</b> IO-Verbindung deaktivieren oder aktivieren.
+  <li><a id="MATTER-attr-disable"></a><b>Attribut disable (0/1):</b> Standard <code>0</code> (aktiviert).
+      IO-Verbindung deaktivieren oder aktivieren.
       Bei <code>1</code> werden die Verbindung und alle Timer sofort beendet;
       <code>0</code> oder das Entfernen des Attributs startet einen neuen Verbindungsversuch.</li>
-  <li><b>Attribut autocreate (0/1):</b> Standard <code>1</code>. Mit
+  <li><a id="MATTER-attr-autocreate"></a><b>Attribut autocreate (0/1):</b> Standard <code>1</code>. Mit
       <code>0</code> werden weder neue Root- noch Endpoint-Devices in FHEM
       automatisch angelegt. Bestehende Devices werden weiterhin synchronisiert;
       die Nodes auf dem Matter-Server bleiben unverändert. Nach dem erneuten
       Aktivieren können fehlende Devices beim nächsten Abgleich oder Event
       angelegt werden.</li>
 </ul>
+<p><b>Hardware-Teststatus:</b> IP-/BLE-Commissioning und Zugangsdatenoperationen
+hängen vom externen Matter-Server und ggf. vom BLE-Proxy ab. Diese Varianten
+gelten ohne dokumentierten, gerätespezifischen Hardwaretest als
+<strong>ungetestet</strong>. Automatisierte WebSocket-Tests ersetzen
+keinen End-to-End-Test an echter Hardware.</p>
+<p>Nach einem IO-Abbruch bleibt <code>available</code> als letzte Servermeldung
+erhalten, gibt aber keine Geräteupdates frei. Dafür ist eine neue gültige
+Availability-Meldung in der aktuellen Verbindung erforderlich. Die
+MATTERDevice-Offline-Sperre schützt auch den Wiederanlauf nach FHEM-Neustart.</p>
 <p>Neue logische Geräte erhalten standardmäßig den Raum <code>Matter</code>.
 Vorhandene Namen, Räume und Benutzerattribute bleiben unverändert. Entfernte
-Nodes werden mit <code>matter_status=removed</code> markiert und nicht automatisch
+Nodes werden mit <code>matterStatus=removed</code> markiert und nicht automatisch
 gelöscht. Dieses Reading beschreibt die Mitgliedschaft auf dem Matter-Server,
 nicht die physische Erreichbarkeit des Geräts. Das am Root und seinen Endpunkten geführte Reading
 <code>available</code> bildet die letzte ausdrücklich gemeldete knotenweite
@@ -1356,5 +1489,5 @@ erfolgt automatisch alle 30 Sekunden ein Wiederverbindungsversuch. Numerische
 IPv4-Adressen vermeiden eine blockierende DNS-Auflösung. Eingehende WebSocket-
 Frames über 32 MiB werden abgewiesen; anschließend wird neu verbunden.</p>
 
-=end html
+=end html_DE
 =cut

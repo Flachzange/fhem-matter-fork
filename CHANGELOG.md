@@ -8,6 +8,89 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-24  MATTER V0.45 (#93): Remove three historical configuration migrations (extra endpoint DEF root-name field, root stateFormat=available auto-deletion, and old node group rewriting). Reject obsolete endpoint DEF syntax; preserve explicitly configured display formats and groups. Remove upgrade instructions from README, DE/EN commandref and current rules while retaining historical changelog, startup lifecycle, identity protection, device-type grouping, current lowerCamelCase readings and source provenance. Extend regression tests. Hardware untested.
+
+- 2026-11-24  MATTER V0.44: Apply lowerCamelCase to all module-specific public readings, including batteries, device metadata, limits, alarm details, commissioning, firmware/ICD and network diagnostics. Keep native FHEM thermostat names and wire/API fields unchanged; align reading-backed fan setters and all consumers. No stored-reading conversion or aliases. Hardware untested.
+
+- 2026-11-24  MATTER V0.43: Decode Smoke/CO ExpressedState, AirQuality and covering OperationalStatus in the shared attribute-to-reading path; reuse the readable values in default STATE. Preserve all global/lift/tilt movement fields, reject invalid data without rewriting good readings, and retain user formats/offline/disable/freshness behavior. Audit all default families, remove display-only enum decoding and add callback/real-FHEM regressions. Hardware untested.
+
+- 2026-11-23  MATTER V0.42 (#91): Adopt batteryPercent/batteryVoltage/batteryState, ct/hue/sat, sensor brightness in lux, covering pct/tilt and functional text lock state. Invert lift pct consistently to percent open; separate electrical frequency in Hz from native levelFrequency controls. Keep mixed dimmer/illumination/covering sources separate through level/dimmerPct and silent persistent provenance. No extra reads/timers. Add callback and real FHEM notification/statefile regressions; document functional names and units. Hardware untested.
+
+- 2026-11-23  MATTER V0.41 (#89): Add type-dependent endpoint STATE defaults for all currently named types, preserving explicit stateFormat, existing state readings/events and offline/disable data. Present measured values, lock/covering/HVAC/alarm/air/electrical data and last button events without redundant readings, attributes, polling or new requests; validate newly displayed enums/current positions. Add real FHEM/FHEMWEB/statefile tests in both encoding modes and require a default display for future functional types in AGENTS-MATTER.md. Hardware untested.
+
+- 2026-11-23  MATTER V0.40 review follow-up: Keep active explicit reads cancellable during synchronous publication; reject reentrant duplicates and clean temporary registrations on completion.
+
+- 2026-11-23  MATTER V0.40 review follow-up: Apply reconciled newer ServerLists after automatic recovery metadata; retain sibling metadata and metadata-only scope.
+
+- 2026-11-23  MATTER V0.40 (#85): Remove the unused scalar pending_config representation. Keep one structured request format, realistic owner-aware read fixtures and the independent mixed command registry.
+
+- 2026-11-23  MATTER V0.40 (#84): Resolve a node_event endpoint once in the common device path. Retain generic reception accounting for unmapped/disabled endpoints and repeated button events; no new cache or index.
+
+- 2026-11-23  MATTER V0.40 (#83): Validate the inner EnergyMeasurementStruct integer and its specified 0..2^62 mWh range before conversion. Preserve good readings on malformed data, retain zero and named/TLV fields, and prevent invalid structs from masking valid pending reads.
+
+- 2026-11-23  MATTER V0.40 (#82): Use pure shared attribute conversion for freshness tracking and publication. Rejected sensors, limits, enums, device types and network diagnostics cannot suppress valid pending results. Keep unknown/raw schemas independent and avoid duplicate validation without pending requests.
+
+- 2026-11-23  MATTER V0.40 (#81): Bind explicit reads to the requesting FHEM instance and endpoint scope using the shared request-owner check. Cancel owner reads on Undef/identity change/disable and exclude deleted endpoints from old shared responses. Preserve rename and stop processing after reentrant replacement.
+
+- 2026-11-23  MATTER V0.40 (#80): Merge partial getConfig metadata per path instead of resetting endpoint capabilities. Preserve omitted/invalid values; valid empty lists and endpoint Descriptor.ServerList revoke support. Read ServerList for endpoints and preserve newer lists across delayed reads/discovery and disable exclusions.
+
+- 2026-11-23  MATTER V0.40 (#79): Invalidate permissions, offers and control-relevant reported metadata on actual IO/node/endpoint identity changes. Retain physical readings and local policy; preserve renames and unchanged definitions. Reject occupied root identities before modify and cancel the old owner's operations.
+
+- 2026-11-23  MATTER V0.39 (#78): Add endpoint-only disable: pause controls, reads, functional updates and events while preserving identity and readings. Reuse existing request registries to discard endpoint requests and exclude stale shared replies on both transitions; synchronize once on online activation without polling or replay. Keep root/siblings and readOnly independent. Add regression coverage and DE/EN help; hardware untested.
+
+- 2026-11-23  MATTER V0.38 (#77): Add endpoint-only readOnly control protection with central command/write enforcement, dynamic set lists and preserved reads, reports, events and in-flight completions. Block unsent compound components if protection is enabled during a synchronous callback. Add focused regression coverage and DE/EN attribute help; hardware untested.
+
+- 2026-11-22  MATTER V0.37 (#66): Remove the empty IO get callback and unused capability and disconnect code.
+
+- 2026-11-22  MATTER V0.36 (#65): Consolidate device command construction and RGB brightness scaling.
+
+- 2026-11-22  MATTER V0.35 (#64): Skip redundant endpoint group and root metadata synchronization on routine device reports.
+
+- 2026-11-22  MATTER V0.34 (#63): Reuse decoded server messages for discovery, live reports, switch events and configuration read replies.
+
+- 2026-11-22  MATTER V0.33 (#62): Reject surplus arguments for all noArg device setters before registering or sending a request.
+
+- 2026-11-22  MATTER V0.32 (#61): Release deleted IO definitions by sending device commands and reads through the existing JSON sender.
+
+- 2026-11-22  MATTER V0.31 (#60): Preserve valid endpoint capability lists across malformed reports and delayed reads. Valid empty lists revoke their entries.
+
+- 2026-11-22  MATTER V0.30 (#59): Expose physical Window Covering lift and tilt limits as endpoint readings.
+
+- 2026-11-22  MATTER V0.29 (#58): Route incoming node reports and read replies to the current IO owner. Moving a root resets its availability and rejects occupied destination IDs.
+
+- 2026-11-22  MATTER V0.28 (#57): Preserve newer node_updated attribute values when applying delayed getConfig replies, including unrelated attributes and capability metadata from the reply.
+
+- 2026-11-22  MATTER IO/Device V0.27 (#36): gate manual OTA by current backend/schema and reported root capability, independently of local reachability. Validate uint32 offers, handle matterjs version objects and null acknowledgements, consume install offers once and preserve device-confirmed installation across reordered replies. Require a fresh check after timeout or server reconnect. Add lifecycle coverage and bilingual commandref. Hardware untested.
+
+- 2026-11-22  Tests/documentation (#35): clarify raw reading exclusions and per-value limits. Cover diagnostic table boundaries, invalid reports and isolation between Matter IOs.
+
+- 2026-11-22  MATTER IO/Device V0.26 (draft): consolidate all device-command and attribute-write sends, IDs, ownership and reply/timeout/disconnect completion in a shared request path. Permit overlapping everyday setters/writes; retain each response association while only the latest setter publishes lastError. Aggregate RGB level/color results without hiding component failure. Accept successful device-command replies with any result value. Preserve API-specific write status/path validation, report-only physical readings and existing OTA/ICD administrative policies. Validate native dim arguments/rate and retain regular/WithOnOff selection, native steps and immediate Stop. Update DE/EN documentation, evidence and targeted all-setter/lifecycle regression tests; no extra polling, dim timers or retries. Real hardware remains untested.
+
+- 2026-11-22  MATTER IO/Device V0.25 (draft): add feature-gated desired-temp-cool writes; constrain thermostat/fan mode choices using standard writable targets, FeatureMap and operation/mode sequences, shared by FHEMWEB and explicit setters. Replace the arbitrary heating slider with Celsius text inputs. Correlate write status lists with the requested attribute path and reject nonzero/malformed/mismatched results; retain existing null acknowledgements and report-only telemetry. Keep bounded global metadata recovery aware of missing HVAC features. Add focused regression coverage and DE/EN documentation; hardware remains untested.
+
+- 2026-11-22  Tests/documentation (#32): verify existing pressure, CO2, PM2.5 and TVOC readings through snapshots and live reports, valid zero versus null/invalid values, pressure type bounds, sibling endpoints, separately supplied/unknown units and qualitative-only concentration features. No runtime, V0.24, commandref or updater change; hardware remains untested.
+
+- 2026-11-22  Tests/documentation (#30): verify persisted/manual contact, leak, rain, occupancy, temperature, humidity and illuminance readings through INITIALIZED/REREADCFG, offline/online snapshots and live reports. Cover saved DeviceTypeList interpretation, renamed devices, unknown BooleanState types, null/invalid values and same-node multi-IO isolation, including reading write counts. Existing V0.24 module behavior, commandref and updater manifest remain unchanged; real FHEM/configDB/hardware integration remains untested.
+
+- 2026-11-22  MATTER IO/Device V0.24 (draft): reconcile prior ICD support from valid root Descriptor.ServerList, preserving partial/invalid reports and newer live metadata over older responses. Read ServerList in the existing root getConfig request. Require current-connection OHF matterjs-server identification plus schema >= 12 for controller ICD get/set operations; clear that authority before disconnect events. Preserve dynamic ICD readings and their normal timestamps. Add focused regression coverage and DE/EN documentation; real ICD hardware remains untested.
+
+- 2026-11-22  MATTER IO/Device V0.23 (draft): use current-session availability after FHEM restart, IO reconnect and node removal, without persistent snapshot quarantine. Unknown/offline nodes retain local values; a valid online report resumes normal snapshots, node_updated attributes, live updates and full explicit getConfig. Preserve response ordering, availability epochs and bounded missing-command recovery. Add lifecycle and online-snapshot regression coverage, including synchronization without a separate attribute_updated event. Real FHEM/configDB integration remains untested.
+
+- 2026-11-22  MATTER IO/Device V0.22 (draft): add automatic root-only `networkType` from operational GeneralDiagnostics.NetworkInterfaces entries, supporting Wi-Fi, Thread, Ethernet, Cellular and sorted combinations. Accept tag-based and named server structs; preserve prior readings on malformed/null data and existing offline quarantine. Record valid live attribute updates in pending discovery snapshots as well as explicit reads so late replies cannot replace newer values. Keep bridge transport on the root, independent of opt-in diagnostics and without extra requests or timers. Modeled callback coverage added; physical-device validation outstanding.
+
+- 2026-11-19  MATTER IO/Device V0.21 (testing): replace ten auto-created device-limit attributes with validated endpoint readings. Remove all ten attribute declarations without compatibility or migration; document manual cleanup and save before restart. Never copy or automatically delete old settings. Build CT/frequency widgets from valid device limits, otherwise offer text input; remove arbitrary widget bounds. Use reported MaxLevel for non-Lighting endpoints and standardized 254 for Lighting, consistently across brightness/percentage/RGB. Preserve offline quarantine and update correlation; add focused regression coverage and DE/EN migration documentation. Hardware not verified.
+
+- 2026-11-19  Documentation: describe all nine root-only Thread/Wi-Fi diagnostic readings in German and English commandref, including units, derived roles/types, neighbor limits, RSSI/LQI selection, passive updates and cached/stale value semantics. No runtime or version change.
+- 2026-11-19  Documentation: add native FHEMWEB inline help for every declared MATTER/MATTERDevice attribute in German and English, with defaults, scope and the actual use of reported limits; correct German commandref block endings. Module runtime and V0.20 remain unchanged.
+
+- 2026-11-18  MATTER IO/Device V0.20: expose conventional per-device receive internals (`<IODev>_TIME`, `LASTInputDev`, `MSGCNT`, `<IODev>_MSGCNT`). Count each incoming server message once per root/addressed endpoint, including unchanged values, cached/quarantined snapshots and correlated replies; do not treat mirrored availability or local disconnects as endpoint traffic. Runtime-only internals add no reading events. The timestamp indicates server reception, not confirmed physical-device contact. Modeled regression coverage includes routing, response correlation, offline protection, multiple IOs and IO rename; live FHEM verification remains outstanding.
+
+- 2026-11-17  MATTER IO/Device V0.19 (testing): after offline → online, restore missing per-endpoint command/attribute capabilities with targeted global Matter metadata reads while keeping all stale device states and measurements quarantined. Skip reads when usable metadata is already known; ignore empty capability hashes generated by dynamic set-list probes. Allow up to three event-driven attempts per recovery epoch at least 15 seconds apart when reads fail or return incomplete results; no polling or timers. Explicit `getConfig` while online and quarantined restores only global metadata, not cached physical device values. Reject reads while offline and replies from an older availability epoch. Tests cover offline startup, known complete lists, missing feature maps, empty responses, failed sends, bounded retry, outdated availability epochs and late auto reads following newer manual responses; not yet hardware-validated.
+
+- 2026-11-17  MATTER IO/Device V0.18 (testing): retire the original developer's `has_*` capability attribute declarations, automatic population, user command overrides and positive fallback permissions. Require a valid per-endpoint Matter `AcceptedCommandList` and relevant feature/revision metadata for command availability. Old saved `has_*` attributes are ignored but not automatically deleted; they may be removed manually after reviewing the configuration. Commands may initially be absent after restart until server metadata arrives. Update DE/EN commandref, regression tests and `AGENTS-MATTER.md`. No physical-device validation performed for this change.
+
+- 2026-11-17  MATTER IO/Device V0.17 (draft): add common sensor/occupancy/BooleanState readings and transient Switch events (#30, #31); add environmental measurement clusters with units (#32); add Thermostat, FanControl and Identify (#33), native LevelControl move/step/stop (#34), opt-in Thread/Wi-Fi/raw diagnostics (#35), ICD capability and controller state operations (#28), and manual server-backed OTA check/install without image upload (#36). Prevent cached device data from overwriting offline nodes or manual edits (#27). Expand DE/EN commandref with explicit untested hardware labels (#37) and correlate writes/administrative requests. Tests model FHEM callbacks and matterjs-server responses; hardware remains separately unverified.
+
 - 2026-11-15  MATTER IO/Device V0.16: replace automatic root stateFormat with a native online/offline/unknown/removed state reading; invalidate stale reachability after IO disconnect without falsifying raw availability or endpoint states; migrate the V0.15 autogenerated stateFormat after FHEM initialization and preserve custom formatting.
 
 - 2026-11-15  MATTER IO/Device V0.15: show node-wide availability as the default FHEM Root status on newly defined and existing roots, preserve custom stateFormat and endpoint display, without inventing reachability when the Matter IO is disconnected.
