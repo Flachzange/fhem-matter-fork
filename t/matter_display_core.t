@@ -205,7 +205,7 @@ like(decode_utf8_content($poll_data), qr/15\.5 °C \/ 48 %/, 'actual FHEMWEB lon
 close $poll;
 
 # All defined enum values retain their meanings; invalid values do not replace
-# a valid reading or refresh its timestamp. Lock state is the functional text API.
+# a valid reading or refresh its timestamp. Readings and display share the text API.
 for my $row (
     [0x000A,'257/0','state',[qw(not_fully_locked locked unlocked unlatched)]],
     [0x0076,'92/0','alarmExpressedState',[qw(normal smoke_alarm co_alarm battery_alert testing hardware_fault end_of_service interconnect_smoke interconnect_co)]],
@@ -216,7 +216,7 @@ for my $row (
     for my $i (0..$#$values) {
         $report->($type,$path,$i);
         is($state->($name),$values->[$i],"$reading enum $i is presented explicitly");
-        is($device->($name)->{Readings}{$reading}{Value}, $type == 0x000A ? $values->[$i] : "$i", 'functional lock state is text; other enums retain raw values');
+        is($device->($name)->{Readings}{$reading}{Value}, $values->[$i], 'functional enum reading matches its default display');
     }
     my $before=$device->($name)->{Readings};
     for my $bad (undef,-1,999,'bad',{}) { $report->($type,$path,$bad); }
@@ -232,11 +232,34 @@ is($state->($cover),'tilt: 30 %','tilt-only display uses the current tilt');
 $report->(0x0202,'258/15',65535);
 is($state->($cover),'tilt: 30 %','null sentinel cannot overwrite the tilt');
 $perl->('readingsDelete($defs{' . $cover . '},q(tilt))');
-for my $row ([0,'stopped'],[1,'opening'],[2,'closing']) {
+for my $row ([0,'global: stopped / lift: stopped / tilt: stopped'],[1,'global: opening / lift: stopped / tilt: stopped'],[2,'global: closing / lift: stopped / tilt: stopped']) {
     $report->(0x0202,'258/10',$row->[0]); is($state->($cover),$row->[1],'operational status without a current position');
 }
 $report->(0x0202,'258/10',3);
-is($state->($cover),'closing','reserved operational status preserves last valid state');
+is($state->($cover),'global: closing / lift: stopped / tilt: stopped','reserved operational status preserves last valid state');
+# All bitmap fields are interpreted in the reading, without losing axis data.
+$report->(0x0202,'258/10',37);
+my $movement = 'global: opening / lift: opening / tilt: closing';
+is($device->($cover)->{Readings}{wcOperationalStatus}{Value},$movement,'bitmap reading preserves global/lift/tilt meaning');
+is($state->($cover),$movement,'cover fallback uses the same readable bitmap value');
+for my $bad (12,48,63,64,undef,'opening') {
+    my $before=$device->($cover)->{Readings}{wcOperationalStatus};
+    $report->(0x0202,'258/10',$bad);
+    is_deeply($device->($cover)->{Readings}{wcOperationalStatus},$before,'invalid/reserved bitmap fields preserve the last reading');
+}
+my $alarm=$name_for{0x0076};
+$cmd->("attr $alarm stateFormat alarmExpressedState");
+$report->(0x0076,'92/0',2);
+is($state->($alarm),'co_alarm','a plain reading stateFormat gets the same human-readable alarm');
+$cmd->("attr $alarm stateFormat { 'alarm: ' . ReadingsVal(\$name,q(alarmExpressedState),q(?)) }");
+$report->(0x0076,'92/0',0);
+is($state->($alarm),'alarm: normal','Perl stateFormat observes converted reading values');
+$cmd->("deleteattr $alarm stateFormat");
+is($state->($alarm),'normal','default returns to the same readable source');
+$cmd->("define alarmObserved notify $alarm:.* { push \@{\$defs{$alarm}{test_events}}, [\$EVENT,\$defs{$alarm}{STATE}] }");
+$report->(0x0076,'92/0',8);
+my $alarm_event=decode_json($perl->('JSON->new->ascii->encode($defs{' . $alarm . '}{test_events})'));
+is_deeply($alarm_event,[['alarmExpressedState: interconnect_co','interconnect_co']], 'notify sees identical readable alarm reading and display');
 # HVAC: no assumption that a setpoint is actual temperature or actual fan speed.
 my $thermo=$name_for{0x0301};
 for my $row ([3,'cool; measured: 21 °C; cool: unknown'],[1,'auto; measured: 21 °C; heat: 22 °C; cool: unknown'],[0,'off; measured: 21 °C']) {
@@ -393,6 +416,8 @@ close $saved_cfg;
 is($cmd->('rereadcfg'),'','actual rereadcfg runs the loader');
 is($state->($humid),'restored 48','startup evaluates the configured override from restored readings');
 is($state->($temp),'15.5 °C / 48 %','saved readings/types restore the default without a server report');
+is($device->($alarm)->{Readings}{alarmExpressedState}{Value},'interconnect_co','readable alarm survives the actual statefile loader');
+is($state->($alarm),'interconnect_co','restored default uses the readable alarm without reinterpreting it');
 my $restored=$device->($temp)->{Readings};
 is_deeply({map { $_=>$restored->{$_} } qw(temperature humidity deviceTypeIds)},
           {map { $_=>$saved->{$_} } qw(temperature humidity deviceTypeIds)},

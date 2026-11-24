@@ -44,6 +44,9 @@ follow this policy, not merely battery fields.
 | `state` | DoorLock LockState | 0=not_fully_locked, 1=locked, 2=unlocked, 3=unlatched. Door contact is separate. |
 | `frequency` | ElectricalPowerMeasurement Frequency | Hz, native mHz divided by 1000; 50000 becomes 50. Range 0..1000 Hz; zero is valid. |
 | `levelFrequency` | LevelControl CurrentFrequency | Native uint16 units; zero means unknown. The matching setter accepts 1..65535. |
+| `alarmExpressedState` | SmokeCOAlarm ExpressedState | normal / smoke_alarm / co_alarm / battery_alert / testing / hardware_fault / end_of_service / interconnect_smoke / interconnect_co (protocol values 0..8). |
+| `airQuality` | AirQuality AirQuality | unknown / good / fair / moderate / poor / very_poor / extremely_poor (protocol values 0..6). |
+| `wcOperationalStatus` | WindowCovering OperationalStatus | Text retaining each two-bit field, e.g. global: opening / lift: opening / tilt: closing. Field values 0/1/2 mean stopped/opening/closing; reserved 3 is rejected. |
 
 The covering `pct` setter accepts percent **open** and sends
 `(100 - pct) * 100` to Matter. Open/close commands retain their physical meaning;
@@ -109,6 +112,14 @@ ReadOnly restricts commands, not reports. A normal online snapshot/getConfig
 uses the same mapping as a live event, without additional automatic reads.
 Explicit user stateFormat remains authoritative.
 
+Functional enums and the covering movement bitmap are decoded in the same pure
+attribute conversion used by live reports, snapshots, getConfig and freshness
+checks. Reading values, reading events and default display therefore use the
+same state names. All meaningful movement fields are retained in the one
+existing reading; no extra text aliases or derived state readings are created.
+Invalid/null input preserves the last valid value/timestamp; valid enum zero
+has its specified meaning (normal or unknown), not an inferred success state.
+
 The central display policy from #89 uses functional readings. DoorLock has a
 textual state reading; its display uses that reading. Display formatting creates
 no further redundant readings or stateFormat attribute. Root state remains node
@@ -166,7 +177,7 @@ agent guidance and updater/release metadata. Boolean replacement-needed
 validation was consolidated into the existing shared boolean path during
 review; no second numeric/boolean conversion exception remains.
 
-Validation: 1,024 callback/WebSocket entries (including a 67-assertion #91
+Validation at V0.42 completion: 1,024 callback/WebSocket entries (including a 67-assertion #91
 subtest) plus 202 actual-core assertions; the same 202 core assertions also
 pass in bytestream mode. Removing electrical frequency scaling or merging
 lux with native level causes the corresponding tests to fail as expected.
@@ -193,3 +204,12 @@ snake_case mapping fails the naming-policy regression. Credential refresh
 checks numeric, absent, empty and textual IDs and removal of absent entries.
 Updater manifest generation/staleness checks and pinned shared-rule provenance
 pass. Physical/server/configDB/full process-restart limitations remain as above.
+
+
+### Integration with readable source states
+
+Before merging V0.44, testing commit 0689ee7 (#95) was integrated. The shared
+alarm/air-quality/covering decoding remains intact under the new reading names;
+user stateFormat, notification and statefile tests use those same names.
+The combined suites pass 1,033 callback/WebSocket entries and 216 actual-core
+assertions, with the same 216 assertions passing in bytestream mode.

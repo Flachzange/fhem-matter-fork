@@ -1,4 +1,4 @@
-# Endpoint display defaults (#89; reading update #91, V0.42)
+# Endpoint display defaults (#89; reading updates #91 and V0.43)
 
 `STATE` is the presentation of an endpoint's existing readings. This change
 adds no redundant physical readings, no stateFormat attribute, no polling and no
@@ -33,7 +33,7 @@ source readings are absent. Invalid/null reports retain last-valid readings.
 | Water leak 0x0043 | Existing state: leak/dry. |
 | Rain 0x0044 | Existing state: rain/dry. |
 | Door lock 0x000A | state: not_fully_locked/locked/unlocked/unlatched. Door contact is a separate value. |
-| Window covering 0x0202 | Reported lift pct (100=open, 0=closed) and tilt (native 0..100), preferring fine reports over integer percentages. Both axes appear if supplied. If only absolute positions exist they are explicitly labelled raw; otherwise wcOperationalStatus supplies stopped/opening/closing. No target-position echo. The same inverted lift convention is used by the pct setter; targets are never echoed. |
+| Window covering 0x0202 | Reported lift pct (100=open, 0=closed) and tilt (native 0..100), preferring fine reports over integer percentages. Both axes appear if supplied. If only absolute positions exist they are explicitly labelled raw; otherwise the readable wcOperationalStatus reading is used directly, e.g. global: opening / lift: opening / tilt: stopped. No target-position echo. The same inverted lift convention is used by the pct setter; targets are never echoed. |
 | Thermostat 0x0301 | mode; measured: measured-temp °C; heat/cool: applicable desired-temp / desired-temp-cool °C. Auto shows both setpoints, off shows no setpoint. Missing components are unknown. |
 | Fan 0x002B | fanMode; actual fanPct %, if supplied. fanPctSetting is never substituted for the actual percentage. |
 | Lights 0x0100, 0x0101, 0x010C, 0x010D | Existing on/off state. |
@@ -57,8 +57,23 @@ The current parser now validates the displayed air-quality, ExpressedState and
 lock enums, current covering position bounds and OperationalStatus fields.
 Rejection uses the same pure conversion used by read/discovery freshness
 tracking, so invalid data cannot suppress an older valid outstanding result.
-Numeric enum readings stay numeric; formatting does not change the public
-reading API. No invented zero/off/closed/locked/normal is introduced.
+ExpressedState, AirQuality and OperationalStatus are decoded once in the
+shared attribute-to-reading conversion. The standard display reuses the
+readable reading values; it has no private numeric-to-text lookup. The movement
+bitmap retains global/lift/tilt fields instead of discarding axis information. No invented zero/off/closed/locked/normal is introduced.
+
+## Audit of semantic decoding in defaults
+
+| Default family | Result |
+| --- | --- |
+| Smoke/CO alarm | alarmExpressedState is decoded at ingestion and used directly; reading/event/display have the same text. |
+| Air quality | airQuality is decoded at ingestion and used directly; concentration fallback still formats measurements with their reported units. |
+| Covering movement fallback | wcOperationalStatus is decoded at ingestion, retaining all three fields, and used directly when no current position is available. |
+| Locks, on/off, contacts, occupancy, leaks, rain | Functional state/contact/motion readings already carry the interpreted values. No display-only numeric conversion remains. |
+| Thermostats and fans | mode and fanMode already carry readable values; defaults only select/format the reported mode, actual values and applicable setpoints. |
+| Buttons/controllers | button already carries a readable event. The last: prefix labels event semantics; it does not decode a numeric value. |
+| Measurement, position, concentration and electrical defaults | Existing converted quantities are combined with units/labels. This is formatting rather than another state interpretation. |
+| Root, structural, label-only and unknown types | Existing state or explicit unknown policy; no display-only enum decoding. |
 
 ## Core integration and source evidence
 
@@ -154,7 +169,7 @@ notification arrays and reserved enum/position values were reconciled with
 the actual core/protocol sources and regression cases. The central AGENTS.md
 copy remains unchanged and passes its provenance check.
 
-Validation at completion: 1,023 modeled callback/WebSocket entries plus 181
+Validation at V0.41 completion: 1,023 modeled callback/WebSocket entries plus 181
 actual-core assertions (1,204 combined), and the same 181 core assertions in
 bytestream mode. Removing the default before event publication and ignoring
 the user-format guard each causes the actual-core suite to fail as expected.
@@ -163,3 +178,36 @@ format deletion. Perl harness syntax, UTF-8/POD-block checks, unique module
 callback names, updater manifest validation/generation regressions and shared
 rule provenance checks pass. The full documented hardware/configDB/process-
 restart limitations above remain; no physical compatibility claim is made.
+
+## Readable source correction (V0.43)
+
+The separate review against testing@da49af7f6271148f697bfe4e2d30e46fc5aef312
+found three display-only interpretations: ExpressedState, AirQuality and the
+covering movement bitmap. They now use the same shared attribute conversion
+as the published reading. The private display enum table/closure and movement
+bit decoding have been removed from DefaultState. The audit table above
+records why the other default families need no semantic correction.
+
+The review traced both module call paths for snapshots, live reports,
+node_updated and explicit getConfig responses, shared validity/freshness
+reconciliation, source/position selection, reading publication, user formats,
+offline/disable, persisted readings and native FHEM notification. It also
+reconciled tests/CI, README, both commandref languages, reading conventions,
+agent guidance and version/updater metadata. Bitmap axis information is
+preserved rather than silently reduced to the global movement field.
+
+Validation: 1,025 callback/WebSocket entries, including the new 80-assertion
+source/reading subtest, plus 216 actual-FHEM/FHEMWEB assertions (1,241 together).
+The same 216 core assertions also pass in bytestream mode. Reading and default
+are checked against explicit expected text, not just against each other;
+actual notify, plain/Perl stateFormat and statefile restoration also observe
+the readable reading values. All 27 valid movement bit combinations and
+reserved fields are covered. Invalid live data cannot suppress a valid read,
+and a later valid live enum still wins over an older response.
+
+Returning numeric alarm values again, or discarding the movement axis fields,
+causes the actual-core suite to fail as expected. Manifest generation/checks,
+shared-rule provenance, Perl harness syntax and UTF-8/POD checks pass. No
+additional protocol requests, timers, text aliases or derived state readings
+were added. Physical Matter hardware/external server/configDB/full-process
+restart limits remain as described above.

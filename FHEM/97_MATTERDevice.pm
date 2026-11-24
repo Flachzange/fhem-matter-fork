@@ -76,13 +76,6 @@ my @MATTER_DISPLAY_TYPES = (
     [0x0306, 'unsupported'], # Type label only; no FlowMeasurement parser.
 );
 
-# Matter 1.4 enum labels; raw readings retain their numeric protocol values.
-my %MATTER_DISPLAY_ENUMS = (
-    alarmExpressedState => [qw(normal smoke_alarm co_alarm battery_alert testing
-                                hardware_fault end_of_service interconnect_smoke interconnect_co)],
-    airQuality => [qw(unknown good fair moderate poor very_poor extremely_poor)],
-);
-
 # Pure presentation of this endpoint's persisted readings. Never infer a
 # physical value from an absent reading, a command echo or a sibling endpoint.
 sub MATTERDevice_DefaultState {
@@ -101,19 +94,12 @@ sub MATTERDevice_DefaultState {
         utf8::encode($unit) unless $unicodeEncoding;
         return defined($v) ? "$v $unit" : 'unknown';
     };
-    my $enum = sub {
-        my ($reading) = @_;
-        my $v = $value->($reading);
-        my $labels = $MATTER_DISPLAY_ENUMS{$reading};
-        return 'unknown' unless !ref($v) && $v =~ /\A\d+\z/ && $v < @$labels;
-        return $labels->[$v];
-    };
     my %types = map { $_ => 1 } MATTERDevice_DeviceTypeIds($hash);
     my ($kind) = map { $_->[1] } grep { $types{$_->[0]} } @MATTER_DISPLAY_TYPES;
     $kind //= 'state';
     return $value->('state') if $kind eq 'state' || ($hash->{endpoint_id} // 0) == 0;
     return 'unknown' if $kind eq 'unsupported';
-    return $enum->('alarmExpressedState') if $kind eq 'alarm';
+    return $value->('alarmExpressedState') if $kind eq 'alarm';
     if ($kind eq 'lock') {
         my $v = $value->('state');
         return $v =~ /\A(?:not_fully_locked|locked|unlocked|unlatched)\z/ ? $v : 'unknown';
@@ -141,9 +127,7 @@ sub MATTERDevice_DefaultState {
             }
         }
         return join(' / ', @positions) if @positions;
-        my $status = $number->('wcOperationalStatus');
-        return 'unknown' unless defined($status) && $status =~ /\A\d+\z/ && $status <= 63;
-        return (qw(stopped opening closing unknown))[$status & 3];
+        return $value->('wcOperationalStatus');
     }
     if ($kind eq 'thermostat') {
         my $mode = $value->('mode');
@@ -162,7 +146,7 @@ sub MATTERDevice_DefaultState {
         return defined($pct) && $pct >= 0 && $pct <= 100 ? "$mode; $pct %" : $mode;
     }
     if ($kind eq 'air') {
-        return $enum->('airQuality') if exists $hash->{READINGS}{airQuality};
+        return $value->('airQuality') if exists $hash->{READINGS}{airQuality};
         my @parts;
         for my $r (qw(co2 pm25 tvoc)) {
             my $v = $number->($r);
@@ -456,13 +440,16 @@ my %MATTER_CLUSTERS = (
     0x005B => {
         name       => "Air Quality",
         attributes => {
-            0x0000 => { name => "airQuality", is_reading => 1, value_range => [0, 6] },
+            0x0000 => { name => "airQuality", is_reading => 1, value_range => [0, 6],
+                        transform => sub { (qw(unknown good fair moderate poor very_poor extremely_poor))[$_[0]] } },
         },
     },
     0x005C => {
         name       => "SmokeCoAlarm",
         attributes => {
-            0x0000 => { name => "alarmExpressedState", is_reading => 1, value_range => [0, 8] },
+            0x0000 => { name => "alarmExpressedState", is_reading => 1, value_range => [0, 8],
+                        transform => sub { (qw(normal smoke_alarm co_alarm battery_alert testing
+                            hardware_fault end_of_service interconnect_smoke interconnect_co))[$_[0]] } },
             0x0001 => { name => "smokeState", is_reading => 1 },
             0x0002 => { name => "coState", is_reading => 1 },
             0x0003 => { name => "batteryAlert", is_reading => 1, value_range => [0, 2] },
@@ -615,7 +602,13 @@ my %MATTER_CLUSTERS = (
             0x0008 => { name => "pct", is_reading => 1, value_range => [0, 100] },
             0x0009 => { name => "tilt", is_reading => 1, value_range => [0, 100] },
             0x000A => { name => "wcOperationalStatus", is_reading => 1, value_range => [0, 63],
-                         transform => sub { return undef if grep { (($_[0] >> $_) & 3) == 3 } (0, 2, 4); return $_[0]; } },
+                         transform => sub {
+                             my $bits = $_[0];
+                             return undef if grep { (($bits >> $_) & 3) == 3 } (0, 2, 4);
+                             my @states = qw(stopped opening closing);
+                             return join(' / ', map { $_->[0] . ': ' . $states[($bits >> $_->[1]) & 3] }
+                                 ['global', 0], ['lift', 2], ['tilt', 4]);
+                         } },
             0x000B => { name => "targetPositionLiftPercent100Ths", is_reading => 1 },
             0x000C => { name => "targetPositionTiltPercent100Ths", is_reading => 1 },
             0x000D => { name => "wcEndProductType", is_reading => 1},
@@ -3387,7 +3380,7 @@ persisted <code>deviceTypeIds</code> and their own existing readings. No
 <code>stateFormat</code> attribute or redundant <code>state</code> reading is
 created. An explicit <code>stateFormat</code> always wins; deleting it restores
 the default. The default is recomputed after statefile restoration and on
-module reading updates. Missing data is <code>unknown</code>, valid zero is
+module reading updates. Missing data is <code>unknown</code>, valid measured zero is
 retained, and invalid reports preserve the last valid values. Offline/disable
 retain existing values; root reachability remains separate. No polling or
 extra Matter requests are used.</p>
@@ -3401,13 +3394,17 @@ units; a combined temperature/humidity endpoint shows both, for example
 unlocked or unlatched, distinct from the door contact. Coverings show current
 lift <code>pct</code> (100 open, 0 closed) and native <code>tilt</code> percentages,
 then raw absolute positions explicitly labelled raw if necessary, otherwise
-reported stopped/opening/closing status. Targets are not current positions.</li>
+the readable <code>wcOperationalStatus</code> reading. It retains all three
+bitmap fields, for example <code>global: opening / lift: opening / tilt: stopped</code>.
+Targets are not current positions.</li>
 <li>Thermostats show reported mode, measured temperature and the heating/cooling
 setpoints appropriate to that mode; auto shows both. Fans show reported
 fanMode and actual fanPct, never the requested percent as an actual value.</li>
-<li>Smoke/CO alarms display the reported ExpressedState, including testing,
-battery/fault/end-of-service and interconnect states. Air-quality sensors use
-the reported qualitative value or CO2/PM2.5/TVOC readings with their reported
+<li>Smoke/CO alarms use the already decoded <code>alarmExpressedState</code>
+reading (normal, smoke_alarm, co_alarm, battery_alert, testing, hardware_fault,
+end_of_service, interconnect_smoke, interconnect_co). Air-quality sensors use
+the already readable <code>airQuality</code> reading (unknown, good, fair, moderate,
+poor, very_poor, extremely_poor), or CO2/PM2.5/TVOC readings with their reported
 units; missing units remain unknown. No local alarm or air-quality evaluation
 is inferred. Electrical sensors prefer power (W), then energy (kWh), voltage
 (V) and current (A).</li>
@@ -3884,7 +3881,7 @@ weder ein <code>stateFormat</code>-Attribut noch redundante <code>state</code>-
 Readings angelegt. Ein ausdrücklich gesetztes <code>stateFormat</code> hat
 Vorrang; Löschen stellt den Standard wieder her. Die Anzeige wird nach der
 Statefile-Wiederherstellung und bei Reading-Updates des Moduls berechnet.
-Fehlende Daten bleiben <code>unknown</code>, eine gültige Null bleibt Null,
+Fehlende Daten bleiben <code>unknown</code>, ein gültiger Messwert Null bleibt Null,
 ungültige Meldungen erhalten die letzten gültigen Werte. Offline/disable
 behalten vorhandene Werte; die Root-Erreichbarkeit bleibt getrennt. Kein
 Polling und keine zusätzlichen Matter-Abfragen.</p>
@@ -3898,14 +3895,19 @@ etwa <code>22.34 °C / 48 %</code>; fehlende Komponenten bleiben unknown.</li>
 <li>Türschlösser zeigen das funktionale <code>state</code> als not_fully_locked, locked,
 unlocked oder unlatched, getrennt vom Türkontakt. Jalousien zeigen gemeldete
 aktuelle Lift-<code>pct</code> (100 offen, 0 geschlossen) und native <code>tilt</code>-Prozentwerte,
-ersatzweise absolute Rohpositionen ausdrücklich mit raw, sonst den gemeldeten
-Status stopped/opening/closing. Zielpositionen sind keine Istpositionen.</li>
+ersatzweise absolute Rohpositionen ausdrücklich mit raw, sonst
+das sprechende Reading <code>wcOperationalStatus</code>. Es erhält alle drei
+Bitmap-Felder, etwa <code>global: opening / lift: opening / tilt: stopped</code>.
+Zielpositionen sind keine Istpositionen.</li>
 <li>Thermostate zeigen gemeldeten Modus, Isttemperatur und die zum Modus passenden
 Heiz-/Kühlsollwerte, bei auto beide. Lüfter zeigen fanMode und gemeldetes
 fanPct; der angeforderte Soll-Prozentwert ersetzt keinen Istwert.</li>
-<li>Rauch-/CO-Melder zeigen den gemeldeten ExpressedState einschließlich Test,
-Batterie-/Fehler-/Lebensdauer- und Interconnect-Zuständen. Luftqualität verwendet
-den gemeldeten qualitativen Wert, ersatzweise CO2/PM2.5/TVOC mit den gemeldeten
+<li>Rauch-/CO-Melder verwenden das bereits übersetzte Reading
+<code>alarmExpressedState</code> (normal, smoke_alarm, co_alarm, battery_alert,
+testing, hardware_fault, end_of_service, interconnect_smoke, interconnect_co).
+Luftqualität verwendet
+das bereits sprechende Reading <code>airQuality</code> (unknown, good, fair,
+moderate, poor, very_poor, extremely_poor), ersatzweise CO2/PM2.5/TVOC mit den gemeldeten
 Einheiten; fehlende Einheiten bleiben unknown. Keine eigene Alarm- oder
 Luftqualitätsbewertung. Elektrische Sensoren bevorzugen Leistung (W), danach
 Energie (kWh), Spannung (V) und Strom (A).</li>
