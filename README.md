@@ -287,7 +287,8 @@ Battery readings are `batteryPercent`, `batteryVoltage` (V) and `batteryState`
 (ok/low). ColorControl uses `ct` (mired), `hue` and `sat` (native 0–254).
 Sensors report `brightness` in lux. Coverings use `pct` (100=open, 0=closed)
 and native `tilt` percent; the pct setter uses the same percent-open direction.
-Locks provide textual `state`. Electrical `frequency` is Hz; LevelControl
+Locks provide textual `state`. Electrical `frequency` is Hz with exactly three
+decimal places (e.g. `50.000`, `49.987`, `0.050`); LevelControl
 uses `levelFrequency` for its independent native frequency reading and setter.
 
 Ordinary dimmers use `brightness` (0–254) and `pct` (0–100). With illuminance

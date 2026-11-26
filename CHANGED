@@ -1,1 +1,1 @@
-2026-11-24  MATTER V0.46: Rename water_leak to waterSensor. Water detection now reports wet (previously leak). The clear value remains dry. Endpoint state uses the same wet/dry values.
+2026-11-26  MATTER V0.47: Format electrical frequency in Hz with exactly three decimal places; retain existing mHz-to-Hz scaling.

@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-26  MATTER V0.47: Format electrical frequency in Hz with exactly three decimal places for live reports, snapshots and getConfig. Preserve mHz-to-Hz scaling and input validation; no device-specific correction. Add callback and actual-FHEM reading regressions.
+
 - 2026-11-24  MATTER V0.46: Rename water_leak to waterSensor. Water detection now reports wet (previously leak). The clear value remains dry. Endpoint state uses the same wet/dry values.
 
 - 2026-11-24  MATTER V0.45 (#93): Remove three historical configuration migrations (extra endpoint DEF root-name field, root stateFormat=available auto-deletion, and old node group rewriting). Reject obsolete endpoint DEF syntax; preserve explicitly configured display formats and groups. Remove upgrade instructions from README, DE/EN commandref and current rules while retaining historical changelog, startup lifecycle, identity protection, device-type grouping, current lowerCamelCase readings and source provenance. Extend regression tests. Hardware untested.

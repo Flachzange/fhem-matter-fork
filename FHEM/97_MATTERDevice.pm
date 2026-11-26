@@ -487,7 +487,7 @@ my %MATTER_CLUSTERS = (
             0x000D => { name => "rmsPower", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 1000 : undef } },
             0x000E => { name => "frequency", is_reading => 1, value_range => [0, 1000000],
-                        transform => sub { $_[0] / 1000 } },
+                        transform => sub { sprintf('%.3f', $_[0] / 1000) } },
             0x0011 => { name => "powerFactor", is_reading => 1,
                         transform => sub { defined($_[0]) ? $_[0] / 10000 : undef } },
             0x0012 => { name => "neutralCurrent", is_reading => 1,
@@ -3405,7 +3405,7 @@ untested</strong>; actual local FHEM/FHEMWEB tests use synthetic reports.</p>
 <tr><td>brightness</td><td>Measured illuminance in lux, using the logarithmic conversion.</td></tr>
 <tr><td>pct / tilt for coverings</td><td>Lift percent open (100=open, 0=closed) / native tilt percent. Fine reports take precedence.</td></tr>
 <tr><td>state for locks</td><td>not_fully_locked / locked / unlocked / unlatched; native state events. Door contact is separate.</td></tr>
-<tr><td>frequency</td><td>Measured electrical frequency in Hz (native mHz divided by 1000).</td></tr>
+<tr><td>frequency</td><td>Measured electrical frequency in Hz with exactly three decimal places (native mHz divided by 1000).</td></tr>
 <tr><td>levelFrequency</td><td>Independent LevelControl frequency in native units, with matching setter; minFrequency/maxFrequency are its limits.</td></tr>
 </table>
 <p>The covering pct setter uses percent open as well: 25 sends native
@@ -3886,7 +3886,7 @@ mit echtem FHEM/FHEMWEB verwendet synthetische Meldungen.</p>
 <tr><td>brightness</td><td>Gemessene Helligkeit in Lux, mit logarithmischer Umrechnung.</td></tr>
 <tr><td>pct / tilt bei Jalousien</td><td>Lift-Prozent offen (100=offen, 0=geschlossen) / native Tilt-Prozent. Feine Meldungen haben Vorrang.</td></tr>
 <tr><td>state bei Schlössern</td><td>not_fully_locked / locked / unlocked / unlatched; native state-Events. Türkontakt bleibt getrennt.</td></tr>
-<tr><td>frequency</td><td>Gemessene elektrische Frequenz in Hz (native mHz geteilt durch 1000).</td></tr>
+<tr><td>frequency</td><td>Gemessene elektrische Frequenz in Hz mit genau drei Nachkommastellen (native mHz geteilt durch 1000).</td></tr>
 <tr><td>levelFrequency</td><td>Unabhängige LevelControl-Frequenz in nativer Einheit samt Setter; minFrequency/maxFrequency sind ihre Grenzen.</td></tr>
 </table>
 <p>Auch der Jalousie-pct-Setter verwendet Prozent offen: 25 sendet nativ

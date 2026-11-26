@@ -282,6 +282,12 @@ $report->(0x002C,'91/0',0);
 is($state->($air),'unknown','reported qualitative unknown is not replaced by an invented numerical rating');
 # Electrical source priority, including valid zero and fallback to energy.
 my $electric=$name_for{0x0510};
+for my $case ([50000,'50.000'], [49987,'49.987'], [50,'0.050'], [0,'0.000']) {
+    $report->(0x0510,'144/14',$case->[0]);
+    is($device->($electric)->{Readings}{frequency}{Value},$case->[1],
+        "actual FHEM reading retains three decimal places for $case->[0] mHz");
+}
+is($state->($electric),'123.45 W','frequency formatting preserves the electrical default display');
 $report->(0x0510,'145/1',{energy=>1_000_000});
 is($state->($electric),'123.45 W','power stays primary despite a later energy report');
 $report->(0x0510,'144/8',0);

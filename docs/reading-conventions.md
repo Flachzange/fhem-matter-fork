@@ -42,7 +42,7 @@ follow this policy, not merely battery fields.
 | `pct` | WindowCovering current lift percentage | Percent open: 100=open, 0=closed. Hundredths divided by 100 and subtracted from 100. |
 | `tilt` | WindowCovering current tilt percentage | Native 0..100 %, hundredths divided by 100, without lift inversion or angle conversion. |
 | `state` | DoorLock LockState | 0=not_fully_locked, 1=locked, 2=unlocked, 3=unlatched. Door contact is separate. |
-| `frequency` | ElectricalPowerMeasurement Frequency | Hz, native mHz divided by 1000; 50000 becomes 50. Range 0..1000 Hz; zero is valid. |
+| `frequency` | ElectricalPowerMeasurement Frequency | Hz with exactly three decimal places, native mHz divided by 1000; 50000 becomes 50.000 and 50 becomes 0.050. Range 0..1000 Hz; zero is valid (0.000). |
 | `levelFrequency` | LevelControl CurrentFrequency | Native uint16 units; zero means unknown. The matching setter accepts 1..65535. |
 | `alarmExpressedState` | SmokeCOAlarm ExpressedState | normal / smoke_alarm / co_alarm / battery_alert / testing / hardware_fault / end_of_service / interconnect_smoke / interconnect_co (protocol values 0..8). |
 | `airQuality` | AirQuality AirQuality | unknown / good / fair / moderate / poor / very_poor / extremely_poor (protocol values 0..6). |

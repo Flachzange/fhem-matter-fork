@@ -6192,8 +6192,18 @@ subtest 'Issue 91: functional readings and independent sources' => sub {
     }
     $live->(1,144,14,50000);
     $live->(1,8,4,1234);
-    is_deeply([$val->(1,'frequency'),$val->(1,'levelFrequency')],[50,1234],
+    is_deeply([$val->(1,'frequency'),$val->(1,'levelFrequency')],['50.000',1234],
         'electrical hertz and native controlled frequency remain independent');
+    for my $case ([0,'0.000'], [1,'0.001'], [50,'0.050'], [49987,'49.987'],
+                  [50010,'50.010'], [1000000,'1000.000']) {
+        $live->(1,144,14,$case->[0]);
+        is($val->(1,'frequency'),$case->[1],
+            "electrical frequency $case->[0] mHz retains exactly three decimal places");
+    }
+    for my $bad (undef, -1, 1000001, 50000.5, 'invalid', {}, []) {
+        $live->(1,144,14,$bad);
+        is($val->(1,'frequency'),'1000.000','invalid frequency preserves the last valid reading');
+    }
     is(MATTERDevice_Set($ep{1},$ep{1}{NAME},'levelFrequency',2500),undef,'renamed frequency setter works');
     is($sent[-1]{args}{payload}{frequency},2500,'frequency control sends the unscaled LevelControl value');
     like(MATTERDevice_Set($ep{1},$ep{1}{NAME},'frequency',50)//'',qr/Unknown argument/,
@@ -6243,7 +6253,10 @@ subtest 'Issue 91: functional readings and independent sources' => sub {
     # All incoming shapes use the same named/converted values.
     MATTERDevice_Parse($root,encode_json({result=>{'4/1024/0'=>10001,'4/8/0'=>254,'4/144/14'=>60000}}));
     is_deeply([$val->(4,'brightness'),$val->(4,'level'),$val->(4,'pct'),$val->(4,'frequency')],
-        [10,254,100,60],'getConfig shape retains quantities and units');
+        [10,254,100,'60.000'],'getConfig shape retains quantities and units');
+    MATTER_ProcessNode($io,{node_id=>99300,available=>JSON::true,
+        attributes=>{'4/144/14'=>50010}});
+    is($val->(4,'frequency'),'50.010','snapshot uses the same three-decimal frequency formatting');
     MATTER_ProcessNode($io,{node_id=>99300,available=>JSON::true,
         attributes=>{'4/1024/0'=>20001,'4/8/0'=>127}});
     is_deeply([$val->(4,'brightness'),$val->(4,'level'),$val->(4,'pct')],[100,127,50],
