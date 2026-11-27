@@ -496,7 +496,14 @@ for source evidence and test limits.
 
 For module changes, run `bash make_controls.sh` and commit its updated `controls_matter.txt` alongside the changed Perl source. `bash make_controls.sh --check` and `.github/workflows/controls-matter.yml` verify the generated manifest. Its Git-blob sizes match the raw published files and its timestamps advance for changed modules, including same-size edits. Keep `CHANGED` to the current published notes and append historical changes to [CHANGELOG.md](CHANGELOG.md).
 
-Follow [AGENTS.md](AGENTS.md) and [AGENTS-MATTER.md](AGENTS-MATTER.md) for documentation and release metadata maintenance. The existing MATTER IO `VERSION` internal identifies the module version; server/device firmware versions are separate. Changes on feature branches are not automatically published.
+Follow [AGENTS.md](AGENTS.md) and [AGENTS-MATTER.md](AGENTS-MATTER.md) for documentation and release metadata maintenance. The modules have independent versions, shown in the native `FVERSION` internal:
+
+| FHEM device | Module version shown |
+| --- | --- |
+| MATTER IO | `97_MATTER.pm` |
+| Every MATTERDevice root and endpoint, including offline devices | `97_MATTERDevice.pm` |
+
+All MATTERDevice instances share the same module version. `FVERSION` reflects the loaded code after definition or module reload; server/device firmware versions remain separate. Only functionally changed modules receive a version/date increase; documentation-only and tests-only changes do not. Both modules start this scheme at V0.48 (27.11.2026) and continue to be distributed and tested together through the same update source. Different module versions do not imply that arbitrary historical combinations are compatible. The actual-core regression suite covers independent version changes, reload, redefine and rereadcfg without a Matter server. Changes on feature branches are not automatically published.
 
 ## License
 

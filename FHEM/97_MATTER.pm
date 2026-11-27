@@ -14,7 +14,7 @@ use Digest::SHA qw(sha1_base64);
 
 our $readingFnAttributes;
 
-my $MATTER_version = "V0.47 26.11.2026";
+my $MATTER_version = "V0.48 27.11.2026";
 
 my $MATTER_connect_timeout = 10; # TCP connection plus WebSocket upgrade
 my $MATTER_ping_interval = 30;
@@ -42,6 +42,13 @@ sub MATTER_Initialize {
     $hash->{MatchList}  = { "1" => ".*" };
 
     $hash->{AttrList} = "disable:0,1 autocreate:0,1 commissionMode:network,auto " . $readingFnAttributes;
+
+    # CommandReload calls Initialize, not Define, for existing devices.
+    for my $device (values %defs) {
+        next unless ($device->{TYPE} // '') eq 'MATTER';
+        $device->{FVERSION} = $MATTER_version;
+        delete $device->{VERSION};
+    }
 }
 
 sub MATTER_Define {
@@ -57,7 +64,7 @@ sub MATTER_Define {
     $hash->{port} = $param[3] // 5580;
 
     $hash->{STATE}    = "defined";
-    $hash->{VERSION}  = $MATTER_version;
+    $hash->{FVERSION} = $MATTER_version;
     
     # A connection started during FHEM configuration loading cannot be
     # processed by the socket event loop yet. An already-expired handshake
@@ -1337,6 +1344,10 @@ sub MATTER_ParseMessage($$) {
 
 <a id="MATTER" name="MATTER"></a>
 <h3>MATTER</h3>
+<p>The <code>FVERSION</code> internal identifies the loaded MATTER IO module.
+MATTERDevice has its own module version, shared by all roots and endpoints.
+Both modules are distributed and tested together; module versions are separate
+from server and device firmware versions.</p>
 <p>Module-defined readings use lowerCamelCase, including commissioningStatus, schemaVersion and credential families wifi&lt;id&gt;Ssid / thread&lt;id&gt;Name / thread&lt;id&gt;ExtPanId. Protocol JSON field names remain unchanged.</p>
 <p>The MATTER IO device communicates with an external Matter server over WebSocket.
 After connecting, <code>start_listening</code> supplies the complete node list.
@@ -1414,6 +1425,10 @@ Incoming WebSocket frames larger than 32 MiB are rejected and trigger a reconnec
 
 <a id="MATTER" name="MATTER"></a>
 <h3>MATTER</h3>
+<p>Das Internal <code>FVERSION</code> zeigt die Version des geladenen MATTER-IO-Moduls.
+MATTERDevice hat eine eigene Modulversion für alle Roots und Endpunkte.
+Beide Module werden gemeinsam ausgeliefert und geprüft; die Modulversionen
+sind unabhängig von Server- und Gerätefirmwareversionen.</p>
 <p>Moduleigene Readings verwenden lowerCamelCase, einschließlich commissioningStatus, schemaVersion und den Credential-Familien wifi&lt;id&gt;Ssid / thread&lt;id&gt;Name / thread&lt;id&gt;ExtPanId. JSON-Feldnamen des Protokolls bleiben unverändert.</p>
 <p>Das MATTER-IO-Device verbindet FHEM per WebSocket mit einem externen Matter-Server.
 Beim Verbindungsaufbau liefert <code>start_listening</code> die vollständige Node-Liste.
