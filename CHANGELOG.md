@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-27  MATTERDevice V0.49 (#101): Normal root rename carries endpoints to <newRootName>_EP<endpoint_id>. Endpoint renameWithRoot=0 preserves individual names; direct endpoint rename stays local. Preflight all endpoint targets; conflicts leave all endpoint names unchanged while the root keeps its new name. Preserve IDs, attributes, readings and native FHEM rename paths. Add actual-core regressions in both encodings; no Matter server/hardware validation.
+
 - 2026-11-27  MATTER V0.48 / MATTERDevice V0.48 (#99): Introduce independently maintained module versions. Show the IO module version in its FVERSION internal and the Device module version on every root and endpoint, including after reload. Replace the IO VERSION display; keep server/device firmware separate and retain the common update channel. Update project versioning rules and DE/EN commandref; cover independent updates and lifecycle paths with the actual FHEM core.
 
 - 2026-11-26  MATTER V0.47: Format electrical frequency in Hz with exactly three decimal places for live reports, snapshots and getConfig. Preserve mHz-to-Hz scaling and input validation; no device-specific correction. Add callback and actual-FHEM reading regressions.

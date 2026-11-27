@@ -1,1 +1,1 @@
-2026-11-27  MATTER V0.48 / MATTERDevice V0.48: Independently maintained module versions; FVERSION shows the IO version on MATTER and the Device version on every root/endpoint. Updates remain shared.
+2026-11-27  MATTERDevice V0.49: Root rename also renames endpoints. Endpoint renameWithRoot=0 preserves individual names; direct endpoint rename stays local. Endpoint target conflicts are logged without renaming endpoints; the root keeps its new name. MATTER remains V0.48.

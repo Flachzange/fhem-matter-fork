@@ -11,7 +11,7 @@ use Scalar::Util qw(blessed);
 our $init_done; # FHEM startup: statefile and attributes are not yet restored
 our $unicodeEncoding; # FHEM supports both unicode and legacy UTF-8 byte strings.
 
-my $MATTERDevice_version = "V0.48 27.11.2026";
+my $MATTERDevice_version = "V0.49 27.11.2026";
 
 # Globale Matter-Metadaten-IDs. Sie werden unabhängig von der clusterspezifischen
 # Attributdefinition verarbeitet. EventList (0xFFFA) wird für ältere
@@ -728,11 +728,13 @@ sub MATTERDevice_Initialize($) {
     $hash->{ParseFn}  = "MATTERDevice_Parse";
     $hash->{AttrFn}   = "MATTERDevice_Attr";
     $hash->{NotifyFn} = "MATTERDevice_Notify";
+    $hash->{RenameFn} = \&MATTERDevice_Rename;
     $hash->{FW_detailFn} = "MATTERDevice_FWDetail";
     $hash->{FW_deviceOverview} = 1; # Keep FHEMWEB DeviceOverview above the endpoint links.
     $hash->{AttrList} = "IODev " .
                         "readOnly:0,1 " .
                         "disable:0,1 " .
+                        "renameWithRoot:0,1 " .
                         "dimRate:slider,1,1,254 " .
                         "diagnostics:0,1 " .
                         "rawReadings:0,1 " .
@@ -997,7 +999,7 @@ sub MATTERDevice_Attr {
     }
     # FHEM deleteattr accepts a name pattern, or no name to clear all attrs.
     $attr = 'disable' if $op eq 'del' && (!defined($attr) || 'disable' =~ /^$attr$/);
-    if ($attr eq 'readOnly' || $attr eq 'disable') {
+    if ($attr eq 'readOnly' || $attr eq 'disable' || $attr eq 'renameWithRoot') {
         return "$attr is only supported on endpoints (endpoint_id > 0)"
             if $op eq 'set' && ($defs{$name}{endpoint_id} // 0) == 0;
         return "$attr must be 0 or 1"
@@ -2999,6 +3001,49 @@ sub MATTERDevice_NodeChildren($) {
     } values %defs;
 }
 
+# CommandRename has already renamed the root when it calls RenameFn; callback
+# returns cannot veto that change. Preflight all endpoint targets before using
+# the native rename path (attributes, associatedWith and RENAMED events).
+sub MATTERDevice_Rename {
+    my ($new, $old) = @_;
+    my $root = $defs{$new};
+    return unless $root && ($root->{endpoint_id} // 0) == 0;
+
+    my @plan;
+    my %targets;
+    my @children = MATTERDevice_NodeChildren($root);
+    $_->{device} = $new for @children; # Also update protected/conflicting children.
+    for my $child (@children) {
+        next unless AttrVal($child->{NAME}, 'renameWithRoot', 1);
+        my $target = $new . '_EP' . $child->{endpoint_id};
+        if (!goodDeviceName($target) || $targets{$target}++ ||
+            ($defs{$target} && $defs{$target} ne $child)) {
+            Log3 $new, 2, "MATTERDevice: Root renamed from $old to $new; " .
+                "endpoints unchanged: target $target is invalid, occupied or duplicated";
+            return;
+        }
+        push @plan, [$child, $target];
+    }
+    for my $entry (@plan) {
+        my ($child, $target) = @$entry;
+        # Native RENAMED notifies run synchronously between endpoints. Do not
+        # rename a replacement or a child moved out of this node by a notify.
+        unless (($defs{$new} // '') eq $root &&
+                ($defs{$child->{NAME}} // '') eq $child &&
+                grep { $_ eq $child } MATTERDevice_NodeChildren($root)) {
+            Log3 $new, 2, "MATTERDevice: Endpoint rename stopped after root rename to $new: ownership changed";
+            return;
+        }
+        next if $child->{NAME} eq $target;
+        my $error = CommandRename(undef, "$child->{NAME} $target");
+        if ($error) {
+            Log3 $new, 2, "MATTERDevice: Endpoint rename stopped after root rename to $new: $error";
+            return;
+        }
+    }
+    return undef;
+}
+
 # Synchronize node-wide readings and the native FHEMWEB root association,
 # using the same IODev/node membership as the endpoint link list. Newly
 # created children can be updated individually. Missing or unchanged values
@@ -3214,7 +3259,7 @@ initial STATE, allowing the normal statefile restoration at startup.</p>
   <li><b>Set:</b> Depending on the reported capabilities:
       <code>on</code>, <code>off</code>, <code>brightness</code>, <code>ct</code>,
       <code>rgb</code>, <code>getConfig</code> and supported device-specific commands.</li>
-  <li><b>Attributes:</b> <code>IODev</code>, endpoint <code>readOnly</code> / <code>disable</code>, opt-in
+  <li><b>Attributes:</b> <code>IODev</code>, endpoint <code>readOnly</code> / <code>disable</code> / <code>renameWithRoot</code>, opt-in
       <code>diagnostics</code> / <code>rawReadings</code>, dimming
       <code>dimRate</code>. Physical limits are reported readings.
       Set commands depend on reported Matter capabilities, not local capability flags.</li>
@@ -3292,7 +3337,7 @@ existing sensor lifecycle suite models restoration.</p></li>
 <p>Changing the actual IO instance or Matter IDs invalidates old capabilities, firmware offers and control-relevant metadata (device types, ICD permissions, software/specification versions and limits). Other saved physical readings and local attributes remain. Rename and unchanged DEF confirmation preserve identity; an occupied root target is rejected before modification.</p>
 <h4>Attributes</h4>
 <p>Select an attribute in FHEMWEB to show its description. Active device
-settings are <code>IODev</code>, <code>readOnly</code>, <code>disable</code>, <code>dimRate</code>, <code>diagnostics</code>
+settings are <code>IODev</code>, <code>readOnly</code>, <code>disable</code>, <code>renameWithRoot</code>, <code>dimRate</code>, <code>diagnostics</code>
 and <code>rawReadings</code>. Device limits are readings, not configurable
 attributes.</p>
 <ul>
@@ -3304,6 +3349,21 @@ attributes.</p>
       specific to their server. Moving a root to another IO resets its state to
       unknown until that server reports availability. An occupied target ID
       is rejected. Each endpoint retains its own IODev assignment.</li>
+  <li><a id="MATTERDevice-attr-renameWithRoot"></a><b>renameWithRoot (0/1):</b>
+      Default <code>1</code>, endpoints greater than 0 only. Normal FHEM
+      <code>rename</code> of a root renames its unprotected endpoints to
+      <code>&lt;newRootName&gt;_EP&lt;endpoint_id&gt;</code>, including individually
+      named endpoints. Set <code>0</code> on an endpoint to preserve its name.
+      Direct endpoint rename affects only that endpoint and does not change
+      this attribute. Setting or deleting the attribute never renames a device;
+      deletion restores the default. IODev and node ID determine membership.
+      All endpoint targets are checked first. On a conflict, no endpoint is
+      renamed and the log identifies the target; the root keeps its new name.
+      FHEM calls RenameFn after renaming the root and ignores its return value;
+      this is not an atomic group transaction. Unexpected failures during
+      native endpoint callbacks can stop an already started sequence.
+      Attributes, Matter IDs and physical readings are retained. Hardware
+      validation: <strong>untested</strong>.</li>
   <li><a id="MATTERDevice-attr-disable"></a><b>disable (0/1):</b>
       Default <code>0</code>, endpoints greater than 0 only. With <code>1</code>,
       block endpoint commands including getConfig, values, capability updates,
@@ -3686,7 +3746,7 @@ den gespeicherten Anzeigestatus wiederherstellen kann.</p>
   <li><b>Set:</b> Abhängig von den Fähigkeiten z. B. <code>on</code>,
       <code>off</code>, <code>brightness</code>, <code>ct</code>,
       <code>rgb</code>, <code>getConfig</code> und weitere Gerätebefehle.</li>
-  <li><b>Attribute:</b> <code>IODev</code>, Endpunkt-<code>readOnly</code> / <code>disable</code>, optionale
+  <li><b>Attribute:</b> <code>IODev</code>, Endpunkt-<code>readOnly</code> / <code>disable</code> / <code>renameWithRoot</code>, optionale
       <code>diagnostics</code> / <code>rawReadings</code>,
       <code>dimRate</code>. Gerätegrenzwerte werden als Readings gemeldet.
       Set-Befehle richten sich nach gemeldeten Matter-Fähigkeiten,
@@ -3768,7 +3828,7 @@ modelliert die Wiederherstellung.</p></li>
 <p>Ein Wechsel der IO-Instanz oder Matter-IDs entwertet alte Capabilities, Firmwareangebote und steuerungsrelevante Metadaten (Gerätetypen, ICD-Freigaben, Software-/Spezifikationsversion und Grenzen). Andere gespeicherte physische Readings und lokale Attribute bleiben erhalten. Rename und unveränderte DEF-Bestätigung erhalten die Identität; ein belegtes Root-Ziel wird vor der Änderung abgewiesen.</p>
 <h4>Attribute</h4>
 <p>Bei Auswahl eines Attributs in FHEMWEB erscheint dessen Beschreibung.
-Aktive Geräteeinstellungen sind <code>IODev</code>, <code>readOnly</code>, <code>disable</code>, <code>dimRate</code>,
+Aktive Geräteeinstellungen sind <code>IODev</code>, <code>readOnly</code>, <code>disable</code>, <code>renameWithRoot</code>, <code>dimRate</code>,
 <code>diagnostics</code> und <code>rawReadings</code>. Gerätegrenzen sind
 Readings und keine konfigurierbaren Attribute.</p>
 <ul>
@@ -3780,6 +3840,21 @@ Readings und keine konfigurierbaren Attribute.</p>
       gelten jeweils nur innerhalb ihres Servers. Nach dem Wechsel eines Roots
       bleibt sein Zustand unknown, bis der neue Server die Erreichbarkeit meldet.
       Eine belegte Ziel-ID wird abgewiesen. Endpunkte behalten ihr eigenes IODev.</li>
+  <li><a id="MATTERDevice-attr-renameWithRoot"></a><b>renameWithRoot (0/1):</b>
+      Standard <code>1</code>, nur an Endpunkten größer 0. Normales FHEM-
+      <code>rename</code> des Roots benennt seine ungeschützten Endpunkte in
+      <code>&lt;neuerRootname&gt;_EP&lt;endpoint_id&gt;</code> um, auch individuell
+      benannte Endpunkte. Mit <code>0</code> behält der Endpunkt seinen Namen.
+      Direktes Endpunkt-Rename ändert nur diesen Endpunkt und setzt das Attribut
+      nicht automatisch. Setzen oder Löschen benennt kein Gerät um; Löschen
+      stellt den Standard wieder her. IODev und Node-ID bestimmen die Zugehörigkeit.
+      Alle Endpunkt-Zielnamen werden vorab geprüft. Bei einem Konflikt bleibt
+      jeder Endpunkt unverändert; das Log nennt den Zielnamen. Der Root behält
+      seinen neuen Namen. FHEM ruft RenameFn erst nach dem Root-Rename auf und
+      ignoriert dessen Rückgabewert; dies ist keine atomare Gruppentransaktion.
+      Unerwartete Fehler während nativer Endpunkt-Callbacks können eine bereits
+      gestartete Folge abbrechen. Attribute, Matter-IDs und physische Readings
+      bleiben erhalten. Hardwareprüfung: <strong>ungetestet</strong>.</li>
   <li><a id="MATTERDevice-attr-disable"></a><b>disable (0/1):</b>
       Standard <code>0</code>, nur an Endpunkten größer 0. Mit <code>1</code>
       Endpunktbefehle einschließlich getConfig, Werte, Capability-Updates,

@@ -172,6 +172,22 @@ set matterServer discover
 
 Root devices use `DEF = <node_id>` (for example `18`); endpoints use `DEF = <node_id> <endpoint_id>` (for example `18 11`). The `IODev` attribute selects the Matter server independently of the FHEM name; a root name is never part of an endpoint DEF. This allows root and endpoint devices to be renamed without changing the technical definition. New root and endpoint devices default to FHEM room `Matter` unless manually changed later. Root devices (endpoint 0) use the shared administrative group `Matter Nodes`; functional endpoints use the name of their **single non-structural** Matter `Descriptor.DeviceTypeList` device type (for example `On/Off light`, `Electrical Sensor` for `0x0510`, or `Smoke CO Alarm`). Although Matter classifies `Electrical Sensor` as a utility type, it represents a usable measurement endpoint. Endpoints with only structural types, including `Aggregator` and `Bridged Node`, use `Matter Infrastruktur` when the automatic grouping rules apply. Structural companions such as Power Source and OTA Requestor do not create additional groups. Unknown device type IDs use hexadecimal labels; multiple distinct functional device types do not trigger an arbitrary choice. Existing root groups are preserved. An endpoint group can follow a changed device type if its current name exactly matches a known type label, `Matter Infrastruktur`, or `0x` followed by four to eight uppercase hexadecimal digits. This also applies to manually assigned matching names. Other existing groups, including `Node 4 (matterServer)`, are preserved. Existing physical room assignments are never changed during synchronization. `Smoke CO Alarm` is Matter's shared device type and does not imply that a CO-only detector also detects smoke. The root detail view links to existing endpoints and shows their Matter Descriptor device types when known, otherwise a conservative cluster-based description. Every endpoint also has a persistent `associatedWith` reading linking to its owning root in FHEMWEB's native **Probably associated with** section. Existing user-added links are kept, and FHEM automatically updates root references on rename. Both relationships are matched by Matter IODev and node ID, not by FHEM naming conventions.
 
+Normal FHEM `rename` of a root also renames its endpoints to
+`<newRootName>_EP<endpoint_id>`, including individually named endpoints.
+Set endpoint attribute `renameWithRoot` to `0` to keep that endpoint's name;
+the default is `1`. A direct endpoint rename changes only that endpoint and
+does not set the attribute automatically. Setting/deleting the attribute does
+not rename a device; deletion restores the default. Roots reject the attribute.
+Membership is determined by IODev and node ID, regardless of current names.
+All endpoint targets are checked before any endpoint rename. On an invalid,
+occupied or duplicate target, every endpoint name stays unchanged and the log
+identifies the conflict; the root keeps its new name. FHEM calls `RenameFn`
+after renaming the root and ignores its return value, so this is not an atomic
+group transaction; unexpected errors in native callbacks may stop an already
+started sequence. Attributes, IDs and physical readings remain intact; new
+endpoints use the current root name. References using literal device names in
+automations still need review when renaming.
+
 MATTERDevice leaves FHEM's initial `STATE` unchanged during configuration loading, allowing normal statefile restoration. Once initialization finishes, root nodes (endpoint 0) expose a native `state` reading, without an automatically configured `stateFormat` attribute: `online` for server-reported `available=true`, `offline` for `available=false`, `unknown` when no fresh reachability report is available or the MATTER IO loses its connection, and `removed` when the server removes a node or omits it from a complete node list. `online` is not inferred from mere node-list membership. The module does not introduce reachability polling. Only root `state` changes; endpoint device states remain independent and `available` retains the last raw server report, even during connection loss.
 
 Endpoint **STATE display** now has a device-type default, without creating a
@@ -215,10 +231,10 @@ Only values accepted by the shared attribute conversion can supersede an outstan
 
 A malformed capability list preserves the previous valid list for that endpoint and cluster. An explicit empty list clears its entries. Omitted paths in a partially successful getConfig reply retain prior metadata; a valid Descriptor.ServerList explicitly removes clusters absent from that list. Endpoint getConfig reads ServerList as well as DeviceTypeList. Newer structural lists take precedence over delayed read/discovery data.
 
-MATTERDevice attributes include `IODev`, `readOnly:0,1` / `disable:0,1`, optional `diagnostics` / `rawReadings`, `dimRate`; device limits are readings rather than attributes. Cluster commands such as `on` and `identify` require an entry in the endpoint’s `AcceptedCommandList` and any applicable features. Attribute writes such as `desired-temp` and `fanPct` use the endpoint’s attribute and feature metadata. The `mode` and `fanMode` choices also depend on the reported sequence. The module records the reported `ClusterRevision` as metadata. Set commands advertised as `noArg` reject additional arguments before sending. Old `has_*` settings no longer enable or disable commands; they are not automatically created or deleted. After restart, control commands may be temporarily absent until the Matter server reports command metadata. **Upgrade note:** review and remove saved `has_*` attributes **before restarting into V0.18**. FHEM no longer recognizes them in the module `AttrList` and may reject those lines when restoring `fhem.cfg` or configDB. No automatic migration deletes old user settings. After the manual cleanup, save the configuration as usual.
+MATTERDevice attributes include `IODev`, `readOnly:0,1` / `disable:0,1`, endpoint `renameWithRoot:0,1`, optional `diagnostics` / `rawReadings`, `dimRate`; device limits are readings rather than attributes. Cluster commands such as `on` and `identify` require an entry in the endpoint’s `AcceptedCommandList` and any applicable features. Attribute writes such as `desired-temp` and `fanPct` use the endpoint’s attribute and feature metadata. The `mode` and `fanMode` choices also depend on the reported sequence. The module records the reported `ClusterRevision` as metadata. Set commands advertised as `noArg` reject additional arguments before sending. Old `has_*` settings no longer enable or disable commands; they are not automatically created or deleted. After restart, control commands may be temporarily absent until the Matter server reports command metadata. **Upgrade note:** review and remove saved `has_*` attributes **before restarting into V0.18**. FHEM no longer recognizes them in the module `AttrList` and may reject those lines when restoring `fhem.cfg` or configDB. No automatic migration deletes old user settings. After the manual cleanup, save the configuration as usual.
 
 Selecting a module-specific attribute in FHEMWEB displays its German/English
-inline commandref help. Active MATTERDevice settings are `IODev`, `readOnly`, `disable`, `dimRate`,
+inline commandref help. Active MATTERDevice settings are `IODev`, `readOnly`, `disable`, `renameWithRoot`, `dimRate`,
 `diagnostics` and `rawReadings`.
 
 **Endpoint control protection:** `readOnly:0,1` defaults to `0`. Set
@@ -493,6 +509,12 @@ PM2.5 and TVOC in snapshots and live reports, including valid zero values,
 invalid/null data, separately supplied units and qualitative-only clusters.
 See the [environmental measurement acceptance matrix](docs/environment-measurements.md)
 for source evidence and test limits.
+
+The root/endpoint rename regression (#101) runs through the actual pinned FHEM
+core in both encodings. It covers native callbacks/events, protected and manual
+names, collisions, IO isolation, routing and save/rereadcfg. Modeled callbacks
+also cover pending commands and reads across automatic endpoint rename. External
+Matter server/hardware and configDB validation remain **untested**.
 
 For module changes, run `bash make_controls.sh` and commit its updated `controls_matter.txt` alongside the changed Perl source. `bash make_controls.sh --check` and `.github/workflows/controls-matter.yml` verify the generated manifest. Its Git-blob sizes match the raw published files and its timestamps advance for changed modules, including same-size edits. Keep `CHANGED` to the current published notes and append historical changes to [CHANGELOG.md](CHANGELOG.md).
 

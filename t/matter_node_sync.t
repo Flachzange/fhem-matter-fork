@@ -181,6 +181,7 @@ sub CommandDelete {
 
 # Model the relevant fhem.pl CommandRename side effect: existing
 # associatedWith readings automatically follow a renamed device.
+sub goodDeviceName { return $_[0] && $_[0] =~ /^[a-z0-9._]*$/i; }
 sub CommandRename {
     my (undef, $command) = @_;
     my ($old, $new) = split /\s+/, $command;
@@ -463,6 +464,8 @@ my $association_writes = $bulk_writes{$child->{NAME}}{associatedWith};
 MATTER_ProcessNode($defs{ioA}, node(42, 'Repeated with user links'));
 is($bulk_writes{$child->{NAME}}{associatedWith}, $association_writes,
    'multiple existing associatedWith entries do not trigger repeated events');
+is(CommandAttr(undef, "$child->{NAME} renameWithRoot 0"), undef,
+   'existing fixture explicitly preserves its individually named endpoint');
 is(CommandRename(undef, 'MATTER_Hall_Light ManuallyRenamedRoot'), undef,
    'FHEM root rename succeeds without changing Matter IDs');
 is(ReadingsVal($child->{NAME}, 'associatedWith', ''),
@@ -5439,6 +5442,21 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     $reply->($on->{message_id},result => undef);
     is(ReadingsVal($renamed,'lastError',''),'none','response follows the same FHEM device after a rename');
     $defs{$old_name} = delete $defs{$renamed}; $ep{1}{NAME} = $old_name;
+
+    # Root-driven endpoint rename preserves both command and explicit-read owners.
+    ($on) = $send->(1,'on');
+    is(MATTERDevice_Set($ep{1},$ep{1}{NAME},'getConfig'), undef, 'read is pending alongside command before root rename');
+    my $rename_read_id = $sent[-1]{message_id};
+    my $root_name_before = $root->{NAME};
+    is(CommandRename(undef, "$root_name_before RequestMatrixRootRenamed"), undef, 'root rename automatically carries request owner endpoint');
+    is($ep{1}{NAME}, 'RequestMatrixRootRenamed_EP1', 'pending endpoint receives new root prefix');
+    is($io->{helper}{pending_config}{$rename_read_id}{owner}, $ep{1}, 'explicit read retains its original hash owner');
+    $reply->($on->{message_id},result => undef);
+    is(ReadingsVal($ep{1}{NAME},'lastError',''), 'none', 'command reply follows automatic endpoint rename');
+    $reply->($rename_read_id,result => {'1/6/0'=>JSON::true});
+    is(ReadingsVal($ep{1}{NAME},'state',''), 'on', 'pending read applies after automatic endpoint rename');
+    ok(!exists $io->{helper}{pending_config}{$rename_read_id}, 'renamed explicit read retires normally');
+    is(CommandRename(undef, "RequestMatrixRootRenamed $root_name_before"), undef, 'root and endpoint names can be restored normally');
     {
         local $io->{helper}{pending_command} = {map {$_ => 'held test request'} 10000..11023};
         my $before = scalar @sent;
@@ -5457,7 +5475,7 @@ subtest 'Shared device requests: all setters, independent replies and grouped re
     is($group->{remaining},0,'close retires a compound request exactly once');
     like(ReadingsVal($ep{1}{NAME},'lastError',''),qr/interrupted/,'common close reports unknown command outcome');
     ok(!keys %{$io->{helper}{pending_command} // {}},'close leaves no pending command');
-    is(ReadingsVal($ep{1}{NAME},'state',''),'off','all command outcomes preserve actual reported OnOff state');
+    is(ReadingsVal($ep{1}{NAME},'state',''),'on','command outcomes preserve the OnOff state from the explicit read');
     close $peer;
 };
 
