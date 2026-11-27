@@ -460,6 +460,99 @@ is_deeply([map {$device->($mixed)->{Readings}{$_}{Value}} qw(brightness level pc
 $mapped_report->(2,258,8,99);
 is($state->($blind),'lift: 65.43 %','fine position priority survives restore');
 
+# Root rename uses actual CommandRename/RenameFn, native events and persistence.
+is($cmd->('define renameIO MATTER 127.0.0.1 9; attr renameIO disable 1'), '', 'second rename IO defined');
+my $rename_snapshot = {node_id=>99010,name=>'RenameFixture',available=>JSON::true,
+    attributes=>{map { ("$_/6/0"=>JSON::false, "$_/6/65529"=>[0,1,2]) } 1..5}};
+$perl->('MATTER_ProcessNode($defs{io}, ' . $literal->($rename_snapshot) . ')');
+my $rename_other = {%$rename_snapshot, name=>'OtherRenameIO'};
+$perl->('MATTER_ProcessNode($defs{renameIO}, ' . $literal->($rename_other) . ')');
+is($cmd->('define MATTER_RenameFixture_Extra dummy'), '', 'similarly named unrelated device defined');
+is($cmd->('attr MATTER_RenameFixture_EP2 disable 1; attr MATTER_RenameFixture_EP2 alias fixed-display; attr MATTER_RenameFixture_EP3 renameWithRoot 0'),
+    '', 'disabled and protected endpoints configured');
+like($cmd->('attr MATTER_RenameFixture renameWithRoot 0'), qr/only supported on endpoints/, 'root rejects endpoint rename policy');
+like($cmd->('attr MATTER_RenameFixture_EP1 renameWithRoot 2'), qr/must be 0 or 1/, 'invalid rename policy rejected');
+is($cmd->('rename MATTER_RenameFixture_EP4 CustomRenameEndpoint; rename MATTER_RenameFixture_EP5 RenameAfter_EP5'),
+    '', 'direct endpoint rename works without changing siblings');
+ok($device->('MATTER_RenameFixture_EP1'), 'direct rename retains sibling name');
+ok(!exists $device->('CustomRenameEndpoint')->{Attributes}{renameWithRoot}, 'manual rename never implicitly protects an endpoint');
+my %rename_before = map { $_=>$device->($_) }
+    qw(MATTER_RenameFixture MATTER_RenameFixture_EP1 MATTER_RenameFixture_EP2 MATTER_RenameFixture_EP3 CustomRenameEndpoint RenameAfter_EP5);
+$cmd->('define renameEvents notify global:RENAMED.* { push @{$defs{io}{test_renames}}, $EVENT }');
+is($cmd->('rename MATTER_RenameFixture RenameAfter'), '', 'normal root rename carries endpoints through native callbacks');
+my %rename_names = (
+    MATTER_RenameFixture=>'RenameAfter', MATTER_RenameFixture_EP1=>'RenameAfter_EP1',
+    MATTER_RenameFixture_EP2=>'RenameAfter_EP2', MATTER_RenameFixture_EP3=>'MATTER_RenameFixture_EP3',
+    CustomRenameEndpoint=>'RenameAfter_EP4', RenameAfter_EP5=>'RenameAfter_EP5',
+);
+for my $old (sort keys %rename_names) {
+    my $new = $rename_names{$old};
+    my $after = $device->($new);
+    is($after->{Internals}{FUUID}, $rename_before{$old}{Internals}{FUUID}, 'rename preserves FUUID');
+    is($after->{Internals}{DEF}, $rename_before{$old}{Internals}{DEF}, 'rename preserves Matter DEF');
+    is_deeply($after->{Attributes}, $rename_before{$old}{Attributes}, 'rename preserves all endpoint/root attributes');
+    for my $reading (grep { $_ ne 'associatedWith' } keys %{$rename_before{$old}{Readings}}) {
+        is_deeply($after->{Readings}{$reading}, $rename_before{$old}{Readings}{$reading}, 'rename preserves reading values and timestamps');
+    }
+    next if $new eq 'RenameAfter';
+    is($after->{Readings}{associatedWith}{Value}, 'RenameAfter', 'native root association follows rename, including protected endpoint');
+    is($perl->('$defs{' . $new . '}{device}'), 'RenameAfter', 'display parent cache follows immediately, including protected endpoint');
+}
+is($perl->('JSON::encode_json($defs{io}{test_renames})'),
+    encode_json(['RENAMED MATTER_RenameFixture_EP1 RenameAfter_EP1',
+                 'RENAMED MATTER_RenameFixture_EP2 RenameAfter_EP2',
+                 'RENAMED CustomRenameEndpoint RenameAfter_EP4',
+                 'RENAMED MATTER_RenameFixture RenameAfter']),
+    'native endpoint events occur once each, before the root RENAMED event');
+ok($device->('MATTER_OtherRenameIO_EP1') && $device->('MATTER_RenameFixture_Extra'), 'same-ID other IO and similar prefix stay unchanged');
+$perl->('MATTER_ProcessNode($defs{io}, ' . $literal->($rename_snapshot) . ')');
+is($device->('RenameAfter')->{Internals}{FUUID}, $rename_before{MATTER_RenameFixture}{Internals}{FUUID}, 'old server label cannot recreate renamed root');
+is($device->('RenameAfter_EP1')->{Internals}{FUUID}, $rename_before{MATTER_RenameFixture_EP1}{Internals}{FUUID}, 'discovery reuses renamed endpoint');
+my $rename_report = {event=>'attribute_updated',data=>[99010,'1/6/0',JSON::true]};
+$perl->('MATTER_ParseMessage($defs{io}, JSON::encode_json(' . $literal->($rename_report) . '))');
+is($state->('RenameAfter_EP1'), 'on', 'live report routes after automatic endpoint rename');
+is($state->('MATTER_OtherRenameIO_EP1'), 'off', 'live report stays on original IO');
+$perl->('MATTERDevice_GetOrCreateChild($defs{RenameAfter},6)');
+ok($device->('RenameAfter_EP6'), 'new endpoint uses current root name');
+is($cmd->('rename MATTER_RenameFixture_EP3 ProtectedManual; attr ProtectedManual renameWithRoot 1'), '', 'protected endpoint still allows direct rename');
+ok($device->('ProtectedManual'), 'setting rename policy does not rename immediately');
+is($cmd->('attr ProtectedManual renameWithRoot 0; deleteattr ProtectedManual renameWithRoot'), '', 'deleting policy restores default without renaming');
+ok($device->('ProtectedManual'), 'deleting policy does not rename immediately');
+is($cmd->('rename RenameAfter RenameAgain'), '', 'later root rename includes formerly protected endpoint');
+ok($device->('RenameAgain_EP3'), 'deleted protection takes effect on next root rename');
+
+# Preflight the complete plan: a collision on EP2 must also leave EP1 unchanged.
+is($cmd->('define RenameConflict_EP2 dummy; rename RenameAgain RenameConflict'), '', 'root rename succeeds even when endpoint target is occupied');
+ok($device->('RenameConflict') && $device->('RenameAgain_EP1') && $device->('RenameAgain_EP2'), 'all endpoint names remain unchanged on preflight conflict');
+is($device->('RenameConflict_EP2')->{Internals}{TYPE}, 'dummy', 'target collision never overwrites another device');
+is($device->('RenameAgain_EP1')->{Readings}{associatedWith}{Value}, 'RenameConflict', 'root association stays correct despite name conflict');
+open my $rename_log, '<', "$runtime/fhem.log" or die $!;
+my $rename_log_text = do { local $/; <$rename_log> };
+close $rename_log;
+like($rename_log_text, qr/endpoints unchanged: target RenameConflict_EP2/, 'conflict is reported with its target name in actual log');
+is($cmd->('delete RenameConflict_EP2; attr RenameAgain_EP3 renameWithRoot 0; rename RenameConflict RenameSaved'), '', 'next rename works after conflict removal');
+like($cmd->('save; rereadcfg'), qr/^Wrote configuration to /, 'renamed configuration is saved and actually reloaded');
+is($device->('RenameSaved_EP1')->{Internals}{FUUID}, $rename_before{MATTER_RenameFixture_EP1}{Internals}{FUUID}, 'saved renamed endpoint retains identity');
+is($device->('RenameAgain_EP3')->{Attributes}{renameWithRoot}, 0, 'protection survives save/rereadcfg');
+$perl->('MATTER_ProcessNode($defs{io}, ' . $literal->($rename_snapshot) . ')');
+ok($device->('RenameSaved_EP1') && $device->('RenameAgain_EP3'), 'discovery after reload preserves automatic and protected names');
+is($perl->('scalar grep { ($_->{TYPE}//q()) eq q(MATTERDevice) && ($_->{node_id}//0)==99010 } values %defs'),
+    13, 'reload and discovery create no duplicate roots or endpoints on either IO');
+$cmd->('delete renameEvents');
+
+is($cmd->('define DuplicateRenameEndpoint MATTERDevice 99010 1; attr DuplicateRenameEndpoint IODev io; rename RenameSaved RenameDuplicate'),
+    '', 'duplicate endpoint identity produces a duplicate planned target');
+ok($device->('RenameSaved_EP1') && $device->('RenameSaved_EP4'), 'duplicate target aborts the complete endpoint plan');
+is($cmd->('delete DuplicateRenameEndpoint; rename RenameDuplicate RenameSaved'), '', 'identical existing endpoint target is accepted after duplicate removal');
+
+# Native RENAMED notifies may remove/reassign the next planned endpoint.
+is($cmd->('define renameMutation notify global:RENAMED.RenameSaved_EP1.RenameInterrupted_EP1 delete RenameSaved_EP2;; define RenameSaved_EP2 dummy'),
+    '', 'native notification can replace a later endpoint between renames');
+is($cmd->('rename RenameSaved RenameInterrupted'), '', 'root rename completes despite a reentrant endpoint replacement');
+is($device->('RenameSaved_EP2')->{Internals}{TYPE}, 'dummy', 'rename never adopts the replacement at the former endpoint name');
+ok($device->('RenameInterrupted_EP1') && $device->('RenameSaved_EP4'), 'sequence stops after ownership changes without renaming further endpoints');
+$cmd->('delete renameMutation');
+
 # Independent source changes go through actual CommandReload and CommandModify.
 is($cmd->('define versionRoot MATTERDevice 99100; attr versionRoot IODev io; define versionEndpoint MATTERDevice 99100 1; attr versionEndpoint IODev io'),
     '', 'offline root and endpoint can be defined manually');
