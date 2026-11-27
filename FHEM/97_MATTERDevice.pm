@@ -11,6 +11,8 @@ use Scalar::Util qw(blessed);
 our $init_done; # FHEM startup: statefile and attributes are not yet restored
 our $unicodeEncoding; # FHEM supports both unicode and legacy UTF-8 byte strings.
 
+my $MATTERDevice_version = "V0.48 27.11.2026";
+
 # Globale Matter-Metadaten-IDs. Sie werden unabhängig von der clusterspezifischen
 # Attributdefinition verarbeitet. EventList (0xFFFA) wird für ältere
 # Matter-Versionen weiterhin unterstützt.
@@ -736,6 +738,12 @@ sub MATTERDevice_Initialize($) {
                         "rawReadings:0,1 " .
                         $readingFnAttributes;
     $hash->{MatchList} = { "1" => ".*" };
+
+    # CommandReload calls Initialize, not Define, for existing devices.
+    for my $device (values %defs) {
+        next unless ($device->{TYPE} // '') eq 'MATTERDevice';
+        $device->{FVERSION} = $MATTERDevice_version;
+    }
 }
 
 # Root status is an interpreted node-wide reachability report, not an endpoint
@@ -1112,6 +1120,7 @@ sub MATTERDevice_Define($$) {
     }
     $hash->{node_id} = $node_id;
     $hash->{endpoint_id} = $endpoint_id;
+    $hash->{FVERSION} = $MATTERDevice_version;
     # The root name is derived from IODev + node ID, never from the DEF.
     delete $hash->{device};
     
@@ -3186,6 +3195,10 @@ sub MATTERDevice_GetOrCreateChild($$) {
 
 <a id="MATTERDevice" name="MATTERDevice"></a>
 <h3>MATTERDevice</h3>
+<p>The <code>FVERSION</code> internal shows the loaded MATTERDevice module version
+on every root and endpoint, including offline devices. All instances share the
+same module code and version. The MATTER IO has its own module version;
+<code>firmwareVersion</code> describes the physical device separately.</p>
 <p>A MATTERDevice represents a Matter node (root endpoint 0) or one of its
 additional endpoints. It uses the assigned MATTER IO device to receive attribute
 updates and send supported commands. The module preserves existing FHEM names
@@ -3653,6 +3666,10 @@ Decommissioned devices are retained in FHEM rather than automatically deleted.</
 
 <a id="MATTERDevice" name="MATTERDevice"></a>
 <h3>MATTERDevice</h3>
+<p>Das Internal <code>FVERSION</code> zeigt an jedem Root und Endpunkt die Version
+des geladenen MATTERDevice-Moduls, auch bei Offline-Geräten. Alle Instanzen
+verwenden denselben Modulcode und dieselbe Version. Das MATTER-IO hat eine
+eigene Modulversion; <code>firmwareVersion</code> beschreibt separat das physische Gerät.</p>
 <p>Ein MATTERDevice repräsentiert einen Matter-Knoten (Root-Endpunkt 0) oder einen
 seiner weiteren Endpunkte. Über das zugeordnete MATTER-IO-Device empfängt es
 Attributänderungen und sendet unterstützte Befehle. Ein Set-Befehl setzt

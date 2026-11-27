@@ -7,6 +7,7 @@ use JSON qw(encode_json decode_json);
 use HTTP::Tiny;
 use File::Temp qw(tempdir);
 use File::Path qw(make_path);
+use File::Copy qw(copy);
 use Cwd qw(abs_path);
 use IO::Socket::INET;
 use IO::Select;
@@ -30,7 +31,9 @@ for my $source (glob("$core/fhem/FHEM/*")) {
     symlink $source, "$runtime/FHEM/$file" or die "symlink $file: $!";
 }
 symlink "$core/fhem/$_", "$runtime/$_" or die "symlink $_: $!" for qw(lib www);
-symlink "$project/FHEM/$_", "$runtime/FHEM/$_" or die "symlink $_: $!" for qw(97_MATTER.pm 97_MATTERDevice.pm);
+# Private copies also allow testing an independent module update/reload without
+# editing the checkout or changing the module loaded for the other device type.
+copy("$project/FHEM/$_", "$runtime/FHEM/$_") or die "copy $_: $!" for qw(97_MATTER.pm 97_MATTERDevice.pm);
 my $reserve = IO::Socket::INET->new(LocalAddr => '127.0.0.1', LocalPort => 0, Listen => 1) or die $!;
 my $port = $reserve->sockport;
 close $reserve;
@@ -84,6 +87,9 @@ my $literal = sub { my $s = encode_json($_[0]); $s =~ s/([\\'])/\\$1/g; return "
 my $device = sub { return decode_json($cmd->("jsonlist2 $_[0]"))->{Results}[0]; };
 my $state = sub { return $device->($_[0])->{Internals}{STATE}; };
 is($cmd->('define io MATTER 127.0.0.1 9; attr io disable 1'), '', 'local synthetic IO is defined without an external server');
+like($device->('io')->{Internals}{FVERSION}, qr/^V\d+\.\d+ \d{2}\.\d{2}\.\d{4}$/,
+    'IO exposes its module version through the actual core');
+ok(!exists $device->('io')->{Internals}{VERSION}, 'IO has no competing VERSION internal');
 
 # Every currently named type is explicitly represented, including those with
 # only a type label and no functional parser. Values go through real parsers.
@@ -133,6 +139,11 @@ for my $case (@cases) {
     ok(!exists $device->($name_for{$type})->{Attributes}{stateFormat}, 'no stateFormat attribute is generated');
 }
 is($state->('MATTER_Display'), 'online', 'root keeps its native state');
+my $device_version = $device->('MATTER_Display')->{Internals}{FVERSION};
+like($device_version, qr/^V\d+\.\d+ \d{2}\.\d{2}\.\d{4}$/, 'autocreated root exposes the Device module version');
+for my $name (values %name_for) {
+    is($device->($name)->{Internals}{FVERSION}, $device_version, 'autocreated endpoint uses the root module version');
+}
 my $report = sub {
     my ($type,$path,$value) = @_;
     my $event = {event=>'attribute_updated',data=>[98900,"$ep_for{$type}/$path",$value]};
@@ -420,6 +431,9 @@ open $saved_cfg, '>', "$runtime/fhem.cfg" or die $!;
 print {$saved_cfg} $config;
 close $saved_cfg;
 is($cmd->('rereadcfg'),'','actual rereadcfg runs the loader');
+is($device->('io')->{Internals}{FVERSION}, $device->('ioOther')->{Internals}{FVERSION},
+    'both IO versions are restored from the loaded module');
+is($device->($temp)->{Internals}{FVERSION}, $device_version, 'Device version is restored without server contact');
 is($state->($humid),'restored 48','startup evaluates the configured override from restored readings');
 is($state->($temp),'15.5 °C / 48 %','saved readings/types restore the default without a server report');
 is($device->($alarm)->{Readings}{alarmExpressedState}{Value},'interconnect_co','readable alarm survives the actual statefile loader');
@@ -445,6 +459,51 @@ is_deeply([map {$device->($mixed)->{Readings}{$_}{Value}} qw(brightness level pc
     [1000,127,50],'restored provenance keeps report quantities distinct');
 $mapped_report->(2,258,8,99);
 is($state->($blind),'lift: 65.43 %','fine position priority survives restore');
+
+# Independent source changes go through actual CommandReload and CommandModify.
+is($cmd->('define versionRoot MATTERDevice 99100; attr versionRoot IODev io; define versionEndpoint MATTERDevice 99100 1; attr versionEndpoint IODev io'),
+    '', 'offline root and endpoint can be defined manually');
+my @version_devices = qw(io versionRoot versionEndpoint);
+my $io_version = $device->('io')->{Internals}{FVERSION};
+my %before_versions = map { $_ => $device->($_) } @version_devices;
+my $change_version = sub {
+    my ($file, $declaration, $new_version) = @_;
+    open my $fh, '<', "$runtime/FHEM/$file" or die $!;
+    my $code = do { local $/; <$fh> };
+    close $fh;
+    my $replaced = $code =~ s/(my \$\Q$declaration\E = ")[^"]+/$1$new_version/;
+    is($replaced, 1, "$file has its own version declaration");
+    open $fh, '>', "$runtime/FHEM/$file" or die $!;
+    print {$fh} $code;
+    close $fh;
+    is($cmd->("reload $file"), '', "$file reloads through actual FHEM core");
+};
+$change_version->('97_MATTERDevice.pm', 'MATTERDevice_version', 'V999.1 01.01.2099');
+is($device->('io')->{Internals}{FVERSION}, $io_version, 'Device-only update preserves IO version');
+for my $name (qw(versionRoot versionEndpoint MATTER_Display)) {
+    is($device->($name)->{Internals}{FVERSION}, 'V999.1 01.01.2099', 'Device reload updates existing root/endpoint versions');
+}
+# VERSION was runtime-only in the old IO module. Reload replaces its display;
+# it does not change any saved readings or device configuration.
+$perl->('$defs{io}{VERSION} = q(old-runtime-version)');
+$change_version->('97_MATTER.pm', 'MATTER_version', 'V999.2 02.01.2099');
+is($device->('io')->{Internals}{FVERSION}, 'V999.2 02.01.2099', 'IO reload updates its existing version');
+ok(!exists $device->('io')->{Internals}{VERSION}, 'IO reload removes the superseded runtime display');
+is($device->('versionRoot')->{Internals}{FVERSION}, 'V999.1 01.01.2099', 'IO-only update preserves Device version');
+for my $name (@version_devices) {
+    my $after = $device->($name);
+    is($after->{Internals}{FUUID}, $before_versions{$name}{Internals}{FUUID}, 'reload preserves device identity');
+    is_deeply($after->{Readings}, $before_versions{$name}{Readings}, 'version reload preserves readings and timestamps');
+    is_deeply($after->{Attributes}, $before_versions{$name}{Attributes}, 'version reload preserves configuration');
+    ok(!exists $after->{Readings}{FVERSION} && !exists $after->{Readings}{VERSION}, 'module version adds no reading');
+}
+is($cmd->('modify versionRoot 99100; modify versionEndpoint 99100 1'), '', 'unchanged definitions remain valid');
+is($device->('versionRoot')->{Internals}{FVERSION}, 'V999.1 01.01.2099', 'root redefine keeps the loaded Device version');
+is($device->('versionEndpoint')->{Internals}{FVERSION}, 'V999.1 01.01.2099', 'endpoint redefine keeps the loaded Device version');
+is($cmd->('define versionIO MATTER 127.0.0.1 9; attr versionIO disable 1'), '', 'IO can be created after reload');
+is($device->('versionIO')->{Internals}{FVERSION}, 'V999.2 02.01.2099', 'new IO uses the independently updated version');
+is($cmd->('modify versionIO 127.0.0.1 9'), '', 'IO definition can be confirmed');
+is($device->('versionIO')->{Internals}{FVERSION}, 'V999.2 02.01.2099', 'IO redefine keeps the loaded IO version');
 
 sub decode_utf8_content { return Encode::decode('UTF-8', $_[0]); }
 done_testing();
