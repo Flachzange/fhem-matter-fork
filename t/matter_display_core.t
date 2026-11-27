@@ -94,6 +94,7 @@ ok(!exists $device->('io')->{Internals}{VERSION}, 'IO has no competing VERSION i
 # Every currently named type is explicitly represented, including those with
 # only a type label and no functional parser. Values go through real parsers.
 my @cases = (
+    [0x000E, {}, 'online'],
     [0x0076, {'92/0' => 5}, 'hardware_fault'],
     [0x0043, {'69/0' => JSON::true}, 'wet'],
     [0x0044, {'69/0' => JSON::false}, 'dry'],
@@ -112,7 +113,7 @@ my @cases = (
     [0x0307, {'1029/0' => 4800}, '48 %'],
     [0x0305, {'1027/0' => 1013}, '1013 hPa'],
     [0x0106, {'1024/0' => 30001}, '1000 lx'],
-    (map { [$_, {}, 'unknown'] } (0x0306,0x000E,0x0013,0x0016,0x0011,0x0012,0x0014,0xFFF0)),
+    (map { [$_, {}, 'unknown'] } (0x0306,0x0013,0x0016,0x0011,0x0012,0x0014,0xFFF0)),
 );
 open my $source_fh, '<', 'FHEM/97_MATTERDevice.pm' or die $!;
 my $source = do { local $/; <$source_fh> };
@@ -310,6 +311,7 @@ is($state->($electric),'2.5 kWh','energy fallback uses the existing scaling');
 # actuator/alarm with an ancillary measurement.
 my $plug=$name_for{0x010A};
 $report->(0x010A,'29/0',[{deviceType=>0x0510},{deviceType=>0x0013},{deviceType=>0x010A}]);
+$report->(0x010A,'57/17',JSON::true);
 $report->(0x010A,'144/8',75000);
 is($state->($plug),'on','plug plus electrical sensor stays an actuator');
 $report->(0x0076,'29/0',[{deviceType=>0x0302},{deviceType=>0x0076}]);
@@ -552,6 +554,47 @@ is($cmd->('rename RenameSaved RenameInterrupted'), '', 'root rename completes de
 is($device->('RenameSaved_EP2')->{Internals}{TYPE}, 'dummy', 'rename never adopts the replacement at the former endpoint name');
 ok($device->('RenameInterrupted_EP1') && $device->('RenameSaved_EP4'), 'sequence stops after ownership changes without renaming further endpoints');
 $cmd->('delete renameMutation');
+
+# Bridge hierarchy through real reading/event, FHEMWEB, native rename and loader paths.
+my $bridge_snapshot={node_id=>99501,name=>'BridgeCore',available=>JSON::true,attributes=>{
+    '0/29/3'=>[1,10,11], '1/29/0'=>[{deviceType=>14}], '1/29/3'=>[10,11],
+    '10/29/0'=>[{deviceType=>19}], '10/29/3'=>[11], '10/57/17'=>JSON::true,
+    '11/29/0'=>[{deviceType=>266}], '11/6/0'=>JSON::true}};
+$perl->('MATTER_ProcessNode($defs{io},'.$literal->($bridge_snapshot).')');
+my $bridge_live=sub {my ($path,$v)=@_;$perl->('MATTERDevice_ProcessMessage($defs{MATTER_BridgeCore},'.$literal->(
+    {event=>'attribute_updated',data=>[99501,$path,$v]}).')');};
+is($state->('MATTER_BridgeCore_EP1'),'online','actual core displays aggregator online');
+is($state->('MATTER_BridgeCore_EP10'),'online','actual core displays bridged device online');
+is($state->('MATTER_BridgeCore_EP11'),'on','actual core displays functional state');
+is($device->('MATTER_BridgeCore_EP11')->{Internals}{parentEndpoint},10,'actual core exposes numeric parent');
+is($device->('MATTER_BridgeCore_EP10')->{Readings}{deviceTypes}{Value},'Bridged node','actual core exposes readable role');
+like($cmd->('list MATTER_BridgeCore_EP11'),qr/MATTER_BridgeCore_EP10/,'parent association visible in native device listing');
+is($perl->('join(q(,),getPawList(q(MATTER_BridgeCore_EP11)))'),
+    'MATTER_BridgeCore,MATTER_BridgeCore_EP10','real core navigation resolves root and immediate parent');
+$bridge_live->('10/57/17',JSON::false);
+is($state->('MATTER_BridgeCore_EP10'),'offline','live reachability updates infrastructure display');
+is($device->('MATTER_BridgeCore_EP11')->{Readings}{available}{Value},'false','functional availability follows bridged device');
+my $bridge_state_before=$device->('MATTER_BridgeCore_EP11')->{Readings}{state};
+$bridge_live->('11/6/0',JSON::false);
+is_deeply($device->('MATTER_BridgeCore_EP11')->{Readings}{state},$bridge_state_before,'offline state/timestamp preserved with real core');
+$cmd->('attr MATTER_BridgeCore_EP10 stateFormat custom');
+$bridge_live->('10/57/17',JSON::true);
+is($state->('MATTER_BridgeCore_EP10'),'custom','infrastructure user format respected');
+$cmd->('deleteattr MATTER_BridgeCore_EP10 stateFormat');
+is($state->('MATTER_BridgeCore_EP10'),'online','deleting format restores infrastructure default');
+$cmd->('rename MATTER_BridgeCore_EP10 BridgeContainer');
+is($perl->('join(q(,),getPawList(q(MATTER_BridgeCore_EP11)))'),
+    'MATTER_BridgeCore,BridgeContainer','real native parent rename updates navigation');
+like($cmd->('save; rereadcfg'),qr/^Wrote configuration to /,'bridge fixture actually saved and reloaded');
+is($state->('BridgeContainer'),'unknown','restored availability cannot imply bridged online');
+$perl->('MATTER_ProcessNode($defs{io},'.$literal->($bridge_snapshot).')');
+is($device->('MATTER_BridgeCore_EP11')->{Internals}{parentEndpoint},10,'reported hierarchy rebuilt after loader');
+$bridge_live->('10/29/3',[]);
+is($device->('MATTER_BridgeCore_EP11')->{Readings}{associatedWith}{Value},'MATTER_BridgeCore MATTER_BridgeCore_EP1',
+    'persisted parent ownership removes old renamed link after restart');
+$bridge_live->('10/29/3',[11]);
+is($perl->('join(q(,),getPawList(q(MATTER_BridgeCore_EP11)))'),
+    'MATTER_BridgeCore,BridgeContainer','reparenting restores actual native navigation');
 
 # Independent source changes go through actual CommandReload and CommandModify.
 is($cmd->('define versionRoot MATTERDevice 99100; attr versionRoot IODev io; define versionEndpoint MATTERDevice 99100 1; attr versionEndpoint IODev io'),

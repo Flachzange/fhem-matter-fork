@@ -1,1 +1,1 @@
-2026-11-27  MATTERDevice V0.49: Root rename also renames endpoints. Endpoint renameWithRoot=0 preserves individual names; direct endpoint rename stays local. Endpoint target conflicts are logged without renaming endpoints; the root keeps its new name. MATTER remains V0.48.
+2026-11-27  MATTERDevice V0.50: Bridge endpoint hierarchy, readable deviceTypes and effective bridged availability. Infrastructure displays online/offline/unknown; functional values and user settings remain. Hardware untested. MATTER remains V0.48.

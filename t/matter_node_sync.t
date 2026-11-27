@@ -6414,4 +6414,101 @@ subtest 'Default source readings decode protocol states before publication' => s
     is(scalar(@timers),$timer_count,'conversions add no timers');
 };
 
+subtest 'Issue 103: bridged endpoint identity, composition and reachability' => sub {
+    my @sent;
+    my $io = $defs{bridgeIO} = {NAME=>'bridgeIO', TYPE=>'MATTER', CD=>1,
+        websocket=>1, ws_status=>'connected', helper=>{},
+        test_send_text=>sub { push @sent, decode_json($_[0]); 1 }};
+    my $snapshot = {node_id=>99500, name=>'Bridge103', available=>JSON::true,
+        attributes=>{
+            '0/29/3'=>[1,10,11,20,21], '1/29/0'=>[{deviceType=>14}], '1/29/3'=>[10,11,20,21],
+            '10/29/0'=>[{deviceType=>19}], '10/29/3'=>[11], '10/57/17'=>JSON::true,
+            '11/29/0'=>[{deviceType=>266}], '11/6/0'=>JSON::true,
+            '11/6/65529'=>[0,1],
+            '20/29/0'=>[{deviceType=>19}], '20/29/3'=>[21], '20/57/17'=>JSON::false,
+            '21/29/0'=>[{deviceType=>266}], '21/6/0'=>JSON::true,
+        }};
+    MATTER_ProcessNode($io,$snapshot);
+    my $root=$defs{MATTER_Bridge103};
+    my %ep=map {$_=>$defs{"MATTER_Bridge103_EP$_"}} (1,10,11,20,21);
+    my $live=sub {my ($path,$v)=@_; MATTERDevice_ProcessMessage($root,
+        {event=>'attribute_updated', data=>[99500,$path,$v]});};
+    is_deeply([map {$ep{$_}{parentEndpoint}} (1,10,11,20,21)],[0,1,10,1,20],
+        'full-family PartsLists resolve direct parents');
+    is(ReadingsVal($ep{11}{NAME},'associatedWith',''),'MATTER_Bridge103 MATTER_Bridge103_EP10','root and immediate container are linked');
+    is(ReadingsVal($ep{10}{NAME},'deviceTypes',''),'Bridged node','readable structural type');
+    is(ReadingsVal($ep{11}{NAME},'deviceTypes',''),'On/Off plug-in unit','readable functional type');
+    is($ep{1}{STATE},'online','aggregator follows root');
+    is($ep{10}{STATE},'online','bridged container follows its Reachable');
+    is($ep{20}{STATE},'offline','different bridged device can be offline');
+    is(ReadingsVal($ep{11}{NAME},'state',''),'on','reachable physical value accepted');
+    ok(!exists($ep{21}{READINGS}{state}),'unreachable snapshot never imports an on state');
+    is(ReadingsVal($ep{21}{NAME},'available',''),'false','functional child inherits bridged availability');
+    my $before={%{$ep{11}{READINGS}{state}}};
+    $live->('10/57/17',JSON::false); $live->('11/6/0',JSON::false);
+    is_deeply($ep{11}{READINGS}{state},$before,'bridged offline preserves state and timestamp');
+    is($ep{10}{STATE},'offline','live unreachable updates container display');
+    $live->('10/57/17','false');
+    is($ep{10}{helper}{bridged_reachable},0,'invalid string cannot change Reachable');
+    $live->('10/57/17',JSON::true); $live->('11/6/0',JSON::false);
+    is(ReadingsVal($ep{11}{NAME},'state',''),'off','online resumes ordinary telemetry');
+    MATTERDevice_UpdateAvailability($root,0);
+    is($ep{10}{STATE},'offline','root offline overrides bridge Reachable');
+    MATTERDevice_UpdateAvailability($root,1);
+    is($ep{10}{STATE},'unknown','returning root needs fresh bridged Reachable');
+    is(ReadingsVal($ep{11}{NAME},'available',''),'unknown','unknown is not fabricated true');
+    $live->('11/6/0',JSON::true);
+    is(ReadingsVal($ep{11}{NAME},'state',''),'off','unknown bridged availability blocks physical values');
+    $live->('10/57/17',JSON::true);
+    # A pending read from before an offline/online cycle must not replay values.
+    is(MATTERDevice_Set($ep{11},$ep{11}{NAME},'getConfig'),undef,'getConfig uses existing correlated read path');
+    my $request=$sent[-1]{message_id};
+    $live->('10/57/17',JSON::false); $live->('10/57/17',JSON::true);
+    MATTER_ParseMessage($io,encode_json({message_id=>$request,result=>{'11/6/0'=>JSON::true}}));
+    is(ReadingsVal($ep{11}{NAME},'state',''),'off','read from before bridged availability cycle is discarded');
+    $io->{helper}{pending_command}{'bridge-old-snapshot'}='get_nodes';
+    $live->('10/57/17',JSON::false); $live->('10/57/17',JSON::true);
+    MATTER_ParseMessage($io,encode_json({message_id=>'bridge-old-snapshot',result=>[$snapshot]}));
+    is(ReadingsVal($ep{11}{NAME},'state',''),'off','old discovery cannot replay data across bridged availability cycle');
+    # Preserve unrelated associations and replace only the module-owned parent.
+    $ep{11}{READINGS}{associatedWith}{VAL}.=' UserLink';
+    $live->('10/29/3',[]); $live->('20/29/3',[11,21]);
+    is($ep{11}{parentEndpoint},20,'live composition moves direct parent');
+    is(ReadingsVal($ep{11}{NAME},'associatedWith',''),'MATTER_Bridge103 UserLink MATTER_Bridge103_EP20','old parent removed, user link retained');
+    is(ReadingsVal($ep{11}{NAME},'available',''),'false','new container uses its own reported Reachable');
+    $live->('20/57/17',JSON::true);
+    is(CommandRename(undef,'MATTER_Bridge103_EP20 RenamedContainer'),undef,'container can be renamed independently');
+    $live->('20/29/3',[11,21]);
+    like(ReadingsVal($ep{11}{NAME},'associatedWith',''),qr/\bRenamedContainer\b/,'native parent rename updates link');
+    $live->('20/29/3',[21]); $live->('10/29/3',[11]);
+    unlike(ReadingsVal($ep{11}{NAME},'associatedWith',''),qr/RenamedContainer/,'numeric parent provenance removes renamed old parent');
+    $live->('11/29/0',[{deviceType=>19},{deviceType=>266},{deviceType=>0xFFF01234}]);
+    is(ReadingsVal($ep{11}{NAME},'deviceTypes',''),'Bridged node, On/Off plug-in unit, 0xFFF01234','all types retained, including unknown IDs');
+    $live->('11/57/17',JSON::true);
+    is($ep{11}{STATE},'off','functional type has display priority over Bridged Node');
+    CommandAttr(undef,"$ep{10}{NAME} stateFormat Custom");
+    $live->('10/57/17',JSON::false);
+    is($attr{$ep{10}{NAME}}{stateFormat},'Custom','user format is retained');
+    CommandAttr(undef,"$ep{11}{NAME} disable 1");
+    my $disabled={%{$ep{11}{READINGS}{state}}};
+    $live->('11/6/0',JSON::true);
+    is_deeply($ep{11}{READINGS}{state},$disabled,'disable still preserves physical readings');
+    $live->('11/29/3',[42]);
+    is_deeply($ep{11}{helper}{parts_list},{42=>1},'structural composition remains active while disabled');
+    my $parents=[map {$_->{parentEndpoint}} values %ep];
+    $live->('10/29/3',[10]); $live->('10/29/3',[undef]);
+    is_deeply([map {$_->{parentEndpoint}} values %ep],$parents,'invalid/self PartsList does not replace hierarchy');
+    my $io2=$defs{bridgeIO2}={NAME=>'bridgeIO2',TYPE=>'MATTER',helper=>{}};
+    MATTER_ProcessNode($io2,{%$snapshot,name=>'Bridge103Other'});
+    my $other=$defs{MATTER_Bridge103Other_EP11};
+    is($other->{parentEndpoint},10,'same node ID on second IO resolves its own hierarchy');
+    like(ReadingsVal($other->{NAME},'associatedWith',''),qr/Bridge103Other_EP10/,'parent links stay within owning IO');
+    is(ReadingsVal($other->{NAME},'available',''),'true','first bridge offline does not affect other IO');
+    $live->('0/29/3',[1,65535]);
+    ok(!exists($defs{MATTER_Bridge103_EP65535}),'invalid whole PartsList cannot autocreate an endpoint');
+    MATTERDevice_InvalidateAvailability($root);
+    is($ep{1}{STATE},'unknown','IO invalidation clears infrastructure display');
+    is(MATTERDevice_EndpointAvailability($ep{20}),undef,'old available reading never grants online status');
+};
+
 done_testing();
