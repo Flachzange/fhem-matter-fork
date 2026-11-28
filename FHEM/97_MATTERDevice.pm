@@ -13,7 +13,7 @@ use Scalar::Util qw(blessed);
 our $init_done; # FHEM startup: statefile and attributes are not yet restored
 our $unicodeEncoding; # FHEM supports both unicode and legacy UTF-8 byte strings.
 
-my $MATTERDevice_version = "V0.53 28.11.2026";
+my $MATTERDevice_version = "V0.54 28.11.2026";
 
 # Globale Matter-Metadaten-IDs. Sie werden unabhängig von der clusterspezifischen
 # Attributdefinition verarbeitet. EventList (0xFFFA) wird für ältere
@@ -3410,18 +3410,24 @@ sub MATTERDevice_FWDetail($) {
     return undef unless $root && ($root->{endpoint_id} // -1) == 0;
     my @children = MATTERDevice_NodeChildren($root);
     my $html = '';
+    # Keep the theme's full-width frame. Content columns take only their
+    # intrinsic width; an empty trailing column absorbs the remaining space.
+    my $columns = '<colgroup><col span="3" style="width:1%">'
+                . '<col style="width:100%"></colgroup>';
+    my $spacer = '<td aria-hidden="true"></td>';
 
     # FHEMWEB themes style <th> prominently (e.g. large red bold text).
     # Use plain table cells for a quiet, compact heading row instead.
     if (@children) {
         $html .= '<div class="makeTable wide"><span class="mkTitle">Matter endpoints</span>'
-               . '<table class="block wide"><tr><td>EP</td><td>Type</td><td>FHEM device</td></tr>';
+               . '<table class="block wide">' . $columns
+               . '<tr style="white-space:nowrap"><td>EP</td><td>Type</td><td>FHEM device</td>' . $spacer . '</tr>';
         for my $child (@children) {
             my $endpoint = int($child->{endpoint_id});
             my $type = FW_htmlEscape(MATTERDevice_EndpointType($child));
             my $label = FW_htmlEscape($child->{NAME});
             my $target = '?detail=' . urlEncode($child->{NAME});
-            $html .= qq(<tr><td>$endpoint</td><td>$type</td><td><a href="$target">$label</a></td></tr>);
+            $html .= qq(<tr style="white-space:nowrap"><td>$endpoint</td><td>$type</td><td><a href="$target">$label</a></td>$spacer</tr>);
         }
         $html .= '</table></div>';
     }
@@ -3431,7 +3437,8 @@ sub MATTERDevice_FWDetail($) {
     my $neighbors = MATTERDevice_ThreadNeighborRows($root);
     if ($neighbors && @$neighbors) {
         $html .= '<div class="makeTable wide"><span class="mkTitle">Thread neighbors</span>'
-               . '<table class="block wide"><tr><td>Neighbor</td><td>Role</td><td>RSSI</td></tr>';
+               . '<table class="block wide">' . $columns
+               . '<tr style="white-space:nowrap"><td>Neighbor</td><td>Role</td><td>RSSI</td>' . $spacer . '</tr>';
         for my $neighbor (@$neighbors) {
             my $label = FW_htmlEscape($neighbor->{label});
             if (defined $neighbor->{device}) {
@@ -3440,7 +3447,7 @@ sub MATTERDevice_FWDetail($) {
             }
             my $role = FW_htmlEscape($neighbor->{role});
             my $rssi = FW_htmlEscape($neighbor->{rssi});
-            $html .= qq(<tr><td>$label</td><td>$role</td><td>$rssi dBm</td></tr>);
+            $html .= qq(<tr style="white-space:nowrap"><td>$label</td><td>$role</td><td>$rssi dBm</td>$spacer</tr>);
         }
         $html .= '</table></div>';
     }
@@ -3982,6 +3989,8 @@ on a child endpoint has no effect.</p>
 <code>diagnostics=1</code> and usable runtime neighbor data is available.
 Known root names link to their native FHEMWEB detail pages; unknown or
 ambiguous addresses remain plain text. Role/parent and RSSI appear alongside.
+Both tables retain the theme's full-width frame; data columns stay compact
+and an empty trailing column absorbs the remaining width.
 The existing endpoint table remains available independently. This table is
 rendered on page load/reload, without polling or automatic refresh. The
 <code>threadNeighborList</code> reading remains plain text. Turning diagnostics
@@ -4537,7 +4546,9 @@ an einem Kind-Endpunkt hat keine Wirkung.</p>
 <code>diagnostics=1</code> und verfügbaren verwertbaren Laufzeit-Nachbardaten.
 Bekannte Root-Namen verlinken ihre native FHEMWEB-Detailseite; unbekannte oder
 mehrdeutige Adressen bleiben einfacher Text. Rolle/Parent und RSSI stehen
-daneben. Die vorhandene Endpoint-Tabelle bleibt davon unabhängig verfügbar.
+daneben. Beide Tabellen behalten den seitenbreiten Theme-Rahmen; die
+Datenspalten bleiben kompakt und eine leere Restspalte nimmt rechts den
+übrigen Platz auf. Die vorhandene Endpoint-Tabelle bleibt davon unabhängig verfügbar.
 Die Tabelle wird beim Laden/Neuladen der Seite gerendert, ohne Polling oder
 automatische Aktualisierung. Das Reading <code>threadNeighborList</code>
 bleibt Klartext. Abschalten der Diagnose blendet die Tabelle beim nächsten
