@@ -11,7 +11,7 @@ use Scalar::Util qw(blessed);
 our $init_done; # FHEM startup: statefile and attributes are not yet restored
 our $unicodeEncoding; # FHEM supports both unicode and legacy UTF-8 byte strings.
 
-my $MATTERDevice_version = "V0.49 27.11.2026";
+my $MATTERDevice_version = "V0.50 27.11.2026";
 
 # Globale Matter-Metadaten-IDs. Sie werden unabhängig von der clusterspezifischen
 # Attributdefinition verarbeitet. EventList (0xFFFA) wird für ältere
@@ -98,6 +98,11 @@ sub MATTERDevice_DefaultState {
     };
     my %types = map { $_ => 1 } MATTERDevice_DeviceTypeIds($hash);
     my ($kind) = map { $_->[1] } grep { $types{$_->[0]} } @MATTER_DISPLAY_TYPES;
+    if (!defined($kind) && ($types{0x000E} || $types{0x0013}) &&
+        !grep { !$MATTER_STRUCTURAL_DEVICE_TYPES{$_} } keys %types) {
+        my $online = MATTERDevice_EndpointAvailability($hash);
+        return !defined($online) ? 'unknown' : $online ? 'online' : 'offline';
+    }
     $kind //= 'state';
     return $value->('state') if $kind eq 'state' || ($hash->{endpoint_id} // 0) == 0;
     return 'unknown' if $kind eq 'unsupported';
@@ -177,8 +182,8 @@ sub MATTERDevice_DefaultState {
 }
 
 sub MATTERDevice_UpdateDisplay {
-    my ($hash) = @_;
-    return unless $init_done && ($hash->{endpoint_id} // 0) > 0;
+    my ($hash, $restored) = @_;
+    return unless ($init_done || $restored) && ($hash->{endpoint_id} // 0) > 0;
     return if defined AttrVal($hash->{NAME}, 'stateFormat', undef);
     $hash->{STATE} = ReplaceEventMap($hash->{NAME}, MATTERDevice_DefaultState($hash), 1);
 }
@@ -766,6 +771,9 @@ sub MATTERDevice_InvalidateAvailability($) {
     delete $root->{helper}{available};
     ++$root->{helper}{availability_epoch};
     delete $root->{helper}{capability_refresh};
+    my @children = MATTERDevice_NodeChildren($root);
+    delete $_->{helper}{bridged_reachable} for @children;
+    MATTERDevice_UpdateDisplay($_) for @children;
 }
 
 # Runtime permissions and outstanding operations belong to IO + Matter IDs,
@@ -774,11 +782,12 @@ sub MATTERDevice_InvalidateIdentity {
     my ($hash) = @_;
     MATTERDevice_InvalidateAvailability($hash);
     delete @{$hash->{helper}}{qw(capabilities seen_clusters firmware_available
-        firmware_update_in_flight latest_request enable_sync)};
+        firmware_update_in_flight latest_request enable_sync parts_list bridged_reachable)};
+    delete $hash->{parentEndpoint};
     delete @{$hash}{grep { /^endpoint_\d+$/ } keys %$hash};
     # These saved metadata values also authorize controls, scaling or device
     # interpretation. They cannot describe a different Matter identity.
-    readingsDelete($hash, $_) for qw(.matterReadingSources deviceTypeIds icdSupported
+    readingsDelete($hash, $_) for qw(.matterReadingSources .matterParent deviceTypeIds deviceTypes icdSupported
         icdLitSupported softwareVersion specificationVersion);
     for my $cluster (values %MATTER_CLUSTERS) {
         for my $attribute (values %{$cluster->{attributes} // {}}) {
@@ -976,6 +985,7 @@ sub MATTERDevice_UpdateAvailability($$) {
         };
     } elsif (!$boolean) {
         delete $hash->{helper}{capability_refresh};
+        delete $_->{helper}{bridged_reachable} for MATTERDevice_NodeChildren($hash);
     }
     my $state = $boolean ? 'online' : 'offline';
     my $change_available = ReadingsVal($hash->{NAME}, 'available', '') ne $available;
@@ -1055,7 +1065,8 @@ sub MATTERDevice_Notify($$) {
     my $startup = grep { $_ eq 'INITIALIZED' || $_ eq 'REREADCFG' } @$events;
     if (($hash->{endpoint_id} // 0) > 0) {
         evalStateFormat($hash) if $startup && defined AttrVal($hash->{NAME}, 'stateFormat', undef);
-        MATTERDevice_UpdateDisplay($hash) if $startup ||
+        # Core emits REREADCFG after restoring readings but before init_done=1.
+        MATTERDevice_UpdateDisplay($hash, $startup) if $startup ||
             grep { /\A(?:ATTR|DELETEATTR) \Q$hash->{NAME}\E(?: |\z)/ } @$events;
         return if MATTERDevice_IsDisabled($hash) || !delete($hash->{helper}{enable_sync});
         return if $startup; # Root availability is invalidated during restoration.
@@ -1199,6 +1210,12 @@ sub MATTERDevice_AttributeValue {
                                     : MATTERDevice_NormalizeMatterId($value);
     }
     return MATTERDevice_IdSet($value) if $cluster == 29 && $attribute == 1;
+    if ($cluster == 29 && $attribute == 3) {
+        my $parts = MATTERDevice_IdSet($value);
+        return undef unless $parts && !grep { $_ == 0 || $_ >= 0xFFFF || $_ == $endpoint } keys %$parts;
+        return $parts;
+    }
+    return MATTERDevice_NormalizeBoolean($value) if $cluster == 57 && $attribute == 17;
     if ($cluster == 29 && $attribute == 0) {
         return undef unless ref($value) eq 'ARRAY';
         my %types;
@@ -1832,10 +1849,8 @@ sub MATTERDevice_Set($$@) {
         # ServerList is authoritative for cluster removal, unlike omitted
         # paths in a partially successful attribute read.
         push @paths, "$endpoint_id/29/1";
-        # Root-Descriptor: PartsList mitlesen.
-        if ($endpoint_id == 0) {
-            push @paths, "0/29/3";
-        }
+        # Composition and bridged reachability also belong to non-root endpoints.
+        push @paths, "$endpoint_id/29/3", "$endpoint_id/57/17";
 
         # Als Bulk-Array an den Server schicken.
         if (@paths) {
@@ -2377,12 +2392,21 @@ sub MATTERDevice_HandleNodeOperation {
 }
 sub MATTERDevice_ProcessAttributeValue($$$$) {
     my ($hash, $cluster_id, $attr_id, $value) = @_; # quick unpack
-    return if MATTERDevice_IsDisabled($hash);
     my $name = $hash->{NAME};
 
     # Cluster-ID und Attribut-ID sicher als numerischen/hexadezimalen Wert behandeln
     $cluster_id = hex($cluster_id) if $cluster_id =~ /^0x/i;
     $attr_id    = hex($attr_id)    if $attr_id =~ /^0x/i;
+
+    # Composition is structural even for a locally disabled endpoint. Device
+    # identity/reachability must be processed before any functional values.
+    return if MATTERDevice_IsDisabled($hash) && !($cluster_id == 29 && $attr_id == 3);
+    my $structural = $cluster_id == 29 || $cluster_id == 57 ||
+        exists $MATTER_GLOBAL_ATTRIBUTES{$attr_id};
+    if (!$structural && MATTERDevice_BridgedAncestors($hash)) {
+        my $online = MATTERDevice_EndpointAvailability($hash);
+        return unless $online;
+    }
 
     my $cluster = $MATTER_CLUSTERS{$cluster_id};
 
@@ -2394,6 +2418,37 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     }
     $value = MATTERDevice_AttributeValue($cluster_id, $attr_id, $value, $hash->{endpoint_id} // 0);
     return unless defined $value;
+
+    my $root = ($hash->{endpoint_id} // 0) == 0 ? $hash :
+        MATTERDevice_LookupRoot($hash->{IODev}, $hash->{node_id});
+    if ($cluster_id == 29 && $attr_id == 3) {
+        $hash->{helper}{parts_list} = $value;
+        MATTERDevice_SyncNodeReadings($root);
+        return;
+    }
+    if ($cluster_id == 57 && $attr_id == 17 && ($hash->{endpoint_id} // 0) > 0) {
+        my $previous = $hash->{helper}{bridged_reachable};
+        $hash->{helper}{bridged_reachable} = $value;
+        # An old read must not replay values across a bridged offline cycle.
+        if ($root && defined($previous) && $previous != $value) {
+            ++$root->{helper}{availability_epoch};
+            my $io = $root->{IODev};
+            my @affected = grep {
+                my $child = $_;
+                grep { $_ eq $hash } MATTERDevice_BridgedAncestors($child)
+            } MATTERDevice_NodeChildren($root);
+            # Reuse snapshot exclusions: a delayed discovery must not replay
+            # physical data across a bridged offline/online cycle either.
+            for my $id (keys %{$io->{helper}{pending_command} // {}}) {
+                my $command = $io->{helper}{pending_command}{$id};
+                next if ref($command) || ($command ne 'get_nodes' && $command ne 'start_listening');
+                $io->{helper}{pending_snapshot_touched}{$id}{$root->{node_id}}{excluded_endpoints}{$_->{endpoint_id}} = 1
+                    for @affected;
+            }
+        }
+        MATTERDevice_SyncNodeReadings($root);
+        return;
+    }
 
     if ($cluster_id == 29 && $attr_id == 1) {
         my $servers = $value;
@@ -2471,10 +2526,15 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     # Persist the advertised IDs as a canonical reading. Unlike helper data,
     # regular FHEM readings survive a restart through the statefile/configDB.
     if ($cluster_id == 0x001D && $attr_id == 0x0000) {
-        if (ReadingsVal($name, 'deviceTypeIds', '') ne $value) {
-            MATTERDevice_ReadingsSingleUpdate($hash, 'deviceTypeIds', $value, 1);
-            MATTERDevice_EnsureTypeGroup($hash);
-        }
+        my $labels = join(', ', map { $MATTER_DEVICE_TYPE_LABELS{hex($_)} // $_ } split /,/, $value);
+        readingsBeginUpdate($hash);
+        readingsBulkUpdate($hash, 'deviceTypeIds', $value)
+            if ReadingsVal($name, 'deviceTypeIds', '') ne $value;
+        readingsBulkUpdate($hash, 'deviceTypes', $labels)
+            if ReadingsVal($name, 'deviceTypes', '') ne $labels;
+        MATTERDevice_ReadingsEndUpdate($hash, 1);
+        MATTERDevice_EnsureTypeGroup($hash);
+        MATTERDevice_SyncNodeReadings($root);
         return;
     }
     if (($hash->{endpoint_id} // 0) == 0 &&
@@ -2611,6 +2671,17 @@ sub MATTERDevice_Parse($ $;$) {
     return MATTERDevice_ProcessMessage($hash, $decoded, $received);
 }
 
+# Shared order for discovery and read replies: every endpoint's identity,
+# composition and reachability precede physical values. ServerList stays last.
+sub MATTERDevice_AttributeOrder {
+    my ($path) = @_;
+    return 0 if $path =~ m{/29/0$};
+    return 1 if $path =~ m{/29/3$};
+    return 2 if $path =~ m{/57/17$};
+    return 4 if $path =~ m{/29/1$};
+    return 3;
+}
+
 sub MATTERDevice_ProcessMessage {
     my ($hash, $decoded, $received) = @_;
     $received //= {};
@@ -2642,24 +2713,17 @@ sub MATTERDevice_ProcessMessage {
                 my $child = MATTERDevice_GetOrCreateChild($hash, $ep);
                 MATTERDevice_RecordReceive($child, $received);
             } elsif ($my_endpoint == 0 && $ep == 0 &&
-                     $cluster == 0x001D && $attr == 3 &&
-                     ref($val) eq 'ARRAY') {
-                MATTERDevice_GetOrCreateChild($hash, $_)
-                    for grep { defined($_) && !ref($_) && /^\d+$/ && $_ > 0 } @$val;
+                     $cluster == 0x001D && $attr == 3) {
+                my $parts = MATTERDevice_AttributeValue($cluster, $attr, $val, 0);
+                MATTERDevice_GetOrCreateChild($hash, $_) for sort { $a <=> $b } keys %{$parts // {}};
             }
             return;
         }
         if ($ep == $my_endpoint) {
             # Spezialbehandlung für PartsList (Cluster 0x001D / 29, Attribut 0x0003 / 3)
-            if ($cluster == 0x001D && $attr == 0x0003 && ref($val) eq 'ARRAY') {
-                Log3 $name, 3, "MATTERDevice: Found PartsList on node $hash->{node_id}, endpoints: " . join(", ", @{$val});
-                foreach my $child_ep (@{$val}) {
-                    next unless defined($child_ep) && !ref($child_ep) && $child_ep =~ /^\d+$/;
-                    # Only root endpoints may create sibling endpoints.
-                    if ($my_endpoint == 0 && $child_ep != $my_endpoint) {
-                        MATTERDevice_GetOrCreateChild($hash, $child_ep);
-                    }
-                }
+            if ($my_endpoint == 0 && $cluster == 29 && $attr == 3) {
+                my $parts = MATTERDevice_AttributeValue($cluster, $attr, $val, 0);
+                MATTERDevice_GetOrCreateChild($hash, $_) for sort { $a <=> $b } keys %{$parts // {}};
             }
             MATTERDevice_ProcessAttributeValue($hash, $cluster, $attr, $val);
         } else {
@@ -2691,8 +2755,7 @@ sub MATTERDevice_ProcessMessage {
         # Missing paths can be individual read failures. Valid reports replace
         # metadata per path; only an explicit ServerList proves cluster removal.
         for my $path (sort {
-            ($a =~ m{/29/1$} ? 2 : $a =~ m{/29/0$} ? 0 : 1) <=>
-            ($b =~ m{/29/1$} ? 2 : $b =~ m{/29/0$} ? 0 : 1)
+            MATTERDevice_AttributeOrder($a) <=> MATTERDevice_AttributeOrder($b) || $a cmp $b
         } keys %{$decoded->{result}}) {
             my $value = $decoded->{result}->{$path};
             if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
@@ -2737,6 +2800,8 @@ sub MATTERDevice_ProcessMessage {
         return unless $child;
         MATTERDevice_RecordReceive($child, $received);
         return if MATTERDevice_IsDisabled($child);
+        return if MATTERDevice_BridgedAncestors($child) &&
+            !MATTERDevice_EndpointAvailability($child);
         return unless $cluster == 0x003B;
         my %events = (1 => 'pressed', 2 => 'long',
                       3 => 'short', 4 => 'long_release');
@@ -2783,8 +2848,7 @@ sub MATTERDevice_ProcessMessage {
 
         if ($attributes && ref($attributes) eq 'HASH') {
             for my $path (sort {
-                ($a =~ m{/29/1$} ? 2 : $a =~ m{/29/0$} ? 0 : 1) <=>
-                ($b =~ m{/29/1$} ? 2 : $b =~ m{/29/0$} ? 0 : 1)
+                MATTERDevice_AttributeOrder($a) <=> MATTERDevice_AttributeOrder($b) || $a cmp $b
             } keys %{$attributes}) {
                 my $value = $attributes->{$path};
                 if ($path =~ m{^(\d+)/(\d+)/(\d+)$}) {
@@ -3051,7 +3115,26 @@ sub MATTERDevice_Rename {
 sub MATTERDevice_SyncNodeReadings($;$) {
     my ($root, $only_child) = @_;
     return unless $root && ($root->{endpoint_id} // 0) == 0;
-    my @children = $only_child ? ($only_child) : MATTERDevice_NodeChildren($root);
+    my @all = MATTERDevice_NodeChildren($root);
+    my %endpoints = map { $_->{endpoint_id} => $_ } ($root, @all);
+    $root->{'endpoint_' . $_->{endpoint_id}} = $_ for @all;
+    for my $child (@all) {
+        my $ep = $child->{endpoint_id};
+        my @owners = grep { $_ != $ep && $endpoints{$_}{helper}{parts_list}{$ep} }
+            keys %endpoints;
+        # Full-family lists include grandchildren. Remove every ancestor that
+        # names another candidate; only a unique immediate parent is usable.
+        my @direct = grep {
+            my $candidate = $_;
+            !grep { $_ != $candidate && $endpoints{$candidate}{helper}{parts_list}{$_} } @owners
+        } @owners;
+        if (@direct == 1) {
+            $child->{parentEndpoint} = 0 + $direct[0];
+        } else {
+            delete $child->{parentEndpoint};
+        }
+    }
+    my @children = $only_child ? ($only_child) : @all;
 
     foreach my $child (@children) {
         my @changes;
@@ -3059,9 +3142,15 @@ sub MATTERDevice_SyncNodeReadings($;$) {
             next if MATTERDevice_IsDisabled($child);
             next if $reading eq 'model' &&
                 !$root->{helper}{available};
-            my $source = $root->{READINGS}{$reading};
-            next unless ref($source) eq 'HASH';
-            my $value = $source->{VAL};
+            my $value;
+            if ($reading eq 'available' && MATTERDevice_BridgedAncestors($child)) {
+                my $online = MATTERDevice_EndpointAvailability($child);
+                $value = defined($online) ? ($online ? 'true' : 'false') : 'unknown';
+            } else {
+                my $source = $root->{READINGS}{$reading};
+                next unless ref($source) eq 'HASH';
+                $value = $source->{VAL};
+            }
             next unless defined($value) && !ref($value);
             my $previous = ReadingsVal($child->{NAME}, $reading, undef);
             next if defined($previous) && $previous eq $value;
@@ -3077,11 +3166,66 @@ sub MATTERDevice_SyncNodeReadings($;$) {
         push @changes, ['associatedWith', length($links) ? "$links $root_name" : $root_name]
             unless $linked{$root_name};
 
-        next unless @changes;
+        # Persist only the module-owned parent reference separately so native
+        # rename and statefile restore keep its ownership distinguishable from
+        # arbitrary user associations. parentEndpoint itself remains numeric.
+        my $parent = defined($child->{parentEndpoint}) ? $endpoints{$child->{parentEndpoint}} : undef;
+        my $parent_name = $parent && $parent ne $root ? $parent->{NAME} : '';
+        my $parent_id = length($parent_name) ? $child->{parentEndpoint} : '';
+        my $old_id = ReadingsVal($child->{NAME}, '.matterParent', '');
+        my $old_parent = length($old_id) && $endpoints{$old_id} ? $endpoints{$old_id}{NAME} : '';
+        # An already present user link is reused without claiming ownership.
+        my $owned_id = length($parent_name) &&
+            (!$linked{$parent_name} || $old_id eq $parent_id) ? $parent_id : '';
+        if ($old_id ne $owned_id) {
+            my @links = grep { length && $_ ne $old_parent } split /[ ,]+/, $links;
+            my %keep = map { $_ => 1 } @links;
+            push @links, $root_name unless $keep{$root_name}++;
+            push @links, $parent_name if length($parent_name) && !$keep{$parent_name};
+            @changes = grep { $_->[0] ne 'associatedWith' } @changes;
+            push @changes, ['associatedWith', join(' ', @links)], ['.matterParent', $owned_id];
+        } elsif (length($parent_name) && !$linked{$parent_name}) {
+            push @changes, ['associatedWith', "$links $parent_name"];
+        }
+
+        unless (@changes) { MATTERDevice_UpdateDisplay($child); next; }
         readingsBeginUpdate($child);
         readingsBulkUpdate($child, $_->[0], $_->[1]) foreach @changes;
         MATTERDevice_ReadingsEndUpdate($child, 1);
     }
+}
+
+# Resolve bridged containers by endpoint IDs within the owning IO/node only.
+# A bridged endpoint can also carry its own functional application type.
+sub MATTERDevice_BridgedAncestors {
+    my ($hash) = @_;
+    return () unless ($hash->{endpoint_id} // 0) > 0;
+    my $root = MATTERDevice_LookupRoot($hash->{IODev}, $hash->{node_id});
+    my (@bridged, %seen);
+    while ($hash && !$seen{$hash->{endpoint_id}}++) {
+        push @bridged, $hash if grep { $_ == 0x0013 } MATTERDevice_DeviceTypeIds($hash);
+        $hash = $root && defined($hash->{parentEndpoint}) ?
+            $root->{'endpoint_' . $hash->{parentEndpoint}} : undef;
+        last if $hash && (($defs{$hash->{NAME}} // '') ne $hash ||
+            ($hash->{IODev} // '') ne ($root->{IODev} // '') ||
+            ($hash->{node_id} // '') ne $root->{node_id});
+    }
+    return @bridged;
+}
+
+sub MATTERDevice_EndpointAvailability {
+    my ($hash) = @_;
+    my $root = ($hash->{endpoint_id} // 0) == 0 ? $hash :
+        MATTERDevice_LookupRoot($hash->{IODev}, $hash->{node_id});
+    return undef unless $root && defined $root->{helper}{available};
+    return 0 unless $root->{helper}{available};
+    my $unknown;
+    for my $bridge (MATTERDevice_BridgedAncestors($hash)) {
+        my $reachable = $bridge->{helper}{bridged_reachable};
+        return 0 if defined($reachable) && !$reachable;
+        $unknown = 1 unless defined $reachable;
+    }
+    return $unknown ? undef : 1;
 }
 
 # Prefer the Descriptor's actual Matter device types. When unavailable, label
@@ -3314,15 +3458,29 @@ existing sensor lifecycle suite models restoration.</p></li>
       reading after a restart, so endpoint type labels and automatic grouping
       do not depend on a new server connection. Invalid or missing Descriptor
       updates do not overwrite known IDs.</li>
-  <li><b>Readings model and available:</b> The root's <code>model</code> (from
-      BasicInformation) and node-wide <code>available</code> are mirrored to
-      its endpoints if reported. <code>available=true/false</code> describes
-      node reachability, not individual endpoint functionality. Unchanged
-      values do not generate repeated endpoint events.</li>
-  <li><b>Reading associatedWith:</b> Endpoints reference their current root
-      through FHEM's native <code>Probably associated with</code> navigation.
-      User-added associations are preserved. FHEM updates the reference when
-      the root device is renamed; no additional HTML navigation is needed.</li>
+  <li><b>Reading deviceTypes:</b> All reported device types as readable labels,
+      including structural companions; unknown IDs retain hexadecimal labels.</li>
+  <li><b>Readings model and available:</b> The root model is mirrored when known.
+      Ordinary endpoints follow node availability. Bridged devices and their
+      functional descendants combine root availability with each enclosing
+      Bridged Node's <code>Reachable</code> (cluster 57, attribute 17): false if
+      either is offline, true only if both are online, otherwise unknown.
+      Functional values are preserved while bridged availability is false or
+      unknown; composition, device types and reachability still update.
+      IO loss or root offline requires fresh bridged reachability on return.</li>
+  <li><b>Internal parentEndpoint / reading associatedWith:</b> Descriptor
+      <code>PartsList</code> determines a unique immediate parent, including
+      full-family lists with grandchildren. Missing/ambiguous parents stay
+      unset. <code>device</code> continues to name the root. Endpoints link to
+      the root and their immediate parent through native FHEMWEB navigation.
+      Other user links remain; native rename updates names without additional
+      rename cascades. Hidden <code>.matterParent</code> stores only the numeric
+      module-owned parent link for cleanup after structure changes/restart.</li>
+  <li><b>Bridge endpoint behavior:</b> Hardware <strong>untested</strong>.
+      Pure Aggregator/Bridged Node endpoints display online/offline/unknown;
+      functional companion types retain their physical display and grouping.
+      Explicit stateFormat remains authoritative. No extra attributes, timers
+      or polling; getConfig includes the endpoint's PartsList and Reachable.</li>
   <li>Set commands marked <code>noArg</code> reject additional arguments before sending.</li>
   <li><b>Capabilities:</b> Cluster commands such as on and identify require a matching endpoint
       <code>AcceptedCommandList</code> entry and applicable
@@ -3456,8 +3614,8 @@ is inferred. Electrical sensors prefer power (W), then energy (kWh), voltage
 <li>Switch/button endpoints show their own last event as <code>last: short</code>
 etc.; repeats still emit separate button events. Controller types are not
 assumed to be lamps. On/Off sensors use their own reported state or a neutral
-boolean 0/1. Structural and unknown types retain an existing state or show
-unknown; Flow Sensor 0x0306 currently has only a label and shows unknown.</li>
+boolean 0/1. Pure Aggregator/Bridged Node types show online/offline/unknown;
+other structural and unknown types retain an existing state or show unknown; Flow Sensor 0x0306 currently has only a label and shows unknown.</li>
 </ul>
 <p>For multi-type endpoints priority is alarm, leak, rain, lock, covering,
 thermostat, fan, lights/plugs, contact, occupancy, On/Off sensor, buttons,
@@ -3803,16 +3961,30 @@ modelliert die Wiederherstellung.</p></li>
       das Reading beim Neustart wieder her; die Typanzeige und die automatische
       Gruppierung benötigen dafür keine neue Serververbindung. Ungültige oder
       fehlende Descriptor-Updates überschreiben die gespeicherten IDs nicht.</li>
-  <li><b>Readings model und available:</b> Das am Root über BasicInformation
-      ermittelte <code>model</code> und die Node-weite Erreichbarkeit
-      <code>available</code> werden bei bekannten Werten an die Endpunkte
-      weitergegeben. <code>available=true/false</code> beschreibt die
-      Erreichbarkeit des Knotens, nicht die Funktion einzelner Endpunkte.
-      Unveränderte Werte erzeugen keine weiteren Endpoint-Events.</li>
-  <li><b>Reading associatedWith:</b> Endpunkte verlinken ihren aktuellen
-      Root-Knoten über FHEMs nativen Bereich <code>Probably associated with</code>.
-      Manuell ergänzte Zuordnungen bleiben erhalten. Beim Umbenennen des Roots
-      aktualisiert FHEM die Referenz automatisch; zusätzliches HTML ist nicht nötig.</li>
+  <li><b>Reading deviceTypes:</b> Alle gemeldeten Gerätetypen als lesbare Namen,
+      einschließlich Strukturtypen; unbekannte IDs bleiben hexadezimal sichtbar.</li>
+  <li><b>Readings model und available:</b> Das bekannte Root-Modell wird gespiegelt.
+      Gewöhnliche Endpunkte folgen der Node-Erreichbarkeit. Überbrückte Geräte
+      und ihre Funktionsendpunkte kombinieren diese mit <code>Reachable</code>
+      jedes übergeordneten Bridged Node (Cluster 57, Attribut 17): false, sobald
+      eine Ebene offline ist; true nur bei durchgehend bekannter Erreichbarkeit,
+      sonst unknown. Bei false/unknown bleiben physische Werte erhalten;
+      Struktur, Typen und Erreichbarkeit werden weiter verarbeitet.
+      Nach IO-Abbruch oder Root-offline ist frische Bridged-Erreichbarkeit nötig.</li>
+  <li><b>Internal parentEndpoint / Reading associatedWith:</b> Descriptor
+      <code>PartsList</code> bestimmt den eindeutigen direkten Elternendpoint,
+      auch bei vollständigen Nachfahrenlisten. Fehlende/mehrdeutige Eltern
+      bleiben ungesetzt. <code>device</code> nennt weiterhin den Root.
+      Endpunkte verlinken Root und direkten Elternendpoint über die native
+      FHEMWEB-Navigation. Andere Benutzerlinks bleiben erhalten; natives Rename
+      aktualisiert die Namen ohne weitere Umbenennungskaskade. Das versteckte
+      <code>.matterParent</code> speichert ausschließlich die numerische,
+      moduleigene Elternverknüpfung zur Bereinigung bei Strukturwechsel/Neustart.</li>
+  <li><b>Bridge-Endpoint-Verhalten:</b> Hardware <strong>ungetestet</strong>.
+      Reine Aggregator-/Bridged-Node-Endpunkte zeigen online/offline/unknown;
+      funktionale Begleittypen behalten ihre physische Anzeige und Gruppierung.
+      Explizites stateFormat hat Vorrang. Keine neuen Attribute, Timer oder
+      Polling; getConfig liest PartsList und Reachable des Endpunkts mit.</li>
   <li>Set-Befehle mit <code>noArg</code> weisen zusätzliche Argumente vor dem Versand ab.</li>
   <li><b>Capabilities:</b> Cluster-Befehle wie on und identify erfordern einen passenden Eintrag in
       der <code>AcceptedCommandList</code> des jeweiligen Endpunkts sowie
@@ -3954,8 +4126,8 @@ Energie (kWh), Spannung (V) und Strom (A).</li>
 <li>Taster zeigen das eigene letzte Ereignis, z. B. <code>last: short</code>;
 Wiederholungen bleiben separate button-Events. Steuergeräte werden nicht als
 Leuchten behandelt. On/Off-Sensoren verwenden ihren eigenen gemeldeten state
-oder neutral 0/1. Strukturelle und unbekannte Typen behalten vorhandenes state
-oder zeigen unknown; Flow Sensor 0x0306 besitzt bisher nur einen Typnamen und
+oder neutral 0/1. Reine Aggregator-/Bridged-Node-Typen zeigen online/offline/unknown;
+andere strukturelle und unbekannte Typen behalten vorhandenes state oder zeigen unknown; Flow Sensor 0x0306 besitzt bisher nur einen Typnamen und
 zeigt unknown.</li>
 </ul>
 <p>Bei mehreren Typen gilt: Alarm, Wasserleck, Regen, Schloss, Jalousie,

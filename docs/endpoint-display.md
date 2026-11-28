@@ -1,6 +1,6 @@
 # Endpoint display defaults (#89; reading updates #91 and V0.43)
 
-`STATE` is the presentation of an endpoint's existing readings. This change
+`STATE` presents functional readings or, for pure bridge infrastructure, current effective reachability. This change
 adds no redundant physical readings, no stateFormat attribute, no polling and no
 Matter requests. V0.42 replaces numeric lock_state with functional text state;
 this is a reading-interface change, not another display-derived state copy. Existing on/off and binary-sensor `state` readings/events
@@ -50,7 +50,8 @@ source readings are absent. Invalid/null reports retain last-valid readings.
 | Pressure 0x0305 | pressure hPa. |
 | Illuminance 0x0106 | brightness lx, with recorded source provenance. |
 | Flow 0x0306 | unknown: currently only a label, no FlowMeasurement parser. |
-| Structural 0x000E, 0x0011, 0x0012, 0x0013, 0x0014, 0x0016 | Ignore as companions to functional types; if no known functional type is present, retain an existing own state or show unknown. Root behavior depends on endpoint ID 0, not a type label. |
+| Pure Aggregator/Bridged Node 0x000E, 0x0013 | Current effective online/offline/unknown, derived from root runtime availability and enclosing Bridged Node Reachable. No extra state reading or stateFormat. Functional types (including unknown/vendor application types) take precedence. |
+| Other structural 0x0011, 0x0012, 0x0014, 0x0016 | Ignore as companions to functional types; otherwise existing own state or unknown. Root behavior depends on endpoint ID 0, not a type label. |
 | Unknown/vendor types | Existing own state, otherwise unknown; no arbitrary reading/name-based guessing. |
 
 The current parser now validates the displayed air-quality, ExpressedState and
@@ -211,3 +212,42 @@ shared-rule provenance, Perl harness syntax and UTF-8/POD checks pass. No
 additional protocol requests, timers, text aliases or derived state readings
 were added. Physical Matter hardware/external server/configDB/full-process
 restart limits remain as described above.
+
+## Bridge endpoint model (#103, hardware untested)
+
+The model uses reported Descriptor DeviceTypeList/PartsList and Bridged Device
+Basic Information Reachable (57/17). Readable deviceTypes lists every declared
+type; existing labels/groups keep their functional priority. Full-family
+PartsLists are reduced to a unique immediate parent in the same IO/node.
+parentEndpoint is a numeric runtime internal. associatedWith keeps the root
+and immediate parent; hidden .matterParent persists ownership of the numeric
+module-added parent link, without a parallel public hierarchy reading.
+
+Bridged availability combines the current root report with all enclosing
+bridged Reachable reports. False overrides true/unknown; absent root authority
+stays unknown. Root offline/IO invalidation clears runtime bridged Reachable;
+restored public readings cannot grant permission. Composition, types and
+Reachable are processed before functional values in snapshots/getConfig and
+remain processable during bridged offline. Physical values/events stay gated;
+stateFormat and local disable retain their normal behavior. The existing root
+availability epoch also invalidates older reads across bridged availability
+changes; existing endpoint exclusions block affected values in older discovery
+snapshots. There is no per-endpoint timer, polling, migration or new attribute.
+
+Primary evidence inspected 2026-11-27:
+
+- [CSA Matter Device Library 1.2, §2.6.6](https://csa-iot.org/wp-content/uploads/2023/10/Matter-1.2-Device-Library-Specification.pdf):
+  Separate Endpoints and full-family PartsList composition for Bridged Node.
+- [CSA Matter Core 1.3, §11.1.5.18](https://csa-iot.org/wp-content/uploads/2024/05/matter-1-3-core-specification.pdf):
+  Reachable describes the bridge's reachability of the bridged device.
+- The pinned FHEM core above: getPawList consumes associatedWith; CommandRename
+  rewrites it; REREADCFG runs after restoration but before init_done=1.
+  Startup Notify therefore explicitly permits display calculation after
+  restoration without enabling reading events during configuration loading.
+
+The actual-core bridge fixture covers display, raw state/timestamps, user
+formats, getPawList, native parent rename, save/rereadcfg and changing a restored
+parent link. Callback regressions additionally cover full-family reduction,
+multiple bridged devices, unknown/invalid Reachable, delayed reads, live
+reparenting, mixed/unknown types and disabled structure. External Matter server,
+physical ELTAKO and configDB behavior remain untested.
