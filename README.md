@@ -436,6 +436,14 @@ engine.
   RSSI is not the parent selection. Later metadata and native rename/delete
   can reformat a cached list without a new neighbor report. See
   [Thread neighbor evidence and limits](docs/thread-neighbors.md).
+  The root detail page also shows a **Thread neighbors** table with clickable
+  known FHEM root names, role/parent and RSSI. This table appears only with
+  `diagnostics=1` and accepted usable neighbor data, including on roots
+  without endpoints. Unknown or ambiguous neighbors remain plain addresses.
+  The reading stays plain text for events, logging and JSON consumers.
+  The table is rendered when opening/reloading the detail page; it adds no
+  polling or background refresh. Disabling diagnostics hides the table on
+  the next page load even though existing readings are retained.
   Enabling diagnostics sends no request; reading timestamps advance only
   when values change, and snapshots may contain cached server data.
   `attr <endpoint> rawReadings 1` permits bounded additional readings for

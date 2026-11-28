@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-28  MATTERDevice V0.53 (#108): Add clickable known Thread neighbors with role/parent and RSSI to the existing root detail page, only with diagnostics enabled and usable runtime data. Share the row resolver with the unchanged plain-text reading; preserve endpoint navigation. Render on page load without polling, extra readings or HTML in events/logging/API values. Add callback and actual-FHEMWEB tests in both encodings. MATTER remains V0.48.
+
 - 2026-11-28  MATTERDevice V0.52 (#106): Format Thread neighbor addresses as exact 16-digit hex, resolve unique current-session root identities on the same IO/ExtendedPanId and mark a unique parent from child Rloc16/role. Add opt-in threadExtAddress/threadRloc16 from supplied Thread diagnostics and Base64 Thread interface addresses. Refresh names/parent presentation on later metadata and native lifecycle changes; preserve strongest-neighbor RSSI/LQI, offline gates and passive operation. No polling, route tracking or migration. Automated callback/real-FHEM coverage; hardware untested.
 
 - 2026-11-28  MATTERDevice V0.51: Complete utility device-type labels for Power Source (0x0011), OTA Requestor (0x0012) and OTA Provider (0x0014). Reuse the central labels for deviceTypes and endpoint descriptions; preserve structural grouping and functional display priority. Cover reported root/endpoint labels with callback and actual-FHEM regressions. MATTER remains V0.48.

@@ -619,12 +619,54 @@ my $thread_report = sub {
         $literal->({node_id => $node, attributes => $attrs}).')');
 };
 my $thread_list = sub {$device->('MATTER_ThreadCore')->{Readings}{threadNeighborList}{Value}};
+my $thread_page = sub {
+    my $response = $http->get("$base?detail=MATTER_ThreadCore");
+    die "Thread detail request failed" unless $response->{success};
+    return ($response->{headers}{'content-encoding'} // '') eq 'gzip' ? memGunzip($response->{content}) : $response->{content};
+};
+unlike($thread_page->(), qr/<span class="mkTitle">Thread neighbors<\/span>/,
+    'actual FHEMWEB hides empty Thread table before reports arrive');
+
 $thread_report->(99601, {'0/53/1' => 2, '0/53/4' => $thread_net, '0/53/64' => 0x0401, '0/53/7' => $thread_rows});
 like($thread_list->(), qr/0200000000000106 \(parent, -75 dBm\)/, 'real core marks weaker neighbor as parent from Rloc16');
 $thread_report->(99602, {'0/53/4' => $thread_net, '0/51/0' => [{'1' => 1, '7' => 4, '4' => 'AgAAAAAAAQY='}]});
 like($thread_list->(), qr/MATTER_ThreadPeer \(parent, -75 dBm\)/, 'real core resolves late base64 identity');
+my $before_thread_page = $device->('MATTER_ThreadCore')->{Readings};
+my $thread_html = $thread_page->();
+like($thread_html, qr/<span class="mkTitle">Thread neighbors<\/span>/, 'actual FHEMWEB displays the opt-in Thread table');
+like($thread_html, qr/<a href="\?detail=MATTER%5FThreadPeer">MATTER_ThreadPeer<\/a>/,
+    'actual FHEMWEB links known root from the neighbor table');
+my $peer_link_page = $http->get("$base?detail=MATTER%5FThreadPeer");
+ok($peer_link_page->{success}, 'browser can follow the percent-encoded neighbor link');
+my $peer_link_html = ($peer_link_page->{headers}{'content-encoding'} // '') eq 'gzip'
+    ? memGunzip($peer_link_page->{content}) : $peer_link_page->{content};
+like($peer_link_html, qr/data-name="MATTER_ThreadPeer">NAME/, 'neighbor link opens the intended existing root');
+
+
+like($thread_html, qr/<td>parent<\/td><td>-75 dBm<\/td>/, 'actual FHEMWEB shows parent and signal');
+like($thread_html, qr/<td>ffffffffffffffff<\/td>/, 'actual FHEMWEB renders an unknown neighbor without link');
+is_deeply($device->('MATTER_ThreadCore')->{Readings}, $before_thread_page, 'GET detail does not write HTML or advance readings');
+$thread_report->(99601, {'1/6/0' => JSON::true});
+like($thread_page->(), qr/<span class="mkTitle">Matter endpoints<\/span>/,
+    'endpoint navigation coexists with the Thread table');
+
+$cmd->('attr MATTER_ThreadCore diagnostics 0');
+unlike($thread_page->(), qr/<span class="mkTitle">Thread neighbors<\/span>/,
+    'actual FHEMWEB removes the table after diagnostics=0');
+is($thread_list->(), $before_thread_page->{threadNeighborList}{Value}, 'diagnostics=0 retains the plain diagnostic reading');
+like($thread_page->(), qr/<span class="mkTitle">Matter endpoints<\/span>/,
+    'diagnostics=0 preserves the existing endpoint table');
+
+$cmd->('attr MATTER_ThreadCore diagnostics 1');
+unlike($thread_page->(), qr/<span class="mkTitle">Thread neighbors<\/span>/,
+    're-enabling alone cannot render old saved readings as a topology');
+$thread_report->(99601, {'0/53/1' => 2, '0/53/4' => $thread_net, '0/53/64' => 0x0401, '0/53/7' => $thread_rows});
+
 is($cmd->('rename MATTER_ThreadPeer ThreadPeerRenamed'), '', 'real core renames peer');
 like($thread_list->(), qr/ThreadPeerRenamed \(parent, -75 dBm\)/, 'real RenameFn updates dependent presentation');
+like($thread_page->(), qr/<a href="\?detail=ThreadPeerRenamed">ThreadPeerRenamed<\/a>/,
+    'actual FHEMWEB link follows native root rename');
+
 is($cmd->('modify ThreadPeerRenamed 99603'), '', 'real core reuses peer hash for another Matter identity');
 unlike($thread_list->(), qr/ThreadPeerRenamed/, 'real modify revokes identity despite saved diagnostic readings');
 is($cmd->('modify ThreadPeerRenamed 99602'), '', 'real core restores peer definition');
