@@ -440,6 +440,8 @@ engine.
   known FHEM root names, role/parent and RSSI. This table appears only with
   `diagnostics=1` and accepted usable neighbor data, including on roots
   without endpoints. Unknown or ambiguous neighbors remain plain addresses.
+  Both detail tables keep their full-width theme frame while their data
+  columns use content width; the remaining space stays empty on the right.
   The reading stays plain text for events, logging and JSON consumers.
   The table is rendered when opening/reloading the detail page; it adds no
   polling or background refresh. Disabling diagnostics hides the table on

@@ -1,1 +1,1 @@
-2026-11-28  MATTERDevice V0.53: Show clickable Thread neighbors in the root detail page only with diagnostics=1. Preserve plain diagnostic readings and existing endpoint links.
+2026-11-28  MATTERDevice V0.54: Keep endpoint and Thread-neighbor columns compact within the full-width detail tables; unused space remains on the right.

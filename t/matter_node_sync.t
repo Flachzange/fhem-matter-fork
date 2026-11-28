@@ -1295,7 +1295,7 @@ MATTER_ProcessNode($defs{ioA}, {
 });
 my $types_root = $defs{MATTER_TypeDisplay};
 my $type_html = MATTERDevice_FWDetail('WEB', 'MATTER_TypeDisplay', 'Matter');
-like($type_html, qr/<tr><td>EP<\/td><td>Type<\/td><td>FHEM device<\/td><\/tr>/,
+like($type_html, qr/<tr\b[^>]*><td>EP<\/td><td>Type<\/td><td>FHEM device<\/td>/,
      'compact column labels use regular table cells');
 unlike($type_html, qr/<th(?:\s|>)/i, 'endpoint overview does not use styled header cells');
 like($type_html, qr/<td>1<\/td><td>On\/Off<\/td>/,

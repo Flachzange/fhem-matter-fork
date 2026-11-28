@@ -89,7 +89,12 @@ by parsing the possibly truncated reading. Known devices have native relative
 `?detail=` links using FHEMWEB's `urlEncode`; text uses `FW_htmlEscape`.
 Unknown or ambiguous peers have no link. Role/parent and RSSI are shared with
 the reading, which retains its 600-character plain-text bound. The HTML table
-shows complete cells for the same first 16 entries.
+shows complete cells for the same first 16 entries. Both the endpoint and
+neighbor tables retain their full-width theme frame. Three narrow content
+columns with non-wrapping rows keep the data together; a fourth empty,
+aria-hidden cell in every row takes the remaining width on the right.
+The column group is local markup in the two module tables, not a global
+FHEMWEB/Theme CSS change.
 
 Rendering does not write readings or start requests/timers. As with the
 existing endpoint table, updates are visible on opening/reloading the detail
