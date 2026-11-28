@@ -1,1 +1,1 @@
-2026-11-28  MATTERDevice V0.51: Translate Power Source (0x0011), OTA Requestor (0x0012) and OTA Provider (0x0014) in deviceTypes and endpoint descriptions. MATTER remains V0.48.
+2026-11-28  MATTERDevice V0.52: Show Thread neighbor addresses in hex, resolve known FHEM root names and mark an unambiguous parent for end devices. Passive diagnostics only; no polling.

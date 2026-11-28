@@ -424,7 +424,18 @@ engine.
   These readings exist only on the root and are not mirrored to endpoints.
   The German/English commandref's **Diagnostic readings / Diagnose-Readings**
   section in [97_MATTERDevice.pm](FHEM/97_MATTERDevice.pm)
-  lists all nine readings, units, RSSI/LQI selection and freshness limits.
+  lists the readings, units, RSSI/LQI selection and freshness limits.
+  `threadExtAddress` exposes the own Thread address as 16 hex digits;
+  `threadRloc16` exposes the own reported routing locator (decimal).
+  Neighbor addresses use hex and resolve to current FHEM root names only
+  when accepted diagnostic identities match uniquely on the same IO and
+  Thread ExtendedPanId. Both roots need `diagnostics=1`. Unknown peers,
+  including Border Routers without a known Matter root, retain their address.
+  End devices and REEDs with a valid child locator can mark a unique parent
+  from Rloc16; routers/leaders have no general active neighbor. The strongest
+  RSSI is not the parent selection. Later metadata and native rename/delete
+  can reformat a cached list without a new neighbor report. See
+  [Thread neighbor evidence and limits](docs/thread-neighbors.md).
   Enabling diagnostics sends no request; reading timestamps advance only
   when values change, and snapshots may contain cached server data.
   `attr <endpoint> rawReadings 1` permits bounded additional readings for
