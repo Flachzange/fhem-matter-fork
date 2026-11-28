@@ -200,6 +200,11 @@ sub CommandRename {
         # FHEM uses setReadingsVal here, which does not publish an event.
         $device->{READINGS}{associatedWith}{VAL} = $links;
     }
+    # Core publishes global RENAMED after RenameFn and association rewrites.
+    for my $device (values %defs) {
+        MATTERDevice_Notify($device, {NAME => 'global', CHANGED => ["RENAMED $old $new"]})
+            if ($device->{TYPE} // '') eq 'MATTERDevice';
+    }
     return undef;
 }
 
@@ -2941,14 +2946,14 @@ subtest 'Issue #35 passive diagnostics and raw boundaries' => sub {
         is(ReadingsVal($root, 'wifiRssi', ''), -47, 'invalid RSSI preserves last valid report');
     }
     is(ReadingsVal('MATTER_DiagSecond', 'wifiRssi', ''), -63, 'other IO retains snapshot RSSI');
-    my @rows = map { {extAddress => "n$_", averageRssi => -$_, isChild => JSON::false} } 1..17;
+    my @rows = map { {extAddress => $_, averageRssi => -$_, isChild => JSON::false} } 1..17;
     $report->('0/53/7', [reverse @rows]);
     is(ReadingsVal($root, 'threadNeighbors', -1), 17, 'count includes all neighbors');
-    is(ReadingsVal($root, 'threadNeighborList', ''), join(', ', map {"n$_ (router, -$_ dBm)"} 1..16),
+    is(ReadingsVal($root, 'threadNeighborList', ''), substr(join(', ', map {sprintf("%016x (router, -%d dBm)", $_, $_)} 1..16), 0, 600),
        'list contains exactly the strongest sixteen in signal order');
-    my @long = map { {extAddress => 'a' x 24, averageRssi => -$_} } 1..16;
+    my @long = map { {extAddress => '18446744073709551615', averageRssi => -$_} } 1..16;
     $report->('0/53/7', \@long);
-    is(length(ReadingsVal($root, 'threadNeighborList', '')), 600, 'formatted list capped at 600 characters');
+    cmp_ok(length(ReadingsVal($root, 'threadNeighborList', '')), '<=', 600, 'hex neighbor list respects the character bound');
     $report->('0/53/7', [($rows[0]) x 256]);
     is(ReadingsVal($root, 'threadNeighbors', -1), 256, '256 rows accepted');
     my $list = ReadingsVal($root, 'threadNeighborList', '');
@@ -6307,6 +6312,165 @@ subtest 'Issue 91: functional readings and independent sources' => sub {
     is(MATTERDevice_Percentage($ep{4}),undef,'ambiguous old brightness cannot scale a new identity');
 };
 
+subtest 'Issue #106 Thread neighbor identity and parent from accepted reports' => sub {
+    my $io = $defs{ioA};
+    my $timer_count = scalar @timers;
+    my $sends = scalar @sent_requests;
+    my $report = sub {
+        my ($node, $path, $value, $target_io) = @_;
+        MATTER_ParseMessage($target_io // $io, encode_json({event => 'attribute_updated',
+            data => [$node, $path, $value]}));
+    };
+    my $create = sub {
+        my ($node, $name, $target_io) = @_;
+        MATTER_ProcessNode($target_io // $io, {node_id => $node, name => $name,
+            available => JSON::true, attributes => {}});
+        my $root = $defs{"MATTER_$name"};
+        CommandAttr(undef, "$root->{NAME} diagnostics 1");
+        return $root;
+    };
+    my $net = '0x1122334455667788';
+    my $first = $create->(10601, 'ThreadFirst');
+    my $second = $create->(10602, 'ThreadSecond');
+    my $list = sub { ReadingsVal($first->{NAME}, 'threadNeighborList', '') };
+    my $rows = [
+        {extAddress => '18446744073709551615', rloc16 => 0x0800, averageRssi => -30, lqi => 3, isChild => JSON::false},
+        {'0' => '0x0200000000000001', '2' => 0x0400, '6' => -74, '5' => 1, '13' => JSON::false},
+        {extAddress => 2, rloc16 => 0x0402, averageRssi => -20, isChild => JSON::true},
+    ];
+    $report->(10601, '0/53/7', $rows);
+    like($list->(), qr/ffffffffffffffff \(router, -30 dBm\)/, 'uint64 maximum survives WebSocket JSON without precision loss');
+    like($list->(), qr/0200000000000001 \(router, -74 dBm\)/, 'unknown neighbor uses exactly sixteen hex digits');
+    $report->(10601, '0/53/4', $net);
+    $report->(10601, '0/53/1', 2);
+    $report->(10601, '0/53/64', 0x0401);
+    like($list->(), qr/0200000000000001 \(parent, -74 dBm\)/, 'late own Rloc16 identifies the weaker parent');
+    is(ReadingsVal($first->{NAME}, 'rssi', ''), -30, 'strongest non-child RSSI remains independent of parent');
+    is(ReadingsVal($first->{NAME}, 'lqi', ''), 3, 'LQI retains the original strongest-neighbor semantics');
+    $report->(10602, '0/53/4', $net);
+    $report->(10602, '0/51/0', [{'1' => 1, '7' => 4, '4' => 'AgAAAAAAAAE='}]);
+    is(ReadingsVal($second->{NAME}, 'threadExtAddress', ''), '0200000000000001', 'tagged base64 hardware address is decoded in network byte order');
+    like($list->(), qr/MATTER_ThreadSecond \(parent, -74 dBm\)/, 'late identity resolves an existing neighbor list');
+    my $writes = $single_writes{$first->{NAME}}{threadNeighborList};
+    $report->(10602, '0/51/0', [{isOperational => JSON::true, type => 4, hardwareAddress => 'AgAAAAAAAAE='}]);
+    is($single_writes{$first->{NAME}}{threadNeighborList}, $writes, 'unchanged named metadata does not republish neighbor reading');
+    $report->(10602, '0/53/63', '144115188075855873');
+    is(ReadingsVal($second->{NAME}, 'threadExtAddress', ''), '0200000000000001', 'decimal own address agrees with hardware bytes');
+    MATTER_ParseMessage($io, '{"event":"attribute_updated","data":[10602,"0/53/63",18446744073709551615]}');
+    is(ReadingsVal($second->{NAME}, 'threadExtAddress', ''), 'ffffffffffffffff', 'unquoted JSON uint64 maximum is preserved exactly by the deployed decoder');
+    $report->(10602, '0/53/63', '144115188075855873');
+    $io->{helper}{pending_config}{106100} = {
+        node_id => 10602, endpoint_id => 0, owner => $second, fuuid => $second->{FUUID},
+        root_fuuid => $second->{FUUID}, created_at => $mock_time,
+        availability_epoch => $second->{helper}{availability_epoch} // 0,
+    };
+    $report->(10602, '0/53/63', '144115188075855873');
+    MATTER_ParseMessage($io, encode_json({message_id => 106100,
+        result => {'0/53/63' => '0x0200000000000002'}}));
+    is(ReadingsVal($second->{NAME}, 'threadExtAddress', ''), '0200000000000001', 'late correlated read cannot replace newer live identity');
+    $io->{helper}{pending_config}{106101} = {
+        node_id => 10602, endpoint_id => 0, owner => $second, fuuid => $second->{FUUID},
+        root_fuuid => $second->{FUUID}, created_at => $mock_time,
+        availability_epoch => $second->{helper}{availability_epoch} // 0,
+    };
+    $report->(10602, '0/53/63', 'not-an-address');
+    MATTER_ParseMessage($io, encode_json({message_id => 106101,
+        result => {'0/53/63' => '0x0200000000000001'}}));
+    is(ReadingsVal($second->{NAME}, 'threadExtAddress', ''), '0200000000000001', 'invalid live identity leaves valid read eligible');
+    for my $bad (undef, {}, '-1', '18446744073709551616', '1e19', '0x12345678901234567', "12\n") {
+        $report->(10602, '0/53/63', $bad);
+        is(ReadingsVal($second->{NAME}, 'threadExtAddress', ''), '0200000000000001', 'invalid own address preserves accepted identity');
+    }
+    for my $bad ('not-base64', 'AAAAAAAA', 'AgAAAAAAAAF=', 'AgAAAAAAAAE=extra') {
+        $report->(10602, '0/51/0', [{isOperational => 1, type => 4, hardwareAddress => $bad}]);
+        is(ReadingsVal($second->{NAME}, 'threadExtAddress', ''), '0200000000000001', 'invalid byte encoding cannot create or replace an identity');
+    }
+    my $long_name = 'ThreadNeighbor_' . ('x' x 60);
+    CommandRename(undef, "$second->{NAME} $long_name");
+    $report->(10601, '0/53/7', [($rows->[1]) x 16]);
+    is(length($list->()), 600, 'resolved long names still obey the 600-character limit');
+    $report->(10601, '0/53/7', $rows);
+    CommandRename(undef, "$second->{NAME} RenamedThreadNeighbor");
+    like($list->(), qr/RenamedThreadNeighbor \(parent, -74 dBm\)/, 'root rename immediately refreshes displayed neighbor name');
+    for my $role (3, 4) {
+        $report->(10601, '0/53/1', $role);
+        like($list->(), qr/\(parent, -74 dBm\)/, 'end device and REED in child location retain parent');
+    }
+    for my $role (0, 1, 5, 6) {
+        $report->(10601, '0/53/1', $role);
+        unlike($list->(), qr/\(parent,/, 'unknown, detached, router and leader have no inferred parent');
+    }
+    $report->(10601, '0/53/1', 2);
+    for my $rloc (0x0400, 0x0601, 0xFC01, 0xFFFF) {
+        $report->(10601, '0/53/64', $rloc);
+        unlike($list->(), qr/\(parent,/, 'router, reserved or invalid locator cannot identify parent');
+    }
+    $report->(10601, '0/53/64', 0x0401);
+    $report->(10601, '0/53/7', [@$rows, {%{$rows->[1]}, extAddress => 3}]);
+    unlike($list->(), qr/\(parent,/, 'duplicate candidate Rloc16 is ambiguous');
+    $report->(10601, '0/53/7', $rows);
+    like($list->(), qr/\(parent,/, 'a unique candidate restores parent marking');
+    my $other = $create->(10602, 'ThreadOtherIO', $defs{ioB});
+    $report->(10602, '0/53/4', $net, $defs{ioB});
+    $report->(10602, '0/53/63', '0x0200000000000001', $defs{ioB});
+    like($list->(), qr/RenamedThreadNeighbor/, 'same address/node on another IO cannot create ambiguity');
+    my $duplicate = $create->(10603, 'ThreadDuplicate');
+    $report->(10603, '0/53/4', '0x8877665544332211');
+    $report->(10603, '0/53/63', '0x0200000000000001');
+    like($list->(), qr/RenamedThreadNeighbor/, 'same address in another Thread network cannot create ambiguity');
+    $report->(10603, '0/53/4', $net);
+    $report->(10603, '0/53/63', '0x0200000000000001');
+    like($list->(), qr/0200000000000001 \(parent,/, 'duplicate identity in same IO/network falls back to hex');
+    CommandDelete(undef, $duplicate->{NAME});
+    like($list->(), qr/RenamedThreadNeighbor/, 'deleting duplicate makes the remaining identity unique');
+    CommandAttr(undef, "$second->{NAME} diagnostics 0");
+    unlike($list->(), qr/RenamedThreadNeighbor/, 'disabled diagnostics revoke the runtime identity');
+    CommandAttr(undef, "$second->{NAME} diagnostics 1");
+    unlike($list->(), qr/RenamedThreadNeighbor/, 'enabling diagnostics does not trust saved readings');
+    $report->(10602, '0/53/4', $net);
+    $report->(10602, '0/53/63', '0x0200000000000001');
+    like($list->(), qr/RenamedThreadNeighbor/, 'new reports restore identity');
+    MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {node_id => 10602, available => JSON::false}}));
+    unlike($list->(), qr/RenamedThreadNeighbor/, 'offline transition revokes identity');
+    $report->(10602, '0/53/63', '0x0200000000000002');
+    ok(!exists($second->{helper}{thread_diagnostics}), 'offline data cannot refill diagnostic cache');
+    MATTER_ParseMessage($io, encode_json({event => 'node_updated', data => {node_id => 10602, available => JSON::true}}));
+    $report->(10602, '0/53/4', $net);
+    $report->(10602, '0/53/63', '0x0200000000000001');
+    like($list->(), qr/RenamedThreadNeighbor/, 'online reports restore address mapping');
+    my $writes_before_close = $single_writes{$first->{NAME}}{threadNeighborList};
+    $io->{helper}{closing} = 1;
+    MATTERDevice_InvalidateAvailability($second);
+    is($single_writes{$first->{NAME}}{threadNeighborList}, $writes_before_close,
+        'IO close does not emit peer presentation events before every root is invalidated');
+    delete $io->{helper}{closing};
+    MATTERDevice_RefreshThreadNeighbors($io);
+    unlike($list->(), qr/RenamedThreadNeighbor/, 'invalidated runtime identity is not resolved');
+    MATTERDevice_UpdateAvailability($second, 1);
+    $report->(10602, '0/53/4', $net);
+    $report->(10602, '0/53/63', '0x0200000000000001');
+    $second->{READINGS}{networkType}{VAL} = 'before-change';
+    $reading_event_hook = sub {
+        my ($device, $reading) = @_;
+        return unless $device eq $second && $reading eq 'threadExtAddress';
+        MATTERDevice_InvalidateIdentity($second);
+    };
+    $report->(10602, '0/51/0', [{isOperational => 1, type => 4, hardwareAddress => 'AgAAAAAAAAI='}]);
+    undef $reading_event_hook;
+    is(ReadingsVal($second->{NAME}, 'networkType', ''), 'before-change',
+        'diagnostic event changing identity prevents the old networkType from being published afterwards');
+    ok(!exists($second->{helper}{thread_diagnostics}), 'reentrant identity change leaves no old runtime cache');
+    unlike($list->(), qr/RenamedThreadNeighbor/, 'Matter identity change revokes old name mapping');
+
+    MATTERDevice_InvalidateAvailability($first);
+    ok(!exists($first->{helper}{thread_diagnostics}), 'IO loss/startup invalidates runtime topology');
+    $report->(10601, '0/53/7', $rows);
+    ok(!exists($first->{helper}{thread_diagnostics}), 'unknown availability blocks diagnostic reports');
+    is(scalar(@timers), $timer_count, 'identity and parent formatting introduce no timers');
+    is(scalar(@sent_requests), $sends, 'identity and parent formatting introduce no requests');
+    CommandDelete(undef, $_->{NAME}) for ($first, $second, $other);
+};
+
 subtest 'All module public reading names follow one naming policy' => sub {
     my %native = map {$_=>1} qw(state associatedWith IODev measured-temp desired-temp desired-temp-cool);
     my @names;
@@ -6318,7 +6482,8 @@ subtest 'All module public reading names follow one naming policy' => sub {
         push @names, $source =~ /\$readings\{([a-zA-Z0-9_]+)\}/g;
     }
     my %seen;
-    for my $name (grep {!$seen{$_}++} @names) {
+    # Underscored conversion keys carry runtime topology, never public readings.
+    for my $name (grep {!/^_/ && !$seen{$_}++} @names) {
         ok($native{$name} || $name =~ /\A\.?[a-z][a-zA-Z0-9]*\z/,"canonical public name: $name");
     }
     is(MATTER_CredentialReadingId(7),'7','numeric credential IDs stay readable');

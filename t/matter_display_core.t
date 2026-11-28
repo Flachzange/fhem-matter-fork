@@ -604,6 +604,45 @@ $bridge_live->('10/29/3',[11]);
 is($perl->('join(q(,),getPawList(q(MATTER_BridgeCore_EP11)))'),
     'MATTER_BridgeCore,BridgeContainer','reparenting restores actual native navigation');
 
+# Thread names and parent marking through real FHEM reading events/lifecycle.
+my $thread_rows = [{'0' => '0x0200000000000106', '2' => 0x0400, '6' => -75, '13' => JSON::false},
+    {'0' => '18446744073709551615', '2' => 0x0800, '6' => -30, '13' => JSON::false}];
+my $thread_net = '0x1122334455667788';
+for my $pair ([99601, 'ThreadCore'], [99602, 'ThreadPeer']) {
+    $perl->('MATTER_ProcessNode($defs{io},'.$literal->({node_id => $pair->[0], name => $pair->[1],
+        available => JSON::true, attributes => {}}).')');
+    is($cmd->("attr MATTER_$pair->[1] diagnostics 1"), '', 'real core accepts root diagnostics opt-in');
+}
+my $thread_report = sub {
+    my ($node, $attrs) = @_;
+    $perl->('MATTERDevice_ProcessMessage($defs{'.($node == 99601 ? 'MATTER_ThreadCore' : 'MATTER_ThreadPeer').'},'.
+        $literal->({node_id => $node, attributes => $attrs}).')');
+};
+my $thread_list = sub {$device->('MATTER_ThreadCore')->{Readings}{threadNeighborList}{Value}};
+$thread_report->(99601, {'0/53/1' => 2, '0/53/4' => $thread_net, '0/53/64' => 0x0401, '0/53/7' => $thread_rows});
+like($thread_list->(), qr/0200000000000106 \(parent, -75 dBm\)/, 'real core marks weaker neighbor as parent from Rloc16');
+$thread_report->(99602, {'0/53/4' => $thread_net, '0/51/0' => [{'1' => 1, '7' => 4, '4' => 'AgAAAAAAAQY='}]});
+like($thread_list->(), qr/MATTER_ThreadPeer \(parent, -75 dBm\)/, 'real core resolves late base64 identity');
+is($cmd->('rename MATTER_ThreadPeer ThreadPeerRenamed'), '', 'real core renames peer');
+like($thread_list->(), qr/ThreadPeerRenamed \(parent, -75 dBm\)/, 'real RenameFn updates dependent presentation');
+is($cmd->('modify ThreadPeerRenamed 99603'), '', 'real core reuses peer hash for another Matter identity');
+unlike($thread_list->(), qr/ThreadPeerRenamed/, 'real modify revokes identity despite saved diagnostic readings');
+is($cmd->('modify ThreadPeerRenamed 99602'), '', 'real core restores peer definition');
+$perl->('MATTERDevice_ProcessMessage($defs{ThreadPeerRenamed},'.$literal->({node_id => 99602,
+    available => JSON::true, attributes => {'0/53/4' => $thread_net, '0/53/63' => '0x0200000000000106'}}).')');
+like($thread_list->(), qr/ThreadPeerRenamed/, 'fresh server metadata restores the mapping after modify');
+is($cmd->('delete ThreadPeerRenamed'), '', 'real core deletes peer');
+like($thread_list->(), qr/0200000000000106 \(parent,/, 'real delete immediately removes obsolete name');
+like($cmd->('save; rereadcfg'), qr/^Wrote configuration to /, 'real loader persists diagnostic readings');
+my $restored_thread_list = $thread_list->();
+$thread_report->(99601, {'0/53/1' => 5});
+is($thread_list->(), $restored_thread_list, 'restored public readings cannot authorize new topology updates');
+$perl->('MATTERDevice_UpdateAvailability($defs{MATTER_ThreadCore},1)');
+$thread_report->(99601, {'0/53/7' => $thread_rows});
+unlike($thread_list->(), qr/\(parent,/, 'after restart, old role/Rloc16 are not reused to infer parent');
+$thread_report->(99601, {'0/53/1' => 2, '0/53/64' => 0x0401});
+like($thread_list->(), qr/\(parent,/, 'fresh role and Rloc16 rebuild parent after restart');
+
 # Independent source changes go through actual CommandReload and CommandModify.
 is($cmd->('define versionRoot MATTERDevice 99100; attr versionRoot IODev io; define versionEndpoint MATTERDevice 99100 1; attr versionEndpoint IODev io'),
     '', 'offline root and endpoint can be defined manually');

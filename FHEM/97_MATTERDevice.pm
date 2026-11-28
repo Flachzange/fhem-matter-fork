@@ -5,13 +5,15 @@ use strict;
 use warnings;
 use utf8;
 use JSON;
+use Math::BigInt;
+use MIME::Base64 qw(decode_base64 encode_base64);
 use List::Util qw(min max);
 use Scalar::Util qw(blessed);
 
 our $init_done; # FHEM startup: statefile and attributes are not yet restored
 our $unicodeEncoding; # FHEM supports both unicode and legacy UTF-8 byte strings.
 
-my $MATTERDevice_version = "V0.51 28.11.2026";
+my $MATTERDevice_version = "V0.52 28.11.2026";
 
 # Globale Matter-Metadaten-IDs. Sie werden unabhängig von der clusterspezifischen
 # Attributdefinition verarbeitet. EventList (0xFFFA) wird für ältere
@@ -772,6 +774,8 @@ sub MATTERDevice_InvalidateAvailability($) {
     my ($root) = @_;
     return unless ($root->{endpoint_id} // 0) == 0;
     delete $root->{helper}{available};
+    delete $root->{helper}{thread_diagnostics};
+    MATTERDevice_RefreshThreadNeighbors($root->{IODev});
     ++$root->{helper}{availability_epoch};
     delete $root->{helper}{capability_refresh};
     my @children = MATTERDevice_NodeChildren($root);
@@ -987,6 +991,8 @@ sub MATTERDevice_UpdateAvailability($$) {
             attempts => 0,
         };
     } elsif (!$boolean) {
+        delete $hash->{helper}{thread_diagnostics};
+        MATTERDevice_RefreshThreadNeighbors($hash->{IODev});
         delete $hash->{helper}{capability_refresh};
         delete $_->{helper}{bridged_reachable} for MATTERDevice_NodeChildren($hash);
     }
@@ -1090,6 +1096,13 @@ sub MATTERDevice_Notify($$) {
     }
     my $name = $hash->{NAME};
     my $io = $hash->{IODev};
+    # Rename notification runs after the root's endpoint cascade and native
+    # association rewrites; formatting here cannot interrupt that cascade.
+    if (grep { /\ARENAMED \S+ \Q$name\E\z/ ||
+               /\A(?:ATTR|DELETEATTR) \Q$name\E(?: |\z)/ } @$events) {
+        delete $hash->{helper}{thread_diagnostics} unless AttrVal($name, 'diagnostics', 0);
+        MATTERDevice_RefreshThreadNeighbors($io);
+    }
     return unless $startup || ($io && grep { $_ eq "ATTR $name IODev $io->{NAME}" } @$events);
     if ($io) {
         my $index = $modules{MATTERDevice}{defptr};
@@ -1159,6 +1172,8 @@ sub MATTERDevice_Define($$) {
 
 sub MATTERDevice_Undef($$) {
 my ($hash, $arg) = @_;
+    delete $hash->{helper}{thread_diagnostics};
+    MATTERDevice_RefreshThreadNeighbors($hash->{IODev});
     MATTERDevice_CancelRequests($hash);
     if (($hash->{node_id}) && ($hash->{endpoint_id} == 0)) {
         my $io_name = $hash->{IODev} ? $hash->{IODev}{NAME} : 'no_io';
@@ -1231,7 +1246,12 @@ sub MATTERDevice_AttributeValue {
         return keys(%types) ? join(',', map { sprintf('0x%04X', $_) }
             sort {$a <=> $b} keys %types) : undef;
     }
-    return MATTERDevice_NetworkType($value) if $endpoint == 0 && $cluster == 51 && $attribute == 0;
+    if ($endpoint == 0 && $cluster == 51 && $attribute == 0) {
+        my $type = MATTERDevice_NetworkType($value);
+        return undef unless defined $type;
+        return {networkType => $type,
+            %{MATTERDevice_NetworkDiagnosticValues($cluster, $attribute, $value) // {}}};
+    }
     return MATTERDevice_NetworkDiagnosticValues($cluster, $attribute, $value)
         if $endpoint == 0 && ($cluster == 53 || $cluster == 54);
     if (($cluster == 513 && $attribute == 27) || ($cluster == 514 && $attribute == 1)) {
@@ -1964,11 +1984,43 @@ sub MATTERDevice_NetworkType {
     return keys(%types) ? join(',', sort keys %types) : 'unknown';
 }
 
-# Opt-in passive diagnostics: no additional server reads or polling.
+# uint64 may arrive as a JSON integer or decimal string. Never coerce it via
+# floating point (including sprintf on a 32-bit Perl). Math::BigInt is core.
+sub MATTERDevice_ThreadAddress {
+    my ($value) = @_;
+    return undef unless defined($value) && !ref($value);
+    if ($value =~ /\A0x([0-9a-f]{1,16})\z/i) {
+        return ('0' x (16 - length($1))) . lc($1);
+    }
+    return undef unless $value =~ /\A[0-9]{1,20}\z/;
+    my $hex = Math::BigInt->new("$value")->as_hex;
+    $hex =~ s/\A0x//;
+    return undef if length($hex) > 16;
+    return ('0' x (16 - length($hex))) . $hex;
+}
+
+# Opt-in passive diagnostics: pure conversion shared with freshness tracking.
 sub MATTERDevice_NetworkDiagnosticValues {
     my ($cluster, $attr, $value) = @_;
     my %readings;
-    if ($cluster == 53) {
+    if ($cluster == 51 && $attr == 0 && ref($value) eq 'ARRAY') {
+        my %addresses;
+        for my $interface (@$value) {
+            next unless ref($interface) eq 'HASH';
+            next unless MATTERDevice_NormalizeBoolean(
+                $interface->{isOperational} // $interface->{'1'});
+            next unless ($interface->{type} // $interface->{'7'} // '') eq '4';
+            my $bytes = $interface->{hardwareAddress} // $interface->{'4'};
+            # matterjs-server encodes octet strings as canonical Base64.
+            next unless defined($bytes) && !ref($bytes) &&
+                        $bytes =~ /\A[A-Za-z0-9+\/]{11}=\z/;
+            my $decoded = decode_base64($bytes);
+            next unless length($decoded) == 8 && encode_base64($decoded, '') eq $bytes;
+            $addresses{unpack('H*', $decoded)} = 1;
+        }
+        $readings{threadExtAddress} = keys(%addresses) == 1 ? (keys %addresses)[0] : 'unknown'
+            if %addresses;
+    } elsif ($cluster == 53) {
         if ($attr == 0 && defined($value) && !ref($value) &&
             $value =~ /^\d+$/ && $value <= 255) {
             $readings{threadChannel} = int($value);
@@ -1985,13 +2037,21 @@ sub MATTERDevice_NetworkDiagnosticValues {
         } elsif ($attr == 2 && defined($value) && !ref($value) &&
                  length($value) <= 128) {
             $readings{threadNetwork} = $value;
+        } elsif ($attr == 4 || $attr == 63) {
+            my $address = MATTERDevice_ThreadAddress($value);
+            $readings{$attr == 4 ? '_threadNetworkId' : 'threadExtAddress'} = $address
+                if defined $address;
+        } elsif ($attr == 64 && defined($value) && !ref($value) &&
+                 $value =~ /\A[0-9]+\z/ && $value <= 0xFFFF) {
+            $readings{threadRloc16} = 0 + $value;
         } elsif ($attr == 7 && ref($value) eq 'ARRAY' && @$value <= 256) {
             $readings{threadNeighbors} = scalar(@$value);
             my @neighbors;
             my ($best_rssi, $best_lqi);
             foreach my $n (@$value) {
                 next unless ref($n) eq 'HASH';
-                my $child = $n->{isChild} // $n->{'13'} // 0;
+                my $child = MATTERDevice_NormalizeBoolean($n->{isChild} // $n->{'13'} // 0);
+                next unless defined $child;
                 my $rssi = $n->{averageRssi} // $n->{'6'} //
                            $n->{lastRssi} // $n->{'7'};
                 next unless defined($rssi) && !ref($rssi) &&
@@ -2000,18 +2060,16 @@ sub MATTERDevice_NetworkDiagnosticValues {
                     $best_rssi = $rssi;
                     $best_lqi = $n->{lqi} // $n->{'5'};
                 }
-                my $id = $n->{extAddress} // $n->{'0'} // 'unknown';
-                $id = 'unknown' if ref($id) || length("$id") > 24;
-                push @neighbors, [$rssi,
-                    "$id (" . ($child ? 'child' : 'router') . ", $rssi dBm)"];
+                my $id = MATTERDevice_ThreadAddress($n->{extAddress} // $n->{'0'});
+                my $rloc = $n->{rloc16} // $n->{'2'};
+                $rloc = undef unless defined($rloc) && !ref($rloc) &&
+                    $rloc =~ /\A[0-9]+\z/ && $rloc < 0xFC00 && !($rloc & 0x0200);
+                push @neighbors, {address => $id, rloc => $rloc, child => $child, rssi => $rssi};
             }
             $readings{rssi} = $best_rssi if defined $best_rssi;
             $readings{lqi} = $best_lqi if defined($best_lqi) &&
                                !ref($best_lqi) && $best_lqi =~ /^[0-3]$/;
-            @neighbors = sort { $b->[0] <=> $a->[0] } @neighbors;
-            splice(@neighbors, 16) if @neighbors > 16;
-            $readings{threadNeighborList} = @neighbors ?
-                substr(join(', ', map { $_->[1] } @neighbors), 0, 600) : 'none';
+            $readings{_threadNeighbors} = [sort { $b->{rssi} <=> $a->{rssi} } @neighbors];
         }
     } elsif ($cluster == 54 && $attr == 4 && defined($value) &&
              !ref($value) && $value =~ /^-?\d+$/ &&
@@ -2025,9 +2083,76 @@ sub MATTERDevice_UpdateNetworkDiagnostics {
     my ($hash, $readings) = @_;
     return unless ($hash->{endpoint_id} // 0) == 0 &&
                   AttrVal($hash->{NAME}, 'diagnostics', 0);
-    while (my ($reading, $val) = each %$readings) {
+    my $state = $hash->{helper}{thread_diagnostics} //= {};
+    if (defined($readings->{_threadNetworkId}) && defined($state->{_threadNetworkId}) &&
+        $readings->{_threadNetworkId} ne $state->{_threadNetworkId}) {
+        %$state = (); # A different network cannot reuse the old topology.
+    }
+    # Runtime identity/topology precedes synchronous FHEM reading events.
+    for my $key (qw(threadExtAddress threadRloc16 threadRole _threadNetworkId _threadNeighbors)) {
+        $state->{$key} = $readings->{$key} if exists $readings->{$key};
+    }
+    for my $reading (sort keys %$readings) {
+        next if $reading =~ /\A_/ || $reading eq 'networkType';
+        my $val = $readings->{$reading};
         MATTERDevice_ReadingsSingleUpdate($hash, $reading, $val, 1)
             if ReadingsVal($hash->{NAME}, $reading, '') ne "$val";
+        return unless ($defs{$hash->{NAME}} // '') eq $hash &&
+            ($hash->{helper}{thread_diagnostics} // '') eq $state &&
+            AttrVal($hash->{NAME}, 'diagnostics', 0);
+    }
+    MATTERDevice_RefreshThreadNeighbors($hash->{IODev})
+        if grep { exists $readings->{$_} }
+            qw(threadExtAddress threadRloc16 threadRole _threadNetworkId _threadNeighbors);
+}
+
+# Reformat only cached, accepted diagnostic data. This is presentation, not a
+# new device report. No persistent address registry or periodic work is needed.
+sub MATTERDevice_RefreshThreadNeighbors {
+    my ($io) = @_;
+    # MATTER_Close invalidates every root before allowing reading events.
+    return if !$io || $io->{helper}{closing};
+    for my $root (values %defs) {
+        next unless ($root->{TYPE} // '') eq 'MATTERDevice' &&
+            ($root->{endpoint_id} // -1) == 0 && ($root->{IODev} // '') eq $io &&
+            $root->{helper}{available} && AttrVal($root->{NAME}, 'diagnostics', 0);
+        my $state = $root->{helper}{thread_diagnostics};
+        next unless $state && exists $state->{_threadNeighbors};
+        my $rows = $state->{_threadNeighbors};
+        my %names;
+        # Resolve anew for each root: reading events may rename/delete/rebind
+        # devices synchronously between two publications.
+        if (defined $state->{_threadNetworkId}) {
+            for my $other (values %defs) {
+                next unless ($other->{TYPE} // '') eq 'MATTERDevice' &&
+                    ($other->{endpoint_id} // -1) == 0 && ($other->{IODev} // '') eq $io &&
+                    $other->{helper}{available} && AttrVal($other->{NAME}, 'diagnostics', 0);
+                my $identity = $other->{helper}{thread_diagnostics} // {};
+                next unless ($identity->{_threadNetworkId} // '') eq $state->{_threadNetworkId};
+                my $address = $identity->{threadExtAddress};
+                next unless defined($address) && $address =~ /\A[0-9a-f]{16}\z/;
+                push @{$names{$address}}, $other->{NAME};
+            }
+        }
+        my $rloc = $state->{threadRloc16};
+        my @parents;
+        if (($state->{threadRole} // '') =~ /\A(?:sleepy_end_device|end_device|reed)\z/ &&
+            defined($rloc) && $rloc < 0xFC00 && !($rloc & 0x0200) && ($rloc & 0x01FF)) {
+            @parents = grep { !$_->{child} && defined($_->{rloc}) &&
+                $_->{rloc} == ($rloc & 0xFC00) } @$rows;
+        }
+        my @list;
+        for my $neighbor (@$rows) {
+            my $id = $neighbor->{address} // 'unknown';
+            $id = $names{$id}[0] if $names{$id} && @{$names{$id}} == 1;
+            my $role = @parents == 1 && $neighbor eq $parents[0] ? 'parent' :
+                $neighbor->{child} ? 'child' : 'router';
+            push @list, "$id ($role, $neighbor->{rssi} dBm)";
+            last if @list == 16;
+        }
+        my $list = @list ? substr(join(', ', @list), 0, 600) : 'none';
+        MATTERDevice_ReadingsSingleUpdate($root, 'threadNeighborList', $list, 1)
+            if ReadingsVal($root->{NAME}, 'threadNeighborList', '') ne $list;
     }
 }
 sub MATTERDevice_RawDiagnostic {
@@ -2542,7 +2667,11 @@ sub MATTERDevice_ProcessAttributeValue($$$$) {
     }
     if (($hash->{endpoint_id} // 0) == 0 &&
         $cluster_id == 0x0033 && $attr_id == 0) {
-        my $type = $value;
+        my $epoch = $hash->{helper}{availability_epoch} // 0;
+        MATTERDevice_UpdateNetworkDiagnostics($hash, $value);
+        return unless ($defs{$hash->{NAME}} // '') eq $hash &&
+            ($hash->{helper}{availability_epoch} // 0) == $epoch;
+        my $type = $value->{networkType};
         MATTERDevice_ReadingsSingleUpdate($hash, 'networkType', $type, 1)
             if defined($type) && ReadingsVal($name, 'networkType', '') ne $type;
         return;
@@ -3805,12 +3934,30 @@ on a child endpoint has no effect.</p>
 <tr><td><code>threadRole</code></td><td>Reported routing role: <code>unspecified</code>, <code>unassigned</code>, <code>sleepy_end_device</code>, <code>end_device</code>, <code>reed</code>, <code>router</code> or <code>leader</code>.</td></tr>
 <tr><td><code>threadDeviceType</code></td><td>Derived from the role: <code>MTD</code> (Minimal Thread Device) for sleepy end devices; <code>MTD or FTD</code> for end devices; <code>FTD</code> (Full Thread Device) for REED, router and leader. This is not a separate device-type report.</td></tr>
 <tr><td><code>threadNetwork</code></td><td>Reported Thread network name.</td></tr>
+<tr><td><code>threadExtAddress</code></td><td>Own Thread extended address as 16 lowercase hex digits, from the operational Thread interface hardware address or Thread diagnostics ExtAddress. Conflicting interface addresses yield <code>unknown</code>.</td></tr>
+<tr><td><code>threadRloc16</code></td><td>Own reported 16-bit routing locator, as a decimal number. May change with the network topology; not a durable device identifier.</td></tr>
 <tr><td><code>threadNeighbors</code></td><td>Number of entries in the reported neighbor table, including children. The displayed list can contain fewer entries.</td></tr>
-<tr><td><code>threadNeighborList</code></td><td>Up to 16 neighbors with usable RSSI, strongest first, with extended address, child/router label and RSSI in dBm; at most 600 characters. <code>none</code> means no usable entries in that report. The module labels every non-child as <code>router</code>.</td></tr>
+<tr><td><code>threadNeighborList</code></td><td>Up to 16 neighbors with usable RSSI, strongest first, with hex extended address (or uniquely resolved FHEM root name), child/router/parent label and RSSI in dBm; at most 600 characters. <code>none</code> means no usable entries in that report. Other non-child entries retain the <code>router</code> label.</td></tr>
 <tr><td><code>rssi</code></td><td>Strongest usable RSSI among neighbors not marked as children, in dBm. For each neighbor, average RSSI is preferred; last RSSI is used only if the average is absent/null. This does not identify the selected parent or the route used by a command.</td></tr>
 <tr><td><code>lqi</code></td><td>Reported link quality of the same neighbor selected for <code>rssi</code>, if supplied as 0&ndash;3; higher values indicate better quality. It is not selected independently from the strongest RSSI.</td></tr>
 <tr><td><code>wifiRssi</code></td><td>Reported Wi-Fi RSSI in dBm, when Wi-Fi diagnostics are available.</td></tr>
 </table>
+<p>Neighbor names require accepted identity reports on both roots with
+<code>diagnostics=1</code>, the same IODev and the same reported Thread
+ExtendedPanId. Network names alone do not identify a Thread network. Unknown,
+ambiguous, offline or unreported peers keep their hex address. A Border Router
+without a known Matter root is not automatically named. Later metadata,
+root rename, deletion and identity changes reformat cached neighbor lists;
+this can advance the list timestamp without a new neighbor report.</p>
+<p>For <code>sleepy_end_device</code>, <code>end_device</code> and
+<code>reed</code> in a valid child Rloc16, exactly one non-child neighbor with
+the matching parent-router Rloc16 is labeled <code>parent</code>. Missing or
+ambiguous data creates no parent label. Routers and leaders have no parent
+label; next hops depend on the destination. RSSI/LQI selection remains
+independent of parent marking. No route of a particular command is inferred.
+Runtime topology is discarded on IO loss, offline, identity or network change,
+and disabling diagnostics. Saved readings alone are not used for resolution.
+See <a href="https://github.com/Flachzange/fhem-matter-fork/blob/main/docs/thread-neighbors.md">protocol evidence and limits</a>.</p>
 <p>Enabling the attribute sends no request and does not replay previously
 received data. Updates use subsequent accepted server reports or snapshots;
 the device/server determines which attributes arrive and when. Normal offline
@@ -4334,12 +4481,32 @@ an einem Kind-Endpunkt hat keine Wirkung.</p>
 <tr><td><code>threadRole</code></td><td>Gemeldete Routing-Rolle: <code>unspecified</code>, <code>unassigned</code>, <code>sleepy_end_device</code>, <code>end_device</code>, <code>reed</code>, <code>router</code> oder <code>leader</code>.</td></tr>
 <tr><td><code>threadDeviceType</code></td><td>Aus der Rolle abgeleitet: <code>MTD</code> (Minimal Thread Device) für Sleepy End Devices; <code>MTD or FTD</code> für End Devices; <code>FTD</code> (Full Thread Device) für REED, Router und Leader. Keine separate Gerätetypmeldung.</td></tr>
 <tr><td><code>threadNetwork</code></td><td>Gemeldeter Name des Thread-Netzes.</td></tr>
+<tr><td><code>threadExtAddress</code></td><td>Eigene Thread-Extended-Address als 16 kleine Hexziffern, aus der Hardwareadresse der aktiven Thread-Schnittstelle oder Thread-Diagnose ExtAddress. Widersprüchliche Schnittstellenadressen ergeben <code>unknown</code>.</td></tr>
+<tr><td><code>threadRloc16</code></td><td>Eigener gemeldeter 16-Bit-Routing-Locator als Dezimalzahl. Kann sich mit der Netztopologie ändern; keine dauerhafte Gerätekennung.</td></tr>
 <tr><td><code>threadNeighbors</code></td><td>Anzahl der Einträge in der gemeldeten Nachbartabelle einschließlich Children. Die dargestellte Liste kann weniger Einträge enthalten.</td></tr>
-<tr><td><code>threadNeighborList</code></td><td>Bis zu 16 Nachbarn mit verwertbarem RSSI, absteigend nach Signalstärke, mit Extended Address, Child-/Router-Kennzeichnung und RSSI in dBm; höchstens 600 Zeichen. <code>none</code> bedeutet keine verwertbaren Einträge in dieser Meldung. Das Modul bezeichnet jeden Nicht-Child als <code>router</code>.</td></tr>
+<tr><td><code>threadNeighborList</code></td><td>Bis zu 16 Nachbarn mit verwertbarem RSSI, absteigend nach Signalstärke, mit Hex-Extended-Address (oder eindeutig zugeordnetem FHEM-Root-Namen), Child-/Router-/Parent-Kennzeichnung und RSSI in dBm; höchstens 600 Zeichen. <code>none</code> bedeutet keine verwertbaren Einträge in dieser Meldung. Übrige Nicht-Child-Einträge behalten die Kennzeichnung <code>router</code>.</td></tr>
 <tr><td><code>rssi</code></td><td>Stärkster verwertbarer RSSI unter den nicht als Child markierten Nachbarn, in dBm. Je Nachbar wird der Durchschnitts-RSSI bevorzugt; nur bei fehlendem/null Durchschnitt wird der letzte RSSI verwendet. Daraus lässt sich weder der gewählte Parent noch der Übertragungsweg eines Befehls bestimmen.</td></tr>
 <tr><td><code>lqi</code></td><td>Gemeldete Verbindungsqualität desselben für <code>rssi</code> gewählten Nachbarn, sofern als 0&ndash;3 geliefert; höhere Werte bedeuten bessere Qualität. Keine vom stärksten RSSI unabhängige Auswahl.</td></tr>
 <tr><td><code>wifiRssi</code></td><td>Gemeldeter WLAN-RSSI in dBm, sofern WLAN-Diagnosedaten verfügbar sind.</td></tr>
 </table>
+<p>Nachbarnamen erfordern akzeptierte Identitätsmeldungen an beiden Roots mit
+<code>diagnostics=1</code>, demselben IODev und derselben gemeldeten Thread-
+ExtendedPanId. Der Netzwerkname allein identifiziert kein Thread-Netz.
+Unbekannte, mehrdeutige, offline oder noch nicht gemeldete Nachbarn behalten
+ihre Hexadresse. Ein Border Router ohne bekanntes Matter-Root wird nicht
+automatisch benannt. Spätere Metadaten, Root-Rename, Löschen und
+Identitätsänderungen formatieren gespeicherte Nachbarlisten neu; dabei kann
+sich der Listenzeitstempel ohne neue Nachbarmeldung ändern.</p>
+<p>Bei <code>sleepy_end_device</code>, <code>end_device</code> und
+<code>reed</code> mit gültiger Child-Rloc16 wird genau ein Nicht-Child-Nachbar
+mit passender Parent-Router-Rloc16 als <code>parent</code> gekennzeichnet.
+Fehlende oder mehrdeutige Daten erzeugen keine Parent-Kennzeichnung.
+Router und Leader erhalten keine Parent-Markierung; der nächste Hop hängt
+vom Ziel ab. Die RSSI-/LQI-Auswahl bleibt unabhängig von der Parent-Markierung.
+Der Weg eines konkreten Befehls wird nicht abgeleitet. Laufzeitdaten werden
+bei IO-Verlust, offline, Identitäts-/Netzwechsel und abgeschalteter Diagnose
+verworfen. Gespeicherte Readings allein dienen nicht zur Zuordnung.
+Siehe <a href="https://github.com/Flachzange/fhem-matter-fork/blob/main/docs/thread-neighbors.md">Protokollbelege und Grenzen</a>.</p>
 <p>Das Einschalten sendet keine Abfrage und verarbeitet bereits empfangene
 Daten nicht erneut. Aktualisierungen nutzen anschließend akzeptierte
 Servermeldungen oder Snapshots; Gerät und Server bestimmen Datenumfang und
