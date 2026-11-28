@@ -139,6 +139,14 @@ for my $case (@cases) {
     is($state->($name_for{$type}), $expected, sprintf '0x%04X: default after actual reading/notification path', $type);
     ok(!exists $device->($name_for{$type})->{Attributes}{stateFormat}, 'no stateFormat attribute is generated');
 }
+for my $row ([0x0011,'Power Source'],[0x0012,'OTA Requestor'],[0x0014,'OTA Provider']) {
+    my ($type,$label)=@$row;
+    my $d=$device->($name_for{$type});
+    is($d->{Readings}{deviceTypes}{Value},$label,'actual Descriptor report exposes utility name');
+    is($d->{Attributes}{group},'Matter Infrastruktur','utility name retains structural grouping');
+}
+$perl->('MATTERDevice_ProcessAttributeValue($defs{MATTER_Display},29,0,[{deviceType=>18},{deviceType=>22}])');
+is($device->('MATTER_Display')->{Readings}{deviceTypes}{Value},'OTA Requestor, Root node','root labels include OTA Requestor alongside Root node');
 is($state->('MATTER_Display'), 'online', 'root keeps its native state');
 my $device_version = $device->('MATTER_Display')->{Internals}{FVERSION};
 like($device_version, qr/^V\d+\.\d+ \d{2}\.\d{2}\.\d{4}$/, 'autocreated root exposes the Device module version');

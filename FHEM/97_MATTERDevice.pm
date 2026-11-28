@@ -11,7 +11,7 @@ use Scalar::Util qw(blessed);
 our $init_done; # FHEM startup: statefile and attributes are not yet restored
 our $unicodeEncoding; # FHEM supports both unicode and legacy UTF-8 byte strings.
 
-my $MATTERDevice_version = "V0.50 27.11.2026";
+my $MATTERDevice_version = "V0.51 28.11.2026";
 
 # Globale Matter-Metadaten-IDs. Sie werden unabhängig von der clusterspezifischen
 # Attributdefinition verarbeitet. EventList (0xFFFA) wird für ältere
@@ -31,7 +31,10 @@ my %MATTER_DEVICE_TYPE_LABELS = (
     0x000A => "Door lock",
     0x000E => "Aggregator",
     0x000F => "Generic switch",
+    0x0011 => "Power Source",
+    0x0012 => "OTA Requestor",
     0x0013 => "Bridged node",
+    0x0014 => "OTA Provider",
     0x0015 => "Contact sensor",
     0x0043 => "Water leak detector",
     0x0044 => "Rain sensor",
@@ -3459,7 +3462,9 @@ existing sensor lifecycle suite models restoration.</p></li>
       do not depend on a new server connection. Invalid or missing Descriptor
       updates do not overwrite known IDs.</li>
   <li><b>Reading deviceTypes:</b> All reported device types as readable labels,
-      including structural companions; unknown IDs retain hexadecimal labels.</li>
+      including structural companions (<code>Power Source</code>,
+      <code>OTA Requestor</code>, <code>OTA Provider</code>); unknown IDs retain
+      hexadecimal labels. Names describe device types, not firmware-update availability.</li>
   <li><b>Readings model and available:</b> The root model is mirrored when known.
       Ordinary endpoints follow node availability. Bridged devices and their
       functional descendants combine root availability with each enclosing
@@ -3962,7 +3967,9 @@ modelliert die Wiederherstellung.</p></li>
       Gruppierung benötigen dafür keine neue Serververbindung. Ungültige oder
       fehlende Descriptor-Updates überschreiben die gespeicherten IDs nicht.</li>
   <li><b>Reading deviceTypes:</b> Alle gemeldeten Gerätetypen als lesbare Namen,
-      einschließlich Strukturtypen; unbekannte IDs bleiben hexadezimal sichtbar.</li>
+      einschließlich Strukturtypen (<code>Power Source</code>,
+      <code>OTA Requestor</code>, <code>OTA Provider</code>); unbekannte IDs bleiben
+      hexadezimal sichtbar. Die Namen beschreiben Gerätetypen, kein verfügbares Firmwareupdate.</li>
   <li><b>Readings model und available:</b> Das bekannte Root-Modell wird gespiegelt.
       Gewöhnliche Endpunkte folgen der Node-Erreichbarkeit. Überbrückte Geräte
       und ihre Funktionsendpunkte kombinieren diese mit <code>Reachable</code>
