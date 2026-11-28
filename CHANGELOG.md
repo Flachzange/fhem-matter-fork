@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-28  MATTERDevice V0.51: Complete utility device-type labels for Power Source (0x0011), OTA Requestor (0x0012) and OTA Provider (0x0014). Reuse the central labels for deviceTypes and endpoint descriptions; preserve structural grouping and functional display priority. Cover reported root/endpoint labels with callback and actual-FHEM regressions. MATTER remains V0.48.
+
 - 2026-11-27  MATTERDevice V0.50 (#103): Add readable deviceTypes, direct parentEndpoint from full-family PartsList and native root/parent links with rename-safe persisted ownership. Combine node availability with enclosing Bridged Node Reachable for bridged endpoints; retain physical values during offline/unknown, invalidate stale reads and display pure Aggregator/Bridged Node status as online/offline/unknown. Preserve functional grouping, user formats and disable. Add callback/actual-core bridge lifecycle tests; hardware untested. MATTER remains V0.48.
 
 - 2026-11-27  MATTERDevice V0.49 (#101): Normal root rename carries endpoints to <newRootName>_EP<endpoint_id>. Endpoint renameWithRoot=0 preserves individual names; direct endpoint rename stays local. Preflight all endpoint targets; conflicts leave all endpoint names unchanged while the root keeps its new name. Preserve IDs, attributes, readings and native FHEM rename paths. Add actual-core regressions in both encodings; no Matter server/hardware validation.

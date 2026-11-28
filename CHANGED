@@ -1,1 +1,1 @@
-2026-11-27  MATTERDevice V0.50: Bridge endpoint hierarchy, readable deviceTypes and effective bridged availability. Infrastructure displays online/offline/unknown; functional values and user settings remain. Hardware untested. MATTER remains V0.48.
+2026-11-28  MATTERDevice V0.51: Translate Power Source (0x0011), OTA Requestor (0x0012) and OTA Provider (0x0014) in deviceTypes and endpoint descriptions. MATTER remains V0.48.

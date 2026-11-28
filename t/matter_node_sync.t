@@ -6511,4 +6511,33 @@ subtest 'Issue 103: bridged endpoint identity, composition and reachability' => 
     is(MATTERDevice_EndpointAvailability($ep{20}),undef,'old available reading never grants online status');
 };
 
+subtest 'Utility labels reuse Descriptor processing without changing endpoint roles' => sub {
+    my $io=$defs{utilityLabelIO}={NAME=>'utilityLabelIO',TYPE=>'MATTER',helper=>{}};
+    MATTER_ProcessNode($io,{node_id=>99502,name=>'UtilityLabels',available=>JSON::true,attributes=>{
+        '0/29/0'=>[{deviceType=>0x0012},{deviceType=>0x0016}],
+        '1/29/0'=>[{deviceType=>0x0011}],
+        '2/29/0'=>[{deviceType=>0x0012}],
+        '3/29/0'=>[{deviceType=>0x0014}],
+        '4/29/0'=>[{deviceType=>0x0011},{deviceType=>0x010A}], '4/6/0'=>JSON::true,
+        '5/29/0'=>[{deviceType=>0xFFF01234}],
+    }});
+    my $root=$defs{MATTER_UtilityLabels};
+    is(ReadingsVal($root->{NAME},'deviceTypes',''),'OTA Requestor, Root node','reported root types are readable');
+    for my $row ([1,'Power Source'],[2,'OTA Requestor'],[3,'OTA Provider']) {
+        my ($ep,$label)=@$row;
+        my $child=$defs{"MATTER_UtilityLabels_EP$ep"};
+        is(ReadingsVal($child->{NAME},'deviceTypes',''),$label,'utility deviceTypes name');
+        is(MATTERDevice_EndpointType($child),$label,'endpoint detail uses same central name');
+        is($attr{$child->{NAME}}{group},'Matter Infrastruktur','utility remains infrastructure');
+    }
+    my $plug=$defs{MATTER_UtilityLabels_EP4};
+    is(ReadingsVal($plug->{NAME},'deviceTypes',''),'Power Source, On/Off plug-in unit','all declared types remain visible');
+    is($attr{$plug->{NAME}}{group},'On/Off plug-in unit','functional group retains priority');
+    is($plug->{STATE},'on','functional display retains priority');
+    is(ReadingsVal('MATTER_UtilityLabels_EP5','deviceTypes',''),'0xFFF01234','unknown IDs keep hexadecimal fallback');
+    $root->{READINGS}{deviceTypes}{VAL}='0x0012, Root node';
+    MATTERDevice_ProcessAttributeValue($root,29,0,[{deviceType=>0x0012},{deviceType=>0x0016}]);
+    is(ReadingsVal($root->{NAME},'deviceTypes',''),'OTA Requestor, Root node','same Descriptor IDs refresh the previous fallback name');
+};
+
 done_testing();

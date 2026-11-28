@@ -21,7 +21,7 @@ availability of a particular device/cluster is a separate question: a known
 label or an `unknown` display does not establish device support.
 
 The functional rows below are in selection order. Descriptor/report ordering
-cannot change the selected primary type. Structural companions do not compete.
+cannot change the selected primary type. Structural companions do not compete. Their readable labels include Power Source (0x0011), OTA Requestor (0x0012) and OTA Provider (0x0014); naming does not enable a functional display or imply an available firmware update.
 The temperature/humidity combination is selected at the temperature row.
 Missing primary data stays unknown; it does not select a different type.
 Within one type, an alternative source is used only while higher-priority
@@ -251,3 +251,5 @@ parent link. Callback regressions additionally cover full-family reduction,
 multiple bridged devices, unknown/invalid Reachable, delayed reads, live
 reparenting, mixed/unknown types and disabled structure. External Matter server,
 physical ELTAKO and configDB behavior remain untested.
+
+Utility label IDs also verified against [CSA Matter Device Library 1.1, Chapter 2](https://csa-iot.org/wp-content/uploads/2023/05/22-27351-002_matter_1-1-device-library-specification.pdf) on 2026-11-28.
