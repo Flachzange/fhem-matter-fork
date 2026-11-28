@@ -13,7 +13,7 @@ use Scalar::Util qw(blessed);
 our $init_done; # FHEM startup: statefile and attributes are not yet restored
 our $unicodeEncoding; # FHEM supports both unicode and legacy UTF-8 byte strings.
 
-my $MATTERDevice_version = "V0.52 28.11.2026";
+my $MATTERDevice_version = "V0.53 28.11.2026";
 
 # Globale Matter-Metadaten-IDs. Sie werden unabhängig von der clusterspezifischen
 # Attributdefinition verarbeitet. EventList (0xFFFA) wird für ältere
@@ -2106,51 +2106,63 @@ sub MATTERDevice_UpdateNetworkDiagnostics {
             qw(threadExtAddress threadRloc16 threadRole _threadNetworkId _threadNeighbors);
 }
 
-# Reformat only cached, accepted diagnostic data. This is presentation, not a
-# new device report. No persistent address registry or periodic work is needed.
+# Shared presentation model for the plain reading and FHEMWEB. It resolves
+# current device names without publishing events or parsing display strings.
+sub MATTERDevice_ThreadNeighborRows {
+    my ($root) = @_;
+    return undef unless $root && ($root->{endpoint_id} // -1) == 0 &&
+        $root->{helper}{available} && AttrVal($root->{NAME}, 'diagnostics', 0);
+    my $io = $root->{IODev};
+    # MATTER_Close invalidates every root before allowing reading events.
+    return undef if !$io || $io->{helper}{closing};
+    my $state = $root->{helper}{thread_diagnostics};
+    return undef unless $state && exists $state->{_threadNeighbors};
+    my $rows = $state->{_threadNeighbors};
+    my %names;
+    if (defined $state->{_threadNetworkId}) {
+        for my $other (values %defs) {
+            next unless ($other->{TYPE} // '') eq 'MATTERDevice' &&
+                ($other->{endpoint_id} // -1) == 0 && ($other->{IODev} // '') eq $io &&
+                $other->{helper}{available} && AttrVal($other->{NAME}, 'diagnostics', 0);
+            my $identity = $other->{helper}{thread_diagnostics} // {};
+            next unless ($identity->{_threadNetworkId} // '') eq $state->{_threadNetworkId};
+            my $address = $identity->{threadExtAddress};
+            next unless defined($address) && $address =~ /\A[0-9a-f]{16}\z/;
+            push @{$names{$address}}, $other->{NAME};
+        }
+    }
+    my $rloc = $state->{threadRloc16};
+    my @parents;
+    if (($state->{threadRole} // '') =~ /\A(?:sleepy_end_device|end_device|reed)\z/ &&
+        defined($rloc) && $rloc < 0xFC00 && !($rloc & 0x0200) && ($rloc & 0x01FF)) {
+        @parents = grep { !$_->{child} && defined($_->{rloc}) &&
+            $_->{rloc} == ($rloc & 0xFC00) } @$rows;
+    }
+    my @display;
+    for my $neighbor (@$rows) {
+        my $id = $neighbor->{address} // 'unknown';
+        my $device = $names{$id} && @{$names{$id}} == 1 ? $names{$id}[0] : undef;
+        my $role = @parents == 1 && $neighbor eq $parents[0] ? 'parent' :
+            $neighbor->{child} ? 'child' : 'router';
+        push @display, {label => $device // $id, device => $device,
+            role => $role, rssi => $neighbor->{rssi}};
+        last if @display == 16;
+    }
+    return \@display;
+}
+
+# Reformat accepted cached data after metadata/lifecycle changes, never poll.
 sub MATTERDevice_RefreshThreadNeighbors {
     my ($io) = @_;
-    # MATTER_Close invalidates every root before allowing reading events.
     return if !$io || $io->{helper}{closing};
     for my $root (values %defs) {
-        next unless ($root->{TYPE} // '') eq 'MATTERDevice' &&
-            ($root->{endpoint_id} // -1) == 0 && ($root->{IODev} // '') eq $io &&
-            $root->{helper}{available} && AttrVal($root->{NAME}, 'diagnostics', 0);
-        my $state = $root->{helper}{thread_diagnostics};
-        next unless $state && exists $state->{_threadNeighbors};
-        my $rows = $state->{_threadNeighbors};
-        my %names;
-        # Resolve anew for each root: reading events may rename/delete/rebind
-        # devices synchronously between two publications.
-        if (defined $state->{_threadNetworkId}) {
-            for my $other (values %defs) {
-                next unless ($other->{TYPE} // '') eq 'MATTERDevice' &&
-                    ($other->{endpoint_id} // -1) == 0 && ($other->{IODev} // '') eq $io &&
-                    $other->{helper}{available} && AttrVal($other->{NAME}, 'diagnostics', 0);
-                my $identity = $other->{helper}{thread_diagnostics} // {};
-                next unless ($identity->{_threadNetworkId} // '') eq $state->{_threadNetworkId};
-                my $address = $identity->{threadExtAddress};
-                next unless defined($address) && $address =~ /\A[0-9a-f]{16}\z/;
-                push @{$names{$address}}, $other->{NAME};
-            }
-        }
-        my $rloc = $state->{threadRloc16};
-        my @parents;
-        if (($state->{threadRole} // '') =~ /\A(?:sleepy_end_device|end_device|reed)\z/ &&
-            defined($rloc) && $rloc < 0xFC00 && !($rloc & 0x0200) && ($rloc & 0x01FF)) {
-            @parents = grep { !$_->{child} && defined($_->{rloc}) &&
-                $_->{rloc} == ($rloc & 0xFC00) } @$rows;
-        }
-        my @list;
-        for my $neighbor (@$rows) {
-            my $id = $neighbor->{address} // 'unknown';
-            $id = $names{$id}[0] if $names{$id} && @{$names{$id}} == 1;
-            my $role = @parents == 1 && $neighbor eq $parents[0] ? 'parent' :
-                $neighbor->{child} ? 'child' : 'router';
-            push @list, "$id ($role, $neighbor->{rssi} dBm)";
-            last if @list == 16;
-        }
-        my $list = @list ? substr(join(', ', @list), 0, 600) : 'none';
+        next unless ($root->{TYPE} // '') eq 'MATTERDevice' && ($root->{IODev} // '') eq $io;
+        # Resolve again after any synchronous events from the previous root.
+        my $rows = MATTERDevice_ThreadNeighborRows($root);
+        next unless defined $rows;
+        my $list = @$rows ? substr(join(', ', map {
+            "$_->{label} ($_->{role}, $_->{rssi} dBm)"
+        } @$rows), 0, 600) : 'none';
         MATTERDevice_ReadingsSingleUpdate($root, 'threadNeighborList', $list, 1)
             if ReadingsVal($root->{NAME}, 'threadNeighborList', '') ne $list;
     }
@@ -3394,21 +3406,45 @@ sub MATTERDevice_EndpointType($) {
 # Additional content for the existing root device (endpoint 0) in FHEMWEB.
 sub MATTERDevice_FWDetail($) {
     my ($web, $name, $room) = @_;
-    my @children = MATTERDevice_NodeChildren($defs{$name});
-    return undef unless @children;
+    my $root = $defs{$name};
+    return undef unless $root && ($root->{endpoint_id} // -1) == 0;
+    my @children = MATTERDevice_NodeChildren($root);
+    my $html = '';
 
     # FHEMWEB themes style <th> prominently (e.g. large red bold text).
     # Use plain table cells for a quiet, compact heading row instead.
-    my $html = '<div class="makeTable wide"><span class="mkTitle">Matter endpoints</span>'
-             . '<table class="block wide"><tr><td>EP</td><td>Type</td><td>FHEM device</td></tr>';
-    for my $child (@children) {
-        my $endpoint = int($child->{endpoint_id});
-        my $type = FW_htmlEscape(MATTERDevice_EndpointType($child));
-        my $label = FW_htmlEscape($child->{NAME});
-        my $target = '?detail=' . urlEncode($child->{NAME});
-        $html .= qq(<tr><td>$endpoint</td><td>$type</td><td><a href="$target">$label</a></td></tr>);
+    if (@children) {
+        $html .= '<div class="makeTable wide"><span class="mkTitle">Matter endpoints</span>'
+               . '<table class="block wide"><tr><td>EP</td><td>Type</td><td>FHEM device</td></tr>';
+        for my $child (@children) {
+            my $endpoint = int($child->{endpoint_id});
+            my $type = FW_htmlEscape(MATTERDevice_EndpointType($child));
+            my $label = FW_htmlEscape($child->{NAME});
+            my $target = '?detail=' . urlEncode($child->{NAME});
+            $html .= qq(<tr><td>$endpoint</td><td>$type</td><td><a href="$target">$label</a></td></tr>);
+        }
+        $html .= '</table></div>';
     }
-    return $html . '</table></div>';
+
+    # Opt-in is checked on every page render, including after diagnostics was
+    # disabled while the old plain diagnostic readings were retained.
+    my $neighbors = MATTERDevice_ThreadNeighborRows($root);
+    if ($neighbors && @$neighbors) {
+        $html .= '<div class="makeTable wide"><span class="mkTitle">Thread neighbors</span>'
+               . '<table class="block wide"><tr><td>Neighbor</td><td>Role</td><td>RSSI</td></tr>';
+        for my $neighbor (@$neighbors) {
+            my $label = FW_htmlEscape($neighbor->{label});
+            if (defined $neighbor->{device}) {
+                my $target = '?detail=' . urlEncode($neighbor->{device});
+                $label = qq(<a href="$target">$label</a>);
+            }
+            my $role = FW_htmlEscape($neighbor->{role});
+            my $rssi = FW_htmlEscape($neighbor->{rssi});
+            $html .= qq(<tr><td>$label</td><td>$role</td><td>$rssi dBm</td></tr>);
+        }
+        $html .= '</table></div>';
+    }
+    return length($html) ? $html : undef;
 }
 
 sub MATTERDevice_GetOrCreateChild($$) {
@@ -3942,6 +3978,14 @@ on a child endpoint has no effect.</p>
 <tr><td><code>lqi</code></td><td>Reported link quality of the same neighbor selected for <code>rssi</code>, if supplied as 0&ndash;3; higher values indicate better quality. It is not selected independently from the strongest RSSI.</td></tr>
 <tr><td><code>wifiRssi</code></td><td>Reported Wi-Fi RSSI in dBm, when Wi-Fi diagnostics are available.</td></tr>
 </table>
+<p>The root detail page adds a <b>Thread neighbors</b> table only while
+<code>diagnostics=1</code> and usable runtime neighbor data is available.
+Known root names link to their native FHEMWEB detail pages; unknown or
+ambiguous addresses remain plain text. Role/parent and RSSI appear alongside.
+The existing endpoint table remains available independently. This table is
+rendered on page load/reload, without polling or automatic refresh. The
+<code>threadNeighborList</code> reading remains plain text. Turning diagnostics
+off hides the table on the next page load, while saved readings remain.</p>
 <p>Neighbor names require accepted identity reports on both roots with
 <code>diagnostics=1</code>, the same IODev and the same reported Thread
 ExtendedPanId. Network names alone do not identify a Thread network. Unknown,
@@ -4489,6 +4533,15 @@ an einem Kind-Endpunkt hat keine Wirkung.</p>
 <tr><td><code>lqi</code></td><td>Gemeldete Verbindungsqualität desselben für <code>rssi</code> gewählten Nachbarn, sofern als 0&ndash;3 geliefert; höhere Werte bedeuten bessere Qualität. Keine vom stärksten RSSI unabhängige Auswahl.</td></tr>
 <tr><td><code>wifiRssi</code></td><td>Gemeldeter WLAN-RSSI in dBm, sofern WLAN-Diagnosedaten verfügbar sind.</td></tr>
 </table>
+<p>Die Root-Detailseite ergänzt eine Tabelle <b>Thread neighbors</b> nur bei
+<code>diagnostics=1</code> und verfügbaren verwertbaren Laufzeit-Nachbardaten.
+Bekannte Root-Namen verlinken ihre native FHEMWEB-Detailseite; unbekannte oder
+mehrdeutige Adressen bleiben einfacher Text. Rolle/Parent und RSSI stehen
+daneben. Die vorhandene Endpoint-Tabelle bleibt davon unabhängig verfügbar.
+Die Tabelle wird beim Laden/Neuladen der Seite gerendert, ohne Polling oder
+automatische Aktualisierung. Das Reading <code>threadNeighborList</code>
+bleibt Klartext. Abschalten der Diagnose blendet die Tabelle beim nächsten
+Seitenaufruf aus; gespeicherte Readings bleiben erhalten.</p>
 <p>Nachbarnamen erfordern akzeptierte Identitätsmeldungen an beiden Roots mit
 <code>diagnostics=1</code>, demselben IODev und derselben gemeldeten Thread-
 ExtendedPanId. Der Netzwerkname allein identifiziert kein Thread-Netz.

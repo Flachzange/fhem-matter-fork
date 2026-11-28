@@ -6332,6 +6332,7 @@ subtest 'Issue #106 Thread neighbor identity and parent from accepted reports' =
     my $net = '0x1122334455667788';
     my $first = $create->(10601, 'ThreadFirst');
     my $second = $create->(10602, 'ThreadSecond');
+    ok(!defined(MATTERDevice_FWDetail('WEB', $first->{NAME}, 'Matter')), 'root without endpoints or reported neighbors has no empty table');
     my $list = sub { ReadingsVal($first->{NAME}, 'threadNeighborList', '') };
     my $rows = [
         {extAddress => '18446744073709551615', rloc16 => 0x0800, averageRssi => -30, lqi => 3, isChild => JSON::false},
@@ -6351,6 +6352,21 @@ subtest 'Issue #106 Thread neighbor identity and parent from accepted reports' =
     $report->(10602, '0/51/0', [{'1' => 1, '7' => 4, '4' => 'AgAAAAAAAAE='}]);
     is(ReadingsVal($second->{NAME}, 'threadExtAddress', ''), '0200000000000001', 'tagged base64 hardware address is decoded in network byte order');
     like($list->(), qr/MATTER_ThreadSecond \(parent, -74 dBm\)/, 'late identity resolves an existing neighbor list');
+    my $saved_readings = encode_json($first->{READINGS});
+    my $neighbor_html = MATTERDevice_FWDetail('WEB', $first->{NAME}, 'Matter');
+    like($neighbor_html, qr/<a href="\?detail=MATTER_ThreadSecond">MATTER_ThreadSecond<\/a>/,
+        'known neighbor has a native root detail link even without endpoints');
+    like($neighbor_html, qr/<td>parent<\/td><td>-74 dBm<\/td>/, 'parent and RSSI are visible in separate cells');
+    like($neighbor_html, qr/<td>ffffffffffffffff<\/td>/, 'unresolved address remains plain text');
+    unlike($neighbor_html, qr/href="[^"]*ffffffffffffffff/, 'unresolved neighbor does not get a guessed link');
+    is(encode_json($first->{READINGS}), $saved_readings, 'rendering does not publish or replace readings');
+    unlike($list->(), qr/<html>|<a\b/, 'diagnostic reading stays plain text');
+    {
+        local $attr{$first->{NAME}}{diagnostics} = 0;
+        ok(!defined(MATTERDevice_FWDetail('WEB', $first->{NAME}, 'Matter')),
+            'render checks diagnostics even if an old runtime cache is still present');
+    }
+
     my $writes = $single_writes{$first->{NAME}}{threadNeighborList};
     $report->(10602, '0/51/0', [{isOperational => JSON::true, type => 4, hardwareAddress => 'AgAAAAAAAAE='}]);
     is($single_writes{$first->{NAME}}{threadNeighborList}, $writes, 'unchanged named metadata does not republish neighbor reading');
@@ -6392,6 +6408,14 @@ subtest 'Issue #106 Thread neighbor identity and parent from accepted reports' =
     $report->(10601, '0/53/7', $rows);
     CommandRename(undef, "$second->{NAME} RenamedThreadNeighbor");
     like($list->(), qr/RenamedThreadNeighbor \(parent, -74 dBm\)/, 'root rename immediately refreshes displayed neighbor name');
+    like(MATTERDevice_FWDetail('WEB', $first->{NAME}, 'Matter'), qr/\?detail=RenamedThreadNeighbor/,
+        'neighbor link follows current root name');
+    CommandRename(undef, "$second->{NAME} Thread<&Neighbor");
+    $neighbor_html = MATTERDevice_FWDetail('WEB', $first->{NAME}, 'Matter');
+    like($neighbor_html, qr/\?detail=Thread%3C%26Neighbor/, 'link target is URL encoded');
+    like($neighbor_html, qr/>Thread&lt;&amp;Neighbor<\/a>/, 'link label is HTML escaped');
+    CommandRename(undef, "$second->{NAME} RenamedThreadNeighbor");
+
     for my $role (3, 4) {
         $report->(10601, '0/53/1', $role);
         like($list->(), qr/\(parent, -74 dBm\)/, 'end device and REED in child location retain parent');
@@ -6421,6 +6445,9 @@ subtest 'Issue #106 Thread neighbor identity and parent from accepted reports' =
     $report->(10603, '0/53/4', $net);
     $report->(10603, '0/53/63', '0x0200000000000001');
     like($list->(), qr/0200000000000001 \(parent,/, 'duplicate identity in same IO/network falls back to hex');
+    unlike(MATTERDevice_FWDetail('WEB', $first->{NAME}, 'Matter'), qr/\?detail=(?:RenamedThreadNeighbor|MATTER_ThreadDuplicate)/,
+        'ambiguous identity is not clickable');
+
     CommandDelete(undef, $duplicate->{NAME});
     like($list->(), qr/RenamedThreadNeighbor/, 'deleting duplicate makes the remaining identity unique');
     CommandAttr(undef, "$second->{NAME} diagnostics 0");

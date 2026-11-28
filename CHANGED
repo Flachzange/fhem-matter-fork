@@ -1,1 +1,1 @@
-2026-11-28  MATTERDevice V0.52: Show Thread neighbor addresses in hex, resolve known FHEM root names and mark an unambiguous parent for end devices. Passive diagnostics only; no polling.
+2026-11-28  MATTERDevice V0.53: Show clickable Thread neighbors in the root detail page only with diagnostics=1. Preserve plain diagnostic readings and existing endpoint links.

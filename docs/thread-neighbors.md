@@ -74,6 +74,35 @@ route is claimed. The list still includes at most 16 usable neighbors,
 strongest first, with a 600-character bound; the count includes all reported
 rows (up to 256). No new request, timer, persistent topology or migration.
 
+## FHEMWEB neighbor links
+
+The existing `MATTERDevice_FWDetail` root hook adds a **Thread neighbors**
+table only when diagnostics is enabled and accepted usable runtime data is
+available. It also works on roots without functional endpoints. Endpoint
+navigation remains independent. Missing/empty data and endpoints have no
+Thread table. Disabling diagnostics hides it on the next page load even if
+old public readings remain; re-enabling does not replay saved readings.
+
+`MATTERDevice_ThreadNeighborRows` supplies the same first 16 normalized,
+resolved rows to the plain reading and HTML renderer. No name is recovered
+by parsing the possibly truncated reading. Known devices have native relative
+`?detail=` links using FHEMWEB's `urlEncode`; text uses `FW_htmlEscape`.
+Unknown or ambiguous peers have no link. Role/parent and RSSI are shared with
+the reading, which retains its 600-character plain-text bound. The HTML table
+shows complete cells for the same first 16 entries.
+
+Rendering does not write readings or start requests/timers. As with the
+existing endpoint table, updates are visible on opening/reloading the detail
+page, without a separate live-update implementation. HTML is not stored in
+readings, events, JSON or database values.
+
+Framework source: pinned FHEM `8b257af4a681169a4162610b158ca6d4d103d489`,
+`01_FHEMWEB.pm`: `FW_doDetail` calls the registered `FW_detailFn` and includes
+its returned HTML while `FW_deviceOverview=1` retains the standard overview.
+`FW_makeTable` normally escapes reading values but allows `<html>…</html>`;
+using that wrapper would store HTML in the reading itself. The link rendering
+therefore extends the existing hook and its native URL/escaping helpers.
+
 ## Verification
 
 `t/matter_node_sync.t` covers IO-routed snapshots/events, uint64 boundaries,
@@ -87,5 +116,10 @@ shared pure attribute-conversion acceptance path.
 and bytestream modes. Synthetic reports exercise real readings, native rename,
 modify, delete and statefile/rereadcfg behavior, including rebuilding runtime
 topology from new reports rather than restored public readings.
+
+Additional callback and actual-FHEMWEB HTTP cases cover known/unknown and
+ambiguous links, role/RSSI cells, no reading writes, diagnostics gating,
+roots without endpoints and rename targets. The linked pages are reachable
+through the native FHEMWEB detail URLs in both encoding modes.
 
 No live Matter server, Thread hardware or configDB validation was performed.
