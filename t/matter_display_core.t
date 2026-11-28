@@ -143,7 +143,7 @@ for my $row ([0x0011,'Power Source'],[0x0012,'OTA Requestor'],[0x0014,'OTA Provi
     my ($type,$label)=@$row;
     my $d=$device->($name_for{$type});
     is($d->{Readings}{deviceTypes}{Value},$label,'actual Descriptor report exposes utility name');
-    is($d->{Attributes}{group},'Matter Infrastruktur','utility name retains structural grouping');
+    is($d->{Attributes}{group},'Matter Infrastructure','utility name retains structural grouping');
 }
 $perl->('MATTERDevice_ProcessAttributeValue($defs{MATTER_Display},29,0,[{deviceType=>18},{deviceType=>22}])');
 is($device->('MATTER_Display')->{Readings}{deviceTypes}{Value},'OTA Requestor, Root node','root labels include OTA Requestor alongside Root node');

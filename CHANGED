@@ -1,1 +1,1 @@
-2026-11-28  MATTERDevice V0.54: Keep endpoint and Thread-neighbor columns compact within the full-width detail tables; unused space remains on the right.
+2026-11-28  MATTERDevice V0.55: Use Matter Infrastructure as the automatic structural endpoint group. Existing custom group assignments remain. MATTER remains V0.48.

@@ -13,7 +13,7 @@ use Scalar::Util qw(blessed);
 our $init_done; # FHEM startup: statefile and attributes are not yet restored
 our $unicodeEncoding; # FHEM supports both unicode and legacy UTF-8 byte strings.
 
-my $MATTERDevice_version = "V0.54 28.11.2026";
+my $MATTERDevice_version = "V0.55 28.11.2026";
 
 # Globale Matter-Metadaten-IDs. Sie werden unabhängig von der clusterspezifischen
 # Attributdefinition verarbeitet. EventList (0xFFFA) wird für ältere
@@ -3171,7 +3171,7 @@ sub MATTERDevice_EnsureTypeGroup($) {
         return if @types > 1 || !@declared;
         $group = @types
             ? ($MATTER_DEVICE_TYPE_LABELS{$types[0]} // sprintf("0x%04X", $types[0]))
-            : 'Matter Infrastruktur';
+            : 'Matter Infrastructure';
     }
 
     my $current = AttrVal($name, 'group', undef);
@@ -3179,7 +3179,7 @@ sub MATTERDevice_EnsureTypeGroup($) {
     if (defined($current)) {
         # An existing device-type group may follow a changed Descriptor.
         # Other existing groups remain user-owned.
-        my %type_labels = map { $_ => 1 } (values %MATTER_DEVICE_TYPE_LABELS, 'Matter Infrastruktur');
+        my %type_labels = map { $_ => 1 } (values %MATTER_DEVICE_TYPE_LABELS, 'Matter Infrastructure');
         return if $root || (!$type_labels{$current} && $current !~ /^0x[0-9A-F]{4,8}$/);
     }
 
@@ -4074,11 +4074,11 @@ Functional endpoints are grouped by their single non-structural Matter
 <code>Descriptor.DeviceTypeList</code> type (for example
 <code>On/Off light</code>, <code>Electrical Sensor</code>, or
 <code>Smoke CO Alarm</code>). Endpoints with only structural types (such as
-Aggregator and Bridged Node) use <code>Matter Infrastruktur</code>.
+Aggregator and Bridged Node) use <code>Matter Infrastructure</code>.
 Additional structural types such as Power Source and OTA Requestor are ignored
 when a functional type is present. Unknown IDs use hexadecimal labels.
 Multiple distinct functional types do not cause an arbitrary group choice.
-Existing root groups are preserved. An endpoint group can follow a changed device type if its current name exactly matches a known type label, <code>Matter Infrastruktur</code>, or <code>0x</code> followed by four to eight uppercase hexadecimal digits. This also applies to manually assigned matching names. Other existing groups, including <code>Node 4 (matterServer)</code>, are preserved. The root detail view links to its
+Existing root groups are preserved. An endpoint group can follow a changed device type if its current name exactly matches a known type label, <code>Matter Infrastructure</code>, or <code>0x</code> followed by four to eight uppercase hexadecimal digits. This also applies to manually assigned matching names. Other existing groups, including <code>Node 4 (matterServer)</code>, are preserved. The root detail view links to its
 endpoints, even after renaming.</p>
 <p>Only newly autocreated nodes/endpoints are assigned to room <code>Matter</code>.
 Decommissioned devices are retained in FHEM rather than automatically deleted.</p>
@@ -4638,11 +4638,11 @@ Funktionale Endpunkte werden nach ihrem eindeutigen, nicht-strukturellen
 Matter-Gerätetyp aus <code>Descriptor.DeviceTypeList</code> gruppiert
 (z. B. <code>On/Off light</code>, <code>Electrical Sensor</code> oder
 <code>Smoke CO Alarm</code>). Rein strukturelle Endpunkte wie
-Aggregator und Bridged Node erhalten <code>Matter Infrastruktur</code>.
+Aggregator und Bridged Node erhalten <code>Matter Infrastructure</code>.
 Zusätzliche strukturelle Typen wie Power Source oder OTA Requestor werden
 bei vorhandener Gerätefunktion ignoriert. Unbekannte Typ-IDs erscheinen
 hexadezimal. Bei mehreren funktionalen Typen wird keine willkürliche
-Auswahl getroffen. Bestehende Root-Gruppen bleiben erhalten. Eine Endpunktgruppe kann einem geänderten Gerätetyp folgen, wenn ihr Name exakt einem bekannten Typnamen, <code>Matter Infrastruktur</code> oder <code>0x</code> mit vier bis acht hexadezimalen Ziffern (A–F in Großschrift) entspricht. Das gilt auch bei manueller Vergabe dieser Namen. Andere bestehende Gruppen wie <code>Node 4 (matterServer)</code> bleiben erhalten. Die Root-Detailansicht verlinkt die Endpunkte.</p>
+Auswahl getroffen. Bestehende Root-Gruppen bleiben erhalten. Eine Endpunktgruppe kann einem geänderten Gerätetyp folgen, wenn ihr Name exakt einem bekannten Typnamen, <code>Matter Infrastructure</code> oder <code>0x</code> mit vier bis acht hexadezimalen Ziffern (A–F in Großschrift) entspricht. Das gilt auch bei manueller Vergabe dieser Namen. Andere bestehende Gruppen wie <code>Node 4 (matterServer)</code> bleiben erhalten. Die Root-Detailansicht verlinkt die Endpunkte.</p>
 <p>Nur neu automatisch erzeugte Geräte werden dem Raum <code>Matter</code>
 zugeordnet. Entfernte Geräte bleiben in FHEM erhalten.</p>
 

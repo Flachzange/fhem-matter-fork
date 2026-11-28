@@ -8,6 +8,8 @@ installed CHANGED baseline for each additional update source, so its output is
 
 ## History
 
+- 2026-11-28  MATTERDevice V0.55: Use the English automatic structural endpoint group Matter Infrastructure. Keep existing custom group assignments; do not rewrite saved German group names. Align README, DE/EN commandref and grouping regressions. MATTER remains V0.48.
+
 - 2026-11-28  MATTERDevice V0.54 (#110): Keep endpoint and Thread-neighbor data columns compact inside the existing full-width FHEMWEB tables. An empty trailing column takes unused width on the right; preserve theme styling, links, diagnosis gating and all readings. No global CSS, new configuration or device traffic. MATTER remains V0.48.
 
 - 2026-11-28  MATTERDevice V0.53 (#108): Add clickable known Thread neighbors with role/parent and RSSI to the existing root detail page, only with diagnostics enabled and usable runtime data. Share the row resolver with the unchanged plain-text reading; preserve endpoint navigation. Render on page load without polling, extra readings or HTML in events/logging/API values. Add callback and actual-FHEMWEB tests in both encodings. MATTER remains V0.48.
