@@ -1517,9 +1517,9 @@ MATTER_ProcessNode($defs{ioA}, {
 });
 is($attr{MATTER_Bridge_grouping}{group}, 'Matter Nodes',
    'bridge root uses administrative root group');
-is($attr{MATTER_Bridge_grouping_EP1}{group}, 'Matter Infrastruktur',
+is($attr{MATTER_Bridge_grouping_EP1}{group}, 'Matter Infrastructure',
    'Aggregator has a structural grouping');
-is($attr{MATTER_Bridge_grouping_EP10}{group}, 'Matter Infrastruktur',
+is($attr{MATTER_Bridge_grouping_EP10}{group}, 'Matter Infrastructure',
    'Bridged Node has a structural grouping');
 is($attr{MATTER_Bridge_grouping_EP11}{group}, 'On/Off plug-in unit',
    'bridge actuator remains a functional plug');
@@ -1536,9 +1536,9 @@ is($attr{MATTER_Bridge_grouping_EP10}{group}, 'Node 190 (ioA)',
 delete $attr{MATTER_Bridge_grouping_EP1}{group};
 delete $attr{MATTER_Bridge_grouping_EP10}{group};
 MATTER_ProcessNode($defs{ioA}, { node_id => 190, name => 'Bridge grouping' });
-is($attr{MATTER_Bridge_grouping_EP1}{group}, 'Matter Infrastruktur',
+is($attr{MATTER_Bridge_grouping_EP1}{group}, 'Matter Infrastructure',
    'missing Aggregator group is initialized from stored type');
-is($attr{MATTER_Bridge_grouping_EP10}{group}, 'Matter Infrastruktur',
+is($attr{MATTER_Bridge_grouping_EP10}{group}, 'Matter Infrastructure',
    'missing Bridged Node group is initialized from stored type');
 
 
@@ -6720,8 +6720,16 @@ subtest 'Utility labels reuse Descriptor processing without changing endpoint ro
         my $child=$defs{"MATTER_UtilityLabels_EP$ep"};
         is(ReadingsVal($child->{NAME},'deviceTypes',''),$label,'utility deviceTypes name');
         is(MATTERDevice_EndpointType($child),$label,'endpoint detail uses same central name');
-        is($attr{$child->{NAME}}{group},'Matter Infrastruktur','utility remains infrastructure');
+        is($attr{$child->{NAME}}{group},'Matter Infrastructure','utility remains infrastructure');
     }
+    # Existing configured groups stay user-owned; only current default names follow types.
+    $attr{MATTER_UtilityLabels_EP1}{group}='Matter Infrastruktur';
+    MATTERDevice_EnsureTypeGroup($defs{MATTER_UtilityLabels_EP1});
+    is($attr{MATTER_UtilityLabels_EP1}{group},'Matter Infrastruktur','saved German group is not automatically renamed');
+    MATTERDevice_ProcessAttributeValue($defs{MATTER_UtilityLabels_EP2},29,0,[{deviceType=>0x010A}]);
+    is($attr{MATTER_UtilityLabels_EP2}{group},'On/Off plug-in unit','English default group follows a changed functional type');
+    MATTERDevice_ProcessAttributeValue($defs{MATTER_UtilityLabels_EP2},29,0,[{deviceType=>0x0012}]);
+    is($attr{MATTER_UtilityLabels_EP2}{group},'Matter Infrastructure','functional group returns to the English structural default');
     my $plug=$defs{MATTER_UtilityLabels_EP4};
     is(ReadingsVal($plug->{NAME},'deviceTypes',''),'Power Source, On/Off plug-in unit','all declared types remain visible');
     is($attr{$plug->{NAME}}{group},'On/Off plug-in unit','functional group retains priority');
